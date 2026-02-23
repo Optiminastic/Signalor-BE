@@ -37,6 +37,7 @@ class StartAnalysisView(APIView):
         run = AnalysisRun.objects.create(
             organization=org,
             url=data["url"],
+            brand_name=data.get("brand_name", ""),
             email=email,
             run_type=data["run_type"],
             status=AnalysisRun.Status.PENDING,

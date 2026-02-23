@@ -25,6 +25,8 @@ INSTALLED_APPS = [
    'apps.accounts.apps.AccountsConfig',
     'apps.organizations.apps.OrganizationsConfig',
     'apps.analyzer.apps.AnalyzerConfig',
+    'apps.integrations.apps.IntegrationsConfig',
+    'apps.visibility.apps.VisibilityConfig',
     'core',
 ]
 
@@ -176,6 +178,11 @@ LOGGING = {
 
 GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID', '')
 GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET', '')
+GOOGLE_ANALYTICS_REDIRECT_URI = os.getenv(
+    'GOOGLE_ANALYTICS_REDIRECT_URI',
+    'http://localhost:3000/settings/integrations/callback/google-analytics',
+)
+ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY', '')
 
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')

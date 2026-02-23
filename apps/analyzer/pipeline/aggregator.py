@@ -4,90 +4,92 @@ from .utils import safe_score
 
 logger = logging.getLogger("apps")
 
-# Default weights
+# Default weights — content + schema = 20%, the rest = 80%
+# The 4 actionable pillars (eeat, technical, entity, ai_visibility)
+# carry the most weight because users can take direct action on them.
 DEFAULT_WEIGHTS = {
-    "content": 0.20,
-    "schema": 0.15,
-    "eeat": 0.20,
-    "technical": 0.15,
-    "entity": 0.15,
-    "ai_visibility": 0.15,
+    "content": 0.10,
+    "schema": 0.10,
+    "eeat": 0.22,
+    "technical": 0.20,
+    "entity": 0.20,
+    "ai_visibility": 0.18,
 }
 
 # Industry-specific weight overrides
-# Key insight: different industries need different emphasis
+# content + schema always sum to 0.20; actionable pillars get the 0.80
 INDUSTRY_WEIGHTS = {
     "health": {
-        "content": 0.15,
+        "content": 0.10,
         "schema": 0.10,
-        "eeat": 0.35,      # Health content NEEDS trust signals
-        "technical": 0.10,
-        "entity": 0.15,
-        "ai_visibility": 0.15,
-    },
-    "medical": {
-        "content": 0.15,
-        "schema": 0.10,
-        "eeat": 0.35,
-        "technical": 0.10,
-        "entity": 0.15,
-        "ai_visibility": 0.15,
-    },
-    "finance": {
-        "content": 0.15,
-        "schema": 0.10,
-        "eeat": 0.30,      # Financial content needs authority
-        "technical": 0.10,
-        "entity": 0.20,
-        "ai_visibility": 0.15,
-    },
-    "ecommerce": {
-        "content": 0.15,
-        "schema": 0.25,    # Product schema is critical
-        "eeat": 0.10,
+        "eeat": 0.30,      # Health content NEEDS trust signals
         "technical": 0.15,
         "entity": 0.15,
         "ai_visibility": 0.20,
     },
-    "saas": {
-        "content": 0.20,
-        "schema": 0.15,
-        "eeat": 0.15,
+    "medical": {
+        "content": 0.10,
+        "schema": 0.10,
+        "eeat": 0.30,
         "technical": 0.15,
         "entity": 0.15,
-        "ai_visibility": 0.20,   # AI visibility matters most for SaaS discovery
+        "ai_visibility": 0.20,
+    },
+    "finance": {
+        "content": 0.10,
+        "schema": 0.10,
+        "eeat": 0.28,      # Financial content needs authority
+        "technical": 0.15,
+        "entity": 0.22,
+        "ai_visibility": 0.15,
+    },
+    "ecommerce": {
+        "content": 0.10,
+        "schema": 0.10,
+        "eeat": 0.15,
+        "technical": 0.20,
+        "entity": 0.20,
+        "ai_visibility": 0.25,
+    },
+    "saas": {
+        "content": 0.10,
+        "schema": 0.10,
+        "eeat": 0.18,
+        "technical": 0.20,
+        "entity": 0.17,
+        "ai_visibility": 0.25,   # AI visibility matters most for SaaS discovery
     },
     "legal": {
-        "content": 0.15,
+        "content": 0.10,
         "schema": 0.10,
-        "eeat": 0.35,
-        "technical": 0.10,
+        "eeat": 0.30,
+        "technical": 0.15,
         "entity": 0.15,
-        "ai_visibility": 0.15,
+        "ai_visibility": 0.20,
     },
     "education": {
-        "content": 0.25,
+        "content": 0.10,
         "schema": 0.10,
         "eeat": 0.25,
-        "technical": 0.10,
-        "entity": 0.15,
-        "ai_visibility": 0.15,
+        "technical": 0.15,
+        "entity": 0.20,
+        "ai_visibility": 0.20,
     },
     "news": {
-        "content": 0.25,
-        "schema": 0.15,
+        "content": 0.10,
+        "schema": 0.10,
         "eeat": 0.25,
-        "technical": 0.10,
-        "entity": 0.10,
-        "ai_visibility": 0.15,
+        "technical": 0.15,
+        "entity": 0.15,
+        "ai_visibility": 0.25,
     },
     "local_business": {
-        "content": 0.15,
-        "schema": 0.20,
-        "eeat": 0.15,
-        "technical": 0.15,
-        "entity": 0.20,    # Local businesses need strong entity presence
-        "ai_visibility": 0.15,
+        "content": 0.10,
+        "schema": 0.10,
+        "eeat": 0.18,
+        "technical": 0.17,
+        "entity": 0.25,    # Local businesses need strong entity presence
+        "ai_visibility": 0.20,
     },
 }
 

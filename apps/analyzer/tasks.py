@@ -5,10 +5,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from .models import (
     AIVisibilityProbe,
     AnalysisRun,
+    BrandVisibility,
     Competitor,
     PageScore,
     Recommendation,
 )
+from .pipeline.brand_visibility import extract_brand_name, run_brand_visibility
 from .pipeline.aggregator import compute_composite, compute_static_composite, detect_industry
 from .pipeline.ai_visibility import score_ai_visibility
 from .pipeline.competitors import discover_competitors
@@ -95,9 +97,15 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
     # Technical — works without HTML (robots.txt, sitemap, llms.txt, HTTPS)
     technical_score_val, technical_details = score_technical(crawl)
 
-    # Run entity + AI visibility in parallel
+    # Run entity + AI visibility + brand visibility in parallel
     entity_score_val, entity_details = 0.0, {}
     ai_vis_score, ai_vis_details, probes_data = 0.0, {}, []
+    brand_vis_result = None
+
+    brand_name = run.brand_name or extract_brand_name(run.url)
+    if not run.brand_name and brand_name:
+        run.brand_name = brand_name
+        run.save(update_fields=["brand_name"])
 
     def _run_entity():
         return score_entity(crawl)
@@ -105,11 +113,15 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
     def _run_ai_vis():
         return score_ai_visibility(crawl)
 
+    def _run_brand_vis():
+        return run_brand_visibility(brand_name, run.url)
+
     _update_status(run, AnalysisRun.Status.ANALYZING, 55)
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         entity_future = executor.submit(_run_entity)
         ai_vis_future = executor.submit(_run_ai_vis)
+        brand_vis_future = executor.submit(_run_brand_vis)
 
         try:
             entity_score_val, entity_details = entity_future.result()
@@ -122,6 +134,11 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
         except Exception as exc:
             logger.warning("AI visibility failed for run %d: %s", run.id, exc)
             ai_vis_details = {"error": str(exc)}
+
+        try:
+            brand_vis_result = brand_vis_future.result()
+        except Exception as exc:
+            logger.warning("Brand visibility failed for run %d: %s", run.id, exc)
 
     _update_status(run, AnalysisRun.Status.ANALYZING, 80)
 
@@ -172,6 +189,10 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
     for rec in recs:
         Recommendation.objects.create(analysis_run=run, **rec)
 
+    # Save brand visibility
+    if brand_vis_result:
+        BrandVisibility.objects.create(analysis_run=run, **brand_vis_result)
+
     # Finalize as complete (partial), not failed
     run.composite_score = composite
     run.status = AnalysisRun.Status.COMPLETE
@@ -213,11 +234,17 @@ def run_single_page_analysis(run_id: int):
         technical_score_val, technical_details = score_technical(crawl)
         _update_status(run, AnalysisRun.Status.ANALYZING, 30)
 
-        # Phase 3: Run LLM-dependent pillars IN PARALLEL
-        # E-E-A-T, Entity, and AI Visibility are all independent
+        # Derive brand name
+        brand_name = run.brand_name or extract_brand_name(run.url)
+        if not run.brand_name and brand_name:
+            run.brand_name = brand_name
+            run.save(update_fields=["brand_name"])
+
+        # Phase 3: Run LLM-dependent pillars + brand visibility IN PARALLEL
         eeat_score_val, eeat_details = 0.0, {}
         entity_score_val, entity_details = 0.0, {}
         ai_vis_score, ai_vis_details, probes_data = 0.0, {}, []
+        brand_vis_result = None
 
         def _run_eeat():
             return score_eeat(crawl)
@@ -228,10 +255,14 @@ def run_single_page_analysis(run_id: int):
         def _run_ai_vis():
             return score_ai_visibility(crawl)
 
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        def _run_brand_vis():
+            return run_brand_visibility(brand_name, run.url)
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
             eeat_future = executor.submit(_run_eeat)
             entity_future = executor.submit(_run_entity)
             ai_vis_future = executor.submit(_run_ai_vis)
+            brand_vis_future = executor.submit(_run_brand_vis)
 
             try:
                 eeat_score_val, eeat_details = eeat_future.result()
@@ -254,6 +285,11 @@ def run_single_page_analysis(run_id: int):
             except Exception as exc:
                 logger.warning("AI visibility failed for run %d: %s", run_id, exc)
                 ai_vis_details = {"error": str(exc)}
+
+            try:
+                brand_vis_result = brand_vis_future.result()
+            except Exception as exc:
+                logger.warning("Brand visibility failed for run %d: %s", run_id, exc)
 
         _update_status(run, AnalysisRun.Status.ANALYZING, 75)
 
@@ -300,6 +336,10 @@ def run_single_page_analysis(run_id: int):
         recs = generate_recommendations(pillar_details)
         for rec in recs:
             Recommendation.objects.create(analysis_run=run, **rec)
+
+        # Save brand visibility
+        if brand_vis_result:
+            BrandVisibility.objects.create(analysis_run=run, **brand_vis_result)
 
         # Phase 6: Competitor discovery & scoring (static-only, no LLM for competitors)
         _update_status(run, AnalysisRun.Status.SCORING, 85)

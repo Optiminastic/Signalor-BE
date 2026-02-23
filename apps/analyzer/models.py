@@ -22,6 +22,7 @@ class AnalysisRun(models.Model):
         blank=True,
     )
     url = models.URLField(max_length=2048)
+    brand_name = models.CharField(max_length=255, blank=True, default="")
     email = models.EmailField(blank=True, default="")
     run_type = models.CharField(
         max_length=20, choices=RunType.choices, default=RunType.SINGLE_PAGE
@@ -128,3 +129,22 @@ class Recommendation(models.Model):
 
     def __str__(self):
         return f"[{self.priority}] {self.title}"
+
+
+class BrandVisibility(models.Model):
+    analysis_run = models.OneToOneField(
+        AnalysisRun, on_delete=models.CASCADE, related_name="brand_visibility"
+    )
+    google_score = models.FloatField(default=0)
+    google_details = models.JSONField(default=dict)
+    reddit_score = models.FloatField(default=0)
+    reddit_details = models.JSONField(default=dict)
+    medium_score = models.FloatField(default=0)
+    medium_details = models.JSONField(default=dict)
+    web_mentions_score = models.FloatField(default=0)
+    web_mentions_details = models.JSONField(default=dict)
+    overall_score = models.FloatField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"BrandVisibility Run#{self.analysis_run_id} — {self.overall_score:.1f}"

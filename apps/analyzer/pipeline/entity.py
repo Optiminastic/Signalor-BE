@@ -15,6 +15,11 @@ SOCIAL_DOMAINS = {
     "instagram.com", "youtube.com", "github.com", "tiktok.com",
 }
 
+COMMUNITY_DOMAINS = {
+    "reddit.com": "reddit",
+    "medium.com": "medium",
+}
+
 WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
 
 
@@ -262,6 +267,23 @@ def score_entity(crawl: CrawlResult, industry: str = "") -> tuple[float, dict]:
 
         if not static_details.get("social_profiles"):
             details["findings"].append("no_social_profiles")
+
+    # Community presence check (Reddit & Medium links/mentions)
+    community_links = {"reddit": False, "medium": False}
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        try:
+            domain = urlparse(href).netloc.lower()
+            for cd, key in COMMUNITY_DOMAINS.items():
+                if domain.endswith(cd):
+                    community_links[key] = True
+        except Exception:
+            continue
+    details["checks"]["community_links"] = community_links
+    if not community_links["reddit"]:
+        details["findings"].append("no_reddit_presence")
+    if not community_links["medium"]:
+        details["findings"].append("no_medium_presence")
 
     score = safe_score(score)
     details["score"] = score

@@ -1,12 +1,17 @@
 import json
 import logging
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote_plus
+
+import requests
 
 from .crawler import CrawlResult
 from .utils import extract_brand_name, extract_domain, safe_score
 
 logger = logging.getLogger("apps")
+
+# User agent for web presence checks
+_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 
 # ── Industry-specific probe templates ─────────────────────────────────────
@@ -458,6 +463,160 @@ def _fire_probe(prompt: str, brand_aliases: list[str]) -> tuple[str, bool, float
         return "", False, 0.0, {}
 
 
+# ── Web Presence Checks (Google, Reddit, Medium, Brand Site) ───────────────
+
+def _check_google_presence(brand_name: str, domain: str) -> dict:
+    """Check if brand appears in Google search results via site content signals."""
+    result = {"found": False, "signals": []}
+    try:
+        from .llm import is_available, ask_llm
+        if not is_available():
+            return result
+
+        prompt = (
+            f"When someone searches Google for '{brand_name}', does this brand "
+            f"typically appear in results? Consider their domain '{domain}'. "
+            f"Also, would Google's AI Overview (SGE) likely mention this brand "
+            f"for industry-related queries? "
+            f"Reply JSON: {{\"in_google_results\": true/false, "
+            f"\"in_ai_overview\": true/false, \"confidence\": 0.0-1.0}}"
+        )
+        text = ask_llm(prompt, preferred_provider="gemini", max_tokens=256, purpose="Google Presence Check")
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            data = json.loads(match.group())
+            if data.get("in_google_results"):
+                result["found"] = True
+                result["signals"].append("google_search")
+            if data.get("in_ai_overview"):
+                result["signals"].append("google_ai_overview")
+            result["confidence"] = data.get("confidence", 0.0)
+    except Exception as exc:
+        logger.warning("Google presence check failed: %s", exc)
+    return result
+
+
+def _check_reddit_presence(brand_name: str, brand_aliases: list[str]) -> dict:
+    """Check if the brand is mentioned on Reddit using search."""
+    result = {"found": False, "mentions": 0, "top_subreddits": []}
+    try:
+        search_url = f"https://www.reddit.com/search.json?q={quote_plus(brand_name)}&limit=10&sort=relevance"
+        resp = requests.get(
+            search_url,
+            headers={"User-Agent": _UA},
+            timeout=8,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            posts = data.get("data", {}).get("children", [])
+            mention_count = 0
+            subreddits = set()
+            for post in posts:
+                post_data = post.get("data", {})
+                title = (post_data.get("title") or "").lower()
+                selftext = (post_data.get("selftext") or "").lower()
+                combined = f"{title} {selftext}"
+                for alias in brand_aliases:
+                    if alias in combined:
+                        mention_count += 1
+                        subreddits.add(post_data.get("subreddit", ""))
+                        break
+            result["mentions"] = mention_count
+            result["found"] = mention_count > 0
+            result["top_subreddits"] = list(subreddits)[:5]
+    except Exception as exc:
+        logger.warning("Reddit presence check failed: %s", exc)
+    return result
+
+
+def _check_medium_presence(brand_name: str, brand_aliases: list[str]) -> dict:
+    """Check if the brand is mentioned on Medium."""
+    result = {"found": False, "articles": 0}
+    try:
+        # Medium doesn't have a public API, so check via Google site search
+        from .llm import is_available, ask_llm
+        if not is_available():
+            return result
+
+        prompt = (
+            f"Are there any articles about '{brand_name}' on Medium.com? "
+            f"Has this brand been mentioned or reviewed on Medium? "
+            f"Reply JSON: {{\"found\": true/false, \"estimated_articles\": 0, \"confidence\": 0.0-1.0}}"
+        )
+        text = ask_llm(prompt, preferred_provider="gemini", max_tokens=256, purpose="Medium Presence Check")
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            data = json.loads(match.group())
+            result["found"] = data.get("found", False)
+            result["articles"] = data.get("estimated_articles", 0)
+            result["confidence"] = data.get("confidence", 0.0)
+    except Exception as exc:
+        logger.warning("Medium presence check failed: %s", exc)
+    return result
+
+
+def _check_brand_website_quality(crawl: CrawlResult) -> dict:
+    """Assess the brand website's quality signals that affect AI visibility."""
+    result = {
+        "has_about": False,
+        "has_contact": False,
+        "has_blog": False,
+        "has_social_links": False,
+        "content_depth": "thin",
+        "score": 0,
+    }
+
+    if not crawl.ok:
+        return result
+
+    soup = crawl.soup
+    html_lower = str(soup).lower()
+
+    # Check for key pages linked
+    for a in soup.find_all("a", href=True):
+        href = a["href"].lower()
+        text = a.get_text(strip=True).lower()
+        if "about" in href or "about" in text:
+            result["has_about"] = True
+        if "contact" in href or "contact" in text:
+            result["has_contact"] = True
+        if "blog" in href or "blog" in text:
+            result["has_blog"] = True
+
+    # Social links
+    social_domains = ["linkedin.com", "twitter.com", "x.com", "github.com", "facebook.com"]
+    for a in soup.find_all("a", href=True):
+        href = a["href"].lower()
+        if any(sd in href for sd in social_domains):
+            result["has_social_links"] = True
+            break
+
+    # Content depth
+    word_count = len(crawl.text.split())
+    if word_count >= 1500:
+        result["content_depth"] = "comprehensive"
+    elif word_count >= 800:
+        result["content_depth"] = "adequate"
+    elif word_count >= 300:
+        result["content_depth"] = "moderate"
+
+    # Score (0-10)
+    pts = 0
+    if result["has_about"]:
+        pts += 2
+    if result["has_contact"]:
+        pts += 2
+    if result["has_blog"]:
+        pts += 2
+    if result["has_social_links"]:
+        pts += 2
+    if result["content_depth"] in ("comprehensive", "adequate"):
+        pts += 2
+    result["score"] = pts
+
+    return result
+
+
 def score_ai_visibility(crawl: CrawlResult) -> tuple[float, dict, list[dict]]:
     """Returns (score, details, probes_data)."""
     if not crawl.ok:
@@ -466,6 +625,7 @@ def score_ai_visibility(crawl: CrawlResult) -> tuple[float, dict, list[dict]]:
     soup = crawl.soup
     brand_name = extract_brand_name(soup, crawl.url)
     brand_aliases = _build_brand_aliases(brand_name, crawl.url)
+    domain = extract_domain(crawl.url)
 
     # Detect industry keywords — NOT the brand name
     category, industry_desc = _detect_industry_keywords(soup, crawl.text)
@@ -483,6 +643,7 @@ def score_ai_visibility(crawl: CrawlResult) -> tuple[float, dict, list[dict]]:
     probes_data = []
     score = 0.0
 
+    # ── Part 1: LLM Probe Testing (60 pts) ──────────────────────────────
     # Try LLM-generated probes first
     probe_prompts = _generate_probes_llm(brand_name, site_context, industry_desc)
 
@@ -496,14 +657,13 @@ def score_ai_visibility(crawl: CrawlResult) -> tuple[float, dict, list[dict]]:
 
     details["checks"]["probes_generated"] = len(probe_prompts)
 
-    # Score ALL probes in parallel (each probe fires 3 providers in parallel internally)
-    # Scoring breakdown (100 pts total):
-    #   20 pts — brand appears in AI search (any provider, any probe)
-    #   50 pts — probe quality (split across probes, based on prominence)
-    #   30 pts — ranking bonus (brand ranked #1)
+    # Scoring breakdown for Part 1 (60 pts total):
+    #   15 pts — brand appears in any AI response
+    #   25 pts — probe quality (split across probes, based on prominence)
+    #   20 pts — ranking bonus (brand ranked #1)
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    max_per_probe = 50.0 / max(len(probe_prompts), 1)
+    max_per_probe = 25.0 / max(len(probe_prompts), 1)
     total_ranked_first = 0
 
     def _run_probe(prompt):
@@ -539,19 +699,19 @@ def score_ai_visibility(crawl: CrawlResult) -> tuple[float, dict, list[dict]]:
     details["checks"]["probes_total"] = len(probes_data)
     details["checks"]["probes_mentioned"] = mentions
 
-    # 20 pts — flat bonus if brand appears in any AI response
+    # 15 pts — flat bonus if brand appears in any AI response
     if mentions > 0:
-        score += 20.0
-        details["checks"]["ai_presence_bonus"] = 20
+        score += 15.0
+        details["checks"]["ai_presence_bonus"] = 15
     else:
         details["checks"]["ai_presence_bonus"] = 0
         details["findings"].append("brand_not_in_ai")
 
-    # 30 pts — ranking bonus if brand is ranked #1
+    # 20 pts — ranking bonus if brand is ranked #1
     total_possible_firsts = len(probe_prompts) * 3  # 3 providers per probe
     if total_possible_firsts > 0 and total_ranked_first > 0:
         ranking_ratio = total_ranked_first / total_possible_firsts
-        ranking_bonus = 30.0 * ranking_ratio
+        ranking_bonus = 20.0 * ranking_ratio
         score += ranking_bonus
         details["checks"]["ranking_bonus"] = round(ranking_bonus, 1)
         details["checks"]["ranked_first_total"] = total_ranked_first
@@ -559,6 +719,79 @@ def score_ai_visibility(crawl: CrawlResult) -> tuple[float, dict, list[dict]]:
     else:
         details["checks"]["ranking_bonus"] = 0
         details["checks"]["ranked_first_total"] = 0
+
+    # ── Part 2: Web Presence Checks (40 pts) ─────────────────────────────
+    # Google (10 pts) + Reddit (10 pts) + Medium (10 pts) + Brand Site (10 pts)
+
+    # Run web presence checks in parallel
+    web_results = {}
+
+    def _run_checks():
+        nonlocal web_results
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            future_google = executor.submit(_check_google_presence, brand_name, domain)
+            future_reddit = executor.submit(_check_reddit_presence, brand_name, brand_aliases)
+            future_medium = executor.submit(_check_medium_presence, brand_name, brand_aliases)
+            future_site = executor.submit(_check_brand_website_quality, crawl)
+
+            web_results["google"] = future_google.result()
+            web_results["reddit"] = future_reddit.result()
+            web_results["medium"] = future_medium.result()
+            web_results["brand_site"] = future_site.result()
+
+    _run_checks()
+
+    # Google presence (10 pts)
+    google_data = web_results.get("google", {})
+    details["checks"]["google_presence"] = google_data
+    google_pts = 0.0
+    if google_data.get("found"):
+        google_pts += 5.0
+    if "google_ai_overview" in google_data.get("signals", []):
+        google_pts += 5.0
+    if google_pts == 0:
+        details["findings"].append("not_in_google_ai")
+    score += google_pts
+
+    # Reddit presence (10 pts)
+    reddit_data = web_results.get("reddit", {})
+    details["checks"]["reddit_presence"] = reddit_data
+    reddit_pts = 0.0
+    if reddit_data.get("found"):
+        reddit_mentions = reddit_data.get("mentions", 0)
+        if reddit_mentions >= 5:
+            reddit_pts = 10.0
+        elif reddit_mentions >= 3:
+            reddit_pts = 7.0
+        elif reddit_mentions >= 1:
+            reddit_pts = 4.0
+    if reddit_pts == 0:
+        details["findings"].append("no_reddit_ai_presence")
+    score += reddit_pts
+
+    # Medium presence (10 pts)
+    medium_data = web_results.get("medium", {})
+    details["checks"]["medium_presence"] = medium_data
+    medium_pts = 0.0
+    if medium_data.get("found"):
+        articles = medium_data.get("articles", 0)
+        if articles >= 5:
+            medium_pts = 10.0
+        elif articles >= 2:
+            medium_pts = 7.0
+        elif articles >= 1:
+            medium_pts = 4.0
+    if medium_pts == 0:
+        details["findings"].append("no_medium_ai_presence")
+    score += medium_pts
+
+    # Brand website quality (10 pts)
+    site_data = web_results.get("brand_site", {})
+    details["checks"]["brand_site_quality"] = site_data
+    site_pts = min(10.0, site_data.get("score", 0))
+    if site_pts < 6:
+        details["findings"].append("weak_brand_site")
+    score += site_pts
 
     score = safe_score(score)
     details["score"] = score

@@ -292,9 +292,15 @@ RECOMMENDATION_RULES = {
     "no_author": {
         "pillar": "eeat",
         "priority": "high",
-        "title": "Add Author Attribution",
-        "description": "No author name found. E-E-A-T signals are critical for AI trust and citation.",
-        "action": 'Add visible author name using <span class="author">Author Name</span>, a meta tag <meta name="author" content="...">, or author property in Article JSON-LD.',
+        "title": "Add Author Attribution (Copy & Paste)",
+        "description": "No author name found. E-E-A-T signals are critical for AI trust and citation. AI models deprioritize content without clear authorship.",
+        "action": "STEP 1 — Add a visible author byline to your page. Copy this HTML:\n"
+                  '<p class="author">By <strong>[Your Name]</strong>, [Your Title] at [Your Brand]</p>\n\n'
+                  "STEP 2 — Add the meta tag in your page <head>:\n"
+                  '<meta name="author" content="[Your Name]">\n\n'
+                  "STEP 3 — If you have Article schema, add the author property:\n"
+                  '"author": {"@type": "Person", "name": "[Your Name]", "jobTitle": "[Your Title]", "url": "https://yoursite.com/about"}\n\n'
+                  "PRO TIP: Use your real name and title — AI models cross-reference author names across the web to verify expertise.",
         "impact_estimate": "Could improve your score by ~15 points",
         "category": "eeat",
     },
@@ -302,8 +308,19 @@ RECOMMENDATION_RULES = {
         "pillar": "eeat",
         "priority": "medium",
         "title": "Add Author Bio with Credentials",
-        "description": "No author bio found. Author credentials and experience significantly boost AI trust.",
-        "action": 'Add: <div class="author-bio"><strong>About the Author:</strong> [Name] is a [title] with [X years] experience in [field].</div>',
+        "description": "No author bio found. Author credentials and experience significantly boost AI trust. This is one of the strongest E-E-A-T signals.",
+        "action": "STEP 1 — Add an author bio section. Copy this HTML template:\n"
+                  '<div class="author-bio">\n'
+                  '  <img src="/images/author.jpg" alt="[Name]" width="64" height="64">\n'
+                  '  <div>\n'
+                  '    <strong>[Your Name]</strong>\n'
+                  '    <p>[Your Name] is a [title/role] with [X] years of experience in [field]. '
+                  'They have [key credential, e.g., "published 50+ articles on AI optimization" '
+                  'or "helped 200+ businesses improve their search visibility"]. '
+                  'Connect on <a href="https://linkedin.com/in/you">LinkedIn</a>.</p>\n'
+                  '  </div>\n'
+                  '</div>\n\n'
+                  "STEP 2 — Place it at the bottom of your article, above the comments section.",
         "impact_estimate": "Could improve your score by ~10 points",
         "category": "eeat",
     },
@@ -365,8 +382,23 @@ RECOMMENDATION_RULES = {
         "pillar": "eeat",
         "priority": "high",
         "title": "Add First-Hand Experience Signals",
-        "description": "Your content lacks first-hand experience indicators. The first 'E' in E-E-A-T stands for Experience.",
-        "action": "Add personal experience: 'In our testing...', 'We found that...', 'Based on our experience...'. Include case studies, original data, screenshots, or hands-on reviews.",
+        "description": "Your content lacks first-hand experience indicators. The first 'E' in E-E-A-T stands for Experience. AI models strongly prefer content from people who've actually done the thing.",
+        "action": "STEP 1 — Add experience phrases throughout your content:\n"
+                  "• 'In our testing of 50+ tools, we found that...'\n"
+                  "• 'After implementing this for 6 months, the results were...'\n"
+                  "• 'We built this system for 200+ clients and learned that...'\n"
+                  "• 'Based on our hands-on experience with...'\n\n"
+                  "STEP 2 — Add a case study section:\n"
+                  "• Include specific numbers: 'Client X saw a 45% increase in...'\n"
+                  "• Add before/after comparisons\n"
+                  "• Include screenshots or data visualizations\n\n"
+                  "STEP 3 — Add 'Why Trust This Content?' box:\n"
+                  '<div class="trust-box">\n'
+                  "  <strong>Why trust this guide?</strong>\n"
+                  "  <p>This is based on [X years] of experience and [Y] real implementations. "
+                  "We've tested every recommendation on live projects.</p>\n"
+                  "</div>\n\n"
+                  "PRO TIP: Screenshots, original data tables, and 'lessons learned' sections are the strongest experience signals for AI.",
         "impact_estimate": "Could improve your score by ~10 points",
         "category": "eeat",
     },
@@ -402,19 +434,56 @@ RECOMMENDATION_RULES = {
     "no_llms_txt": {
         "pillar": "technical",
         "priority": "high",
-        "title": "Create llms.txt File",
-        "description": "No llms.txt found. This emerging standard tells AI models what your site is about.",
-        "action": "Create llms.txt at your domain root. Include: site name, description, key pages, and contact info.",
-        "impact_estimate": "Could improve your score by ~20 points",
+        "title": "Create llms.txt File (2-Minute Fix)",
+        "description": "No llms.txt found. This emerging standard tells AI models what your site is about. It's a quick win — just create one text file.",
+        "action": "STEP 1 — Create the file:\n"
+                  "Create a file called llms.txt at your website root (e.g., https://yoursite.com/llms.txt)\n\n"
+                  "STEP 2 — Paste this template:\n"
+                  "# [Your Brand Name]\n"
+                  "\n"
+                  "## About\n"
+                  "[One paragraph describing what your company does]\n"
+                  "\n"
+                  "## Key Pages\n"
+                  "- Homepage: https://yoursite.com/\n"
+                  "- About: https://yoursite.com/about\n"
+                  "- Products: https://yoursite.com/products\n"
+                  "- Blog: https://yoursite.com/blog\n"
+                  "- Contact: https://yoursite.com/contact\n"
+                  "\n"
+                  "## Contact\n"
+                  "- Email: hello@yoursite.com\n"
+                  "- Twitter: @yourbrand\n\n"
+                  "STEP 3 — Verify:\n"
+                  "• Visit https://yoursite.com/llms.txt in your browser\n"
+                  "• It should display as plain text",
+        "impact_estimate": "Could improve your score by ~20 points (2-minute fix)",
         "category": "technical",
     },
     "ai_bots_blocked": {
         "pillar": "technical",
         "priority": "critical",
-        "title": "Unblock AI Crawlers in robots.txt",
-        "description": "Your robots.txt blocks AI crawlers. This prevents AI models from indexing your content.",
-        "action": "Update robots.txt to allow AI bots:\nUser-agent: GPTBot\nAllow: /\nUser-agent: Google-Extended\nAllow: /\nUser-agent: anthropic-ai\nAllow: /",
-        "impact_estimate": "Could improve your score by ~20 points",
+        "title": "Unblock AI Crawlers in robots.txt (Instant Fix)",
+        "description": "Your robots.txt blocks AI crawlers. This prevents ChatGPT, Perplexity, Claude, and Gemini from indexing your content. This is the #1 reason sites are invisible to AI.",
+        "action": "STEP 1 — Open your robots.txt file (usually at /robots.txt in your website root)\n\n"
+                  "STEP 2 — Add these lines to allow AI crawlers:\n"
+                  "User-agent: GPTBot\n"
+                  "Allow: /\n"
+                  "\n"
+                  "User-agent: Google-Extended\n"
+                  "Allow: /\n"
+                  "\n"
+                  "User-agent: anthropic-ai\n"
+                  "Allow: /\n"
+                  "\n"
+                  "User-agent: ClaudeBot\n"
+                  "Allow: /\n"
+                  "\n"
+                  "User-agent: PerplexityBot\n"
+                  "Allow: /\n\n"
+                  "STEP 3 — Remove any Disallow rules that block these bots\n\n"
+                  "PRO TIP: If you use Cloudflare, check Security > Bots to ensure AI bots aren't blocked at the WAF level.",
+        "impact_estimate": "Critical — could recover ~20 points immediately",
         "category": "technical",
     },
     "no_sitemap": {
@@ -476,29 +545,208 @@ RECOMMENDATION_RULES = {
     "brand_not_in_ai": {
         "pillar": "entity",
         "priority": "high",
-        "title": "Improve AI Brand Visibility",
-        "description": "Your brand doesn't appear in AI responses for your category.",
-        "action": "Get mentioned in third-party publications, review sites, and industry directories to build brand authority.",
-        "impact_estimate": "Could improve your score by ~20 points",
+        "title": "Get Your Brand Into AI Responses",
+        "description": "Your brand doesn't appear in AI responses (ChatGPT, Perplexity, Gemini) for your category. This is the ultimate GEO goal — here's the playbook.",
+        "action": "STEP 1 — Get listed on directories AI models index:\n"
+                  "• Product Hunt (producthunt.com) — submit your product\n"
+                  "• G2 Reviews (g2.com) — claim your profile, ask customers for reviews\n"
+                  "• Capterra / GetApp — create your listing\n"
+                  "• Crunchbase — add your company profile\n"
+                  "• AlternativeTo — add your product as an alternative\n\n"
+                  "STEP 2 — Create comparison content:\n"
+                  "• Write blog posts: '[Your Brand] vs [Competitor]'\n"
+                  "• Create a 'Why [Your Brand]' page with data\n"
+                  "• AI models heavily cite comparison content\n\n"
+                  "STEP 3 — Get press mentions:\n"
+                  "• Submit to HARO (Help A Reporter Out)\n"
+                  "• Contribute guest posts to industry blogs\n"
+                  "• Issue press releases for milestones\n\n"
+                  "STEP 4 — Post on Reddit and Medium (see other recommendations)\n\n"
+                  "PRO TIP: AI models update knowledge every few weeks. Changes you make today can appear in AI responses within 2-4 weeks.",
+        "impact_estimate": "Could improve entity + AI visibility score by ~20 points",
         "category": "entity",
     },
     "no_social_profiles": {
         "pillar": "entity",
-        "priority": "low",
-        "title": "Link Social Media Profiles",
-        "description": "No social media profile links found on your page.",
-        "action": "Link social profiles (LinkedIn, Twitter/X, Facebook) from your page footer to strengthen brand entity signals.",
+        "priority": "high",
+        "title": "Add Social Profile Links (5-Minute Fix)",
+        "description": "No social media profile links found. Social profiles strengthen your brand's entity graph — AI models use them to verify your brand exists and is active.",
+        "action": "STEP 1 — Add social links to your page footer. Copy this HTML:\n"
+                  '<div class="social-links">\n'
+                  '  <a href="https://linkedin.com/company/yourbrand" rel="me">LinkedIn</a>\n'
+                  '  <a href="https://twitter.com/yourbrand" rel="me">Twitter/X</a>\n'
+                  '  <a href="https://github.com/yourbrand" rel="me">GitHub</a>\n'
+                  '</div>\n\n'
+                  "STEP 2 — Add sameAs to your Organization schema:\n"
+                  '"sameAs": [\n'
+                  '  "https://linkedin.com/company/yourbrand",\n'
+                  '  "https://twitter.com/yourbrand",\n'
+                  '  "https://github.com/yourbrand"\n'
+                  ']\n\n'
+                  "PRO TIP: LinkedIn and GitHub carry the most weight for B2B/SaaS brands.",
         "impact_estimate": "Could improve your score by ~10 points",
         "category": "entity",
     },
     "no_wikipedia_presence": {
         "pillar": "entity",
         "priority": "medium",
-        "title": "Build Wikipedia Presence",
-        "description": "Your brand was not found on Wikipedia. Wikipedia presence strongly influences AI knowledge.",
-        "action": "Work toward Wikipedia notability through press coverage, awards, and industry recognition.",
-        "impact_estimate": "Could improve your score by ~25 points",
+        "title": "Build Toward Wikipedia Presence",
+        "description": "Your brand was not found on Wikipedia. Wikipedia is the #1 source AI models use to verify entities. Having a Wikipedia page massively boosts AI brand recognition.",
+        "action": "STEP 1 — Build notability (Wikipedia requires 'notability'):\n"
+                  "• Get featured in 3+ independent reliable sources (news sites, industry publications)\n"
+                  "• Aim for press coverage that isn't just press releases\n"
+                  "• Win industry awards or get certifications\n\n"
+                  "STEP 2 — While building notability, get on Wikipedia-adjacent sites:\n"
+                  "• Wikidata (wikidata.org) — easier to create entries, still indexed by AI\n"
+                  "• Crunchbase — often cited by AI models as an alternative\n"
+                  "• LinkedIn Company Page — verified brand presence\n\n"
+                  "STEP 3 — Once you have 3+ independent sources:\n"
+                  "• Request creation at Wikipedia's 'Articles for Creation'\n"
+                  "• Do NOT write it yourself (conflict of interest)\n"
+                  "• Hire an experienced Wikipedia editor\n\n"
+                  "PRO TIP: Even a Wikidata entry (much easier than Wikipedia) helps AI models recognize your brand as a real entity.",
+        "impact_estimate": "Could improve your score by ~25 points (long-term strategy)",
         "category": "entity",
+    },
+
+    # ── Community Presence (Reddit & Medium) ──────────────────────────────
+    "no_reddit_presence": {
+        "pillar": "entity",
+        "priority": "high",
+        "title": "Post on Reddit to Boost Visibility",
+        "description": "No Reddit presence detected. Reddit discussions are heavily indexed by AI models — Google, ChatGPT, and Perplexity all surface Reddit content. A single well-placed post can generate ongoing AI citations.",
+        "action": "Post on Reddit to get your brand mentioned in AI-indexed discussions:\n\n"
+                  "STEP 1 — Find the right subreddits:\n"
+                  "• Search reddit.com for your industry keywords\n"
+                  "• Good subreddits: r/SaaS, r/startups, r/webdev, r/smallbusiness, r/marketing, r/Entrepreneur, or niche subreddits for your industry\n\n"
+                  "STEP 2 — Create a valuable post (NOT promotional):\n"
+                  "• Title: \"How we solved [problem] at [Your Brand] — lessons learned\"\n"
+                  "• Share a genuine story, case study, or insight\n"
+                  "• Include specific data: \"We improved X by 40% in 3 months\"\n"
+                  "• End with a question to encourage discussion\n\n"
+                  "STEP 3 — Engage with comments:\n"
+                  "• Reply to every comment within 24 hours\n"
+                  "• Add more context and data when asked\n\n"
+                  "PRO TIP: Answer questions in relevant threads where your product/expertise is a natural fit. This builds organic mentions that AI models pick up.",
+        "impact_estimate": "Could improve entity score by ~10 points + ongoing AI citations",
+        "category": "entity",
+    },
+    "no_medium_presence": {
+        "pillar": "entity",
+        "priority": "high",
+        "title": "Publish on Medium for AI Discovery",
+        "description": "No Medium presence detected. Medium articles rank highly in AI training data and search results. Publishing thought leadership on Medium creates authoritative backlinks and AI-indexable content about your brand.",
+        "action": "Publish on Medium to create AI-discoverable brand content:\n\n"
+                  "STEP 1 — Create a Medium account:\n"
+                  "• Use your real name + company title for E-E-A-T\n"
+                  "• Add a bio mentioning your brand and expertise\n\n"
+                  "STEP 2 — Write a high-value article:\n"
+                  "• Title: \"[Year] Guide to [Your Topic] — What Actually Works\"\n"
+                  "• Include statistics, citations, and data points\n"
+                  "• Mention your brand naturally (2-3 times max)\n"
+                  "• Add relevant tags to reach the right audience\n\n"
+                  "STEP 3 — Submit to publications:\n"
+                  "• Submit to relevant Medium publications (Towards Data Science, Better Programming, The Startup, etc.)\n"
+                  "• Publications amplify reach 5-10x\n\n"
+                  "STEP 4 — Cross-link:\n"
+                  "• Link from Medium article to your website\n"
+                  "• Link from your website to the Medium article\n"
+                  "• This creates a citation loop that AI models recognize",
+        "impact_estimate": "Could improve entity score by ~10 points + brand authority",
+        "category": "entity",
+    },
+
+    # ── AI Visibility — Web Presence ──────────────────────────────────────
+    "not_in_google_ai": {
+        "pillar": "ai_visibility",
+        "priority": "high",
+        "title": "Get Into Google AI Overviews",
+        "description": "Your brand doesn't appear in Google's AI Overview (SGE) results. Google AI Overviews are shown above traditional search results and are the first thing users see.",
+        "action": "STEP 1 — Optimize for featured snippets (Google AI pulls from these):\n"
+                  "• Structure content as Q&A — ask a question in an H2, answer immediately below\n"
+                  "• Use tables, lists, and concise definitions\n"
+                  "• Add FAQ schema markup\n\n"
+                  "STEP 2 — Target 'People Also Ask' queries:\n"
+                  "• Search your main keywords on Google\n"
+                  "• Note the 'People Also Ask' questions\n"
+                  "• Create content that directly answers each one\n\n"
+                  "STEP 3 — Build topical authority:\n"
+                  "• Create a content cluster: 1 pillar page + 5-10 supporting articles\n"
+                  "• Interlink all pages in the cluster\n"
+                  "• Cover the topic comprehensively\n\n"
+                  "PRO TIP: Google AI Overviews heavily favor content from sites with strong E-E-A-T signals. Fix your E-E-A-T issues first.",
+        "impact_estimate": "Could improve AI visibility score by ~10 points",
+        "category": "ai_visibility",
+    },
+    "no_reddit_ai_presence": {
+        "pillar": "ai_visibility",
+        "priority": "high",
+        "title": "Build Reddit Presence for AI Discovery",
+        "description": "Your brand has no presence on Reddit. AI models (ChatGPT, Perplexity, Gemini) heavily index Reddit discussions. Brands mentioned positively on Reddit get cited in AI responses.",
+        "action": "STEP 1 — Find your subreddits:\n"
+                  "• Search reddit.com for your industry keywords\n"
+                  "• Join 3-5 relevant subreddits\n"
+                  "• Lurk for 1 week to understand the culture\n\n"
+                  "STEP 2 — Start contributing value:\n"
+                  "• Answer questions where your expertise is relevant\n"
+                  "• Share insights without being promotional\n"
+                  "• Build karma and reputation\n\n"
+                  "STEP 3 — Create a showcase post:\n"
+                  "• Title: 'How we solved [problem] — lessons learned'\n"
+                  "• Share genuine data and results\n"
+                  "• Engage with every comment\n\n"
+                  "STEP 4 — Maintain presence:\n"
+                  "• Comment on relevant threads weekly\n"
+                  "• Share industry insights monthly\n"
+                  "• AI models re-index Reddit frequently\n\n"
+                  "PRO TIP: A single popular Reddit thread mentioning your brand can appear in AI responses for months.",
+        "impact_estimate": "Could improve AI visibility score by ~10 points",
+        "category": "ai_visibility",
+    },
+    "no_medium_ai_presence": {
+        "pillar": "ai_visibility",
+        "priority": "high",
+        "title": "Publish on Medium for AI Citations",
+        "description": "Your brand has no Medium presence. Medium articles are heavily indexed by AI models and frequently cited in AI-generated responses. This is one of the fastest ways to get into AI search results.",
+        "action": "STEP 1 — Create your Medium profile:\n"
+                  "• Use your real name + company credentials\n"
+                  "• Write a bio that establishes expertise\n\n"
+                  "STEP 2 — Publish your first article:\n"
+                  "• Title: '[Year] Guide to [Your Topic]'\n"
+                  "• Include statistics, citations, and expert insights\n"
+                  "• Mention your brand naturally 2-3 times\n"
+                  "• Add 5+ relevant tags\n\n"
+                  "STEP 3 — Submit to a publication:\n"
+                  "• 'The Startup', 'Better Programming', 'Towards Data Science'\n"
+                  "• Publications multiply reach 5-10x\n\n"
+                  "STEP 4 — Cross-link for maximum AI impact:\n"
+                  "• Link Medium article → your website\n"
+                  "• Link your website → Medium article\n"
+                  "• Add Medium link to your social profiles\n\n"
+                  "PRO TIP: Medium articles rank on Google within days, and AI models index them within 2-4 weeks.",
+        "impact_estimate": "Could improve AI visibility score by ~10 points",
+        "category": "ai_visibility",
+    },
+    "weak_brand_site": {
+        "pillar": "ai_visibility",
+        "priority": "medium",
+        "title": "Strengthen Your Brand Website Signals",
+        "description": "Your website is missing key pages that AI models expect from a credible brand (About, Contact, Blog, Social links). These are trust signals that determine whether AI cites your content.",
+        "action": "STEP 1 — Add essential pages (if missing):\n"
+                  "• /about — Who you are, your mission, your team\n"
+                  "• /contact — Email, phone, address, contact form\n"
+                  "• /blog — Regular content shows you're active and authoritative\n\n"
+                  "STEP 2 — Add footer links:\n"
+                  "• Social media profiles (LinkedIn, Twitter, GitHub)\n"
+                  "• Privacy policy and terms of service\n"
+                  "• About, Contact, Blog links\n\n"
+                  "STEP 3 — Ensure content depth:\n"
+                  "• Homepage should have 800+ words of meaningful content\n"
+                  "• Explain what you do, who you serve, and why you're different\n"
+                  "• Include testimonials or case studies\n\n"
+                  "PRO TIP: AI models check for these pages to verify you're a legitimate entity. Missing them = lower trust = fewer citations.",
+        "impact_estimate": "Could improve AI visibility score by ~5 points",
+        "category": "ai_visibility",
     },
 
     # ── Crawl failure findings ────────────────────────────────────────────
@@ -558,33 +806,41 @@ IMPACT_SCORES = {
     "incomplete_blogposting_schema": 25,
     "incomplete_newsarticle_schema": 25,
     "incomplete_howto_schema": 20,
-    # E-E-A-T
-    "no_citations_eeat": 80,    # Overlaps with content citations
-    "few_external_citations": 75,
-    "no_trust_links": 70,
-    "no_first_hand_experience": 68,
-    "low_authority": 65,
-    "low_trust_signals": 65,
-    "no_about_page": 50,
-    "no_author": 60,
-    "no_author_bio": 40,
-    "no_expertise_indicators": 45,
-    "low_source_diversity": 35,
-    "no_publish_date": 20,
-    "no_updated_date": 15,
-    # Technical
-    "ai_bots_blocked": 92,      # Blocking AI = zero visibility
-    "meta_noindex": 90,         # Blocking indexing = zero visibility
-    "no_llms_txt": 60,
-    "no_https": 55,
-    "slow_load_time": 45,
-    "no_sitemap": 35,
-    "no_viewport": 20,
-    "no_canonical": 20,
-    # Entity
-    "brand_not_in_ai": 65,
-    "no_wikipedia_presence": 50,
-    "no_social_profiles": 15,
+    # E-E-A-T (boosted — actionable pillar)
+    "no_citations_eeat": 88,    # Overlaps with content citations
+    "few_external_citations": 82,
+    "no_trust_links": 78,
+    "no_first_hand_experience": 76,
+    "low_authority": 74,
+    "low_trust_signals": 74,
+    "no_author": 72,
+    "no_about_page": 65,
+    "no_author_bio": 55,
+    "no_expertise_indicators": 60,
+    "low_source_diversity": 45,
+    "no_publish_date": 35,
+    "no_updated_date": 25,
+    # Technical (boosted — actionable pillar, instant fixes)
+    "ai_bots_blocked": 97,      # Blocking AI = zero visibility
+    "meta_noindex": 95,         # Blocking indexing = zero visibility
+    "no_llms_txt": 80,          # Quick win — create a file
+    "no_https": 70,
+    "slow_load_time": 60,
+    "no_sitemap": 50,
+    "no_viewport": 35,
+    "no_canonical": 35,
+    # Entity (boosted — actionable pillar)
+    "brand_not_in_ai": 78,
+    "no_wikipedia_presence": 62,
+    "no_social_profiles": 40,
+    # Community presence (entity sub-actions)
+    "no_reddit_presence": 68,   # Reddit indexed by AI heavily
+    "no_medium_presence": 64,   # Medium = brand authority
+    # AI Visibility — Web Presence
+    "not_in_google_ai": 82,     # Google AI Overview is #1 discovery
+    "no_reddit_ai_presence": 72, # Reddit feeds AI responses
+    "no_medium_ai_presence": 66, # Medium = AI-indexed authority
+    "weak_brand_site": 48,       # Brand site quality matters
     # Crawl failures
     "crawl_blocked_403": 98,    # Can't be indexed at all
     "crawl_timeout": 96,        # Too slow for any crawler
