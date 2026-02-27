@@ -578,6 +578,37 @@ def _process_due_blog_jobs(config: BlogAutomationConfig, limit: int = 20) -> int
     return processed
 
 
+class HealthCheckView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = []  
+
+    def get(self, request):
+        from django.db import connection
+        from django.conf import settings
+        
+        health_status = {
+            "status": "healthy",
+            "service": "geo-be",
+            "timestamp": timezone.now().isoformat(),
+        }
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+            health_status["database"] = "connected"
+        except Exception as e:
+            health_status["status"] = "unhealthy"
+            health_status["database"] = f"error: {str(e)}"
+            return Response(health_status, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        try:
+            from django.core.cache import cache
+            cache.set("health_check", "ok", 10)
+            cache_value = cache.get("health_check")
+            health_status["cache"] = "connected" if cache_value == "ok" else "degraded"
+        except Exception as e:
+            health_status["cache"] = f"error: {str(e)}"
+        
+        return Response(health_status, status=status.HTTP_200_OK)
+
 class StartAnalysisView(APIView):
     permission_classes = [AllowAny]
 
@@ -692,8 +723,8 @@ class ExportPDFView(APIView):
 
         try:
             from django.template.loader import render_to_string
-            from xhtml2pdf import pisa
-            from io import BytesIO
+            from weasyprint import HTML
+            import io
 
             main_page = run.page_scores.filter(url=run.url).first()
             recommendations = run.recommendations.all()
@@ -708,16 +739,11 @@ class ExportPDFView(APIView):
             }
 
             html_string = render_to_string("analyzer/report.html", context)
-            result = BytesIO()
-            pdf = pisa.CreatePDF(html_string, dest=result)
+            
+            # Generate PDF with WeasyPrint
+            pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri('/')).write_pdf()
 
-            if pdf.err:
-                return Response(
-                    {"error": "PDF generation failed."},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                )
-
-            response = HttpResponse(result.getvalue(), content_type="application/pdf")
+            response = HttpResponse(pdf_file, content_type="application/pdf")
             response["Content-Disposition"] = (
                 f'attachment; filename="geo-analysis-{run.id}.pdf"'
             )
@@ -725,7 +751,7 @@ class ExportPDFView(APIView):
 
         except ImportError:
             return Response(
-                {"error": "PDF export requires xhtml2pdf package."},
+                {"error": "PDF export requires weasyprint package."},
                 status=status.HTTP_501_NOT_IMPLEMENTED,
             )
 

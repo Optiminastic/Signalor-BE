@@ -6,6 +6,7 @@ from .views import (
     AnalysisRunStatusView,
     ExportPDFView,
     StartAnalysisView,
+    HealthCheckView,  # Add this import
     # Gamification views
     UserGamificationView,
     ActionTemplatesView,
@@ -27,7 +28,7 @@ from .views import (
 app_name = "analyzer"
 
 urlpatterns = [
-    # Analysis endpoints
+    path("health/", HealthCheckView.as_view(), name="health-check"),
     path("analyze/", StartAnalysisView.as_view(), name="start-analysis"),
     path("runs/", AnalysisRunListView.as_view(), name="run-list"),
     path("runs/<int:run_id>/", AnalysisRunDetailView.as_view(), name="run-detail"),
