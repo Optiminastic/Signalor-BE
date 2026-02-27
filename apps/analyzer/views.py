@@ -33,6 +33,37 @@ from .tasks import start_analysis_task
 logger = logging.getLogger("apps")
 
 
+class HealthCheckView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = []  
+
+    def get(self, request):
+        from django.db import connection
+        from django.conf import settings
+        
+        health_status = {
+            "status": "healthy",
+            "service": "geo-be",
+            "timestamp": timezone.now().isoformat(),
+        }
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+            health_status["database"] = "connected"
+        except Exception as e:
+            health_status["status"] = "unhealthy"
+            health_status["database"] = f"error: {str(e)}"
+            return Response(health_status, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        try:
+            from django.core.cache import cache
+            cache.set("health_check", "ok", 10)
+            cache_value = cache.get("health_check")
+            health_status["cache"] = "connected" if cache_value == "ok" else "degraded"
+        except Exception as e:
+            health_status["cache"] = f"error: {str(e)}"
+        
+        return Response(health_status, status=status.HTTP_200_OK)
+
 class StartAnalysisView(APIView):
     permission_classes = [AllowAny]
 
