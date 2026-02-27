@@ -18,3 +18,4 @@ google-auth-oauthlib>=1.2.0
 google-analytics-data>=0.18.0
 google-analytics-admin>=0.22.0
 googlesearch-python>=1.2.0
+gunicorn>=21.2.0
