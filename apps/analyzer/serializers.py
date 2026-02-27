@@ -9,6 +9,8 @@ from .models import (
     Recommendation,
     UserAction,
     UserGamification,
+    BlogAutomationConfig,
+    BlogAutomationJob,
     ACHIEVEMENTS_INFO,
     ACTION_TEMPLATES,
 )
@@ -226,3 +228,49 @@ class ActionStatsSerializer(serializers.Serializer):
     level_name = serializers.CharField()
     level_progress = serializers.FloatField()
     recent_achievements = AchievementSerializer(many=True)
+
+
+class BlogAutomationConfigSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BlogAutomationConfig
+        fields = [
+            "id",
+            "user_email",
+            "site_url",
+            "topic",
+            "keywords",
+            "frequency_per_day",
+            "publish_time",
+            "mode",
+            "publish_provider",
+            "is_active",
+            "last_queued_for",
+            "created_at",
+            "updated_at",
+        ]
+
+
+class BlogAutomationJobSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BlogAutomationJob
+        fields = [
+            "id",
+            "status",
+            "scheduled_for",
+            "provider",
+            "mode",
+            "topic",
+            "keywords",
+            "title",
+            "slug",
+            "meta_description",
+            "excerpt",
+            "content_markdown",
+            "tags",
+            "external_post_id",
+            "external_post_url",
+            "published_at",
+            "error_message",
+            "created_at",
+            "updated_at",
+        ]

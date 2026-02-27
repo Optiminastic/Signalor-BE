@@ -1,3 +1,5 @@
+from datetime import time
+
 from django.db import models
 
 
@@ -564,3 +566,141 @@ ACTION_TEMPLATES = {
         "category": "technical",
     },
 }
+
+
+class BlogAutomationConfig(models.Model):
+    class PublishMode(models.TextChoices):
+        AUTO_PUBLISH = "auto_publish", "Auto Publish"
+        REVIEW_BEFORE_PUBLISH = "review_before_publish", "Review Before Publish"
+
+    class PublishProvider(models.TextChoices):
+        WORDPRESS = "wordpress", "WordPress"
+        SHOPIFY = "shopify", "Shopify"
+        NONE = "none", "None"
+
+    user_email = models.EmailField(db_index=True)
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="blog_automation_configs",
+    )
+    analysis_run = models.ForeignKey(
+        AnalysisRun,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="blog_automation_configs",
+    )
+
+    site_url = models.URLField(max_length=2048)
+    topic = models.CharField(max_length=255, default="AI search visibility strategy")
+    keywords = models.JSONField(default=list, blank=True)
+
+    frequency_per_day = models.PositiveSmallIntegerField(default=1)
+    publish_time = models.TimeField(default=time(hour=9, minute=0))
+    mode = models.CharField(
+        max_length=30,
+        choices=PublishMode.choices,
+        default=PublishMode.REVIEW_BEFORE_PUBLISH,
+    )
+    publish_provider = models.CharField(
+        max_length=20,
+        choices=PublishProvider.choices,
+        default=PublishProvider.NONE,
+    )
+    is_active = models.BooleanField(default=True)
+    last_queued_for = models.DateField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user_email", "site_url"],
+                name="unique_blog_config_per_user_site",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["user_email", "is_active"]),
+        ]
+
+    def __str__(self):
+        return f"BlogConfig<{self.user_email} {self.site_url}>"
+
+
+class BlogAutomationJob(models.Model):
+    class Status(models.TextChoices):
+        SCHEDULED = "scheduled", "Scheduled"
+        DRAFT = "draft", "Draft"
+        NEEDS_REVIEW = "needs_review", "Needs Review"
+        PUBLISHED = "published", "Published"
+        FAILED = "failed", "Failed"
+
+    config = models.ForeignKey(
+        BlogAutomationConfig,
+        on_delete=models.CASCADE,
+        related_name="jobs",
+    )
+    user_email = models.EmailField(db_index=True)
+    analysis_run = models.ForeignKey(
+        AnalysisRun,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="blog_automation_jobs",
+    )
+
+    scheduled_for = models.DateTimeField(db_index=True)
+    provider = models.CharField(
+        max_length=20,
+        choices=BlogAutomationConfig.PublishProvider.choices,
+        default=BlogAutomationConfig.PublishProvider.NONE,
+    )
+    mode = models.CharField(
+        max_length=30,
+        choices=BlogAutomationConfig.PublishMode.choices,
+        default=BlogAutomationConfig.PublishMode.REVIEW_BEFORE_PUBLISH,
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.SCHEDULED,
+    )
+
+    topic = models.CharField(max_length=255, blank=True, default="")
+    keywords = models.JSONField(default=list, blank=True)
+
+    title = models.CharField(max_length=300, blank=True, default="")
+    slug = models.CharField(max_length=120, blank=True, default="")
+    meta_description = models.CharField(max_length=180, blank=True, default="")
+    excerpt = models.TextField(blank=True, default="")
+    content_markdown = models.TextField(blank=True, default="")
+    tags = models.JSONField(default=list, blank=True)
+
+    external_post_id = models.CharField(max_length=120, blank=True, default="")
+    external_post_url = models.URLField(max_length=2048, blank=True, default="")
+    published_at = models.DateTimeField(null=True, blank=True)
+    error_message = models.TextField(blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["scheduled_for"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["config", "scheduled_for"],
+                name="unique_scheduled_slot_per_blog_config",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["user_email", "status"]),
+            models.Index(fields=["scheduled_for", "status"]),
+        ]
+
+    def __str__(self):
+        return f"BlogJob<{self.user_email} {self.status} {self.scheduled_for}>"

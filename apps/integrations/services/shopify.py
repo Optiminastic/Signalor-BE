@@ -269,3 +269,85 @@ def _compute_daily_trends(orders: list, start_date: date, end_date: date) -> lis
         d["revenue"] = str(d["revenue"])
 
     return result
+
+
+def create_shopify_blog_article(
+    integration,
+    title: str,
+    content_html: str,
+    summary_html: str = "",
+    publish: bool = False,
+    tags: list[str] | None = None,
+) -> dict:
+    """
+    Create a Shopify blog article.
+    Requires write_content scope on the app/token.
+    """
+    shop_domain = integration.metadata.get("shop_domain", "")
+    access_token = integration.get_access_token()
+    scope = str(integration.metadata.get("scope", ""))
+
+    if "write_content" not in scope:
+        raise ValueError(
+            "Shopify token missing write_content scope. Reconnect Shopify app with write_content."
+        )
+
+    headers = {
+        "X-Shopify-Access-Token": access_token,
+        "Content-Type": "application/json",
+    }
+
+    blogs_url = f"https://{shop_domain}/admin/api/{API_VERSION}/blogs.json?limit=1"
+    blogs_resp = requests.get(blogs_url, headers=headers, timeout=20)
+    if blogs_resp.status_code != 200:
+        raise ValueError(f"Failed to fetch Shopify blogs (HTTP {blogs_resp.status_code}).")
+
+    blogs = blogs_resp.json().get("blogs", [])
+    if blogs:
+        blog_id = blogs[0].get("id")
+    else:
+        create_blog_url = f"https://{shop_domain}/admin/api/{API_VERSION}/blogs.json"
+        create_blog_payload = {"blog": {"title": "News"}}
+        create_blog_resp = requests.post(
+            create_blog_url,
+            headers=headers,
+            json=create_blog_payload,
+            timeout=20,
+        )
+        if create_blog_resp.status_code not in (200, 201):
+            raise ValueError(
+                f"Failed to create Shopify blog container (HTTP {create_blog_resp.status_code})."
+            )
+        blog_id = (create_blog_resp.json().get("blog") or {}).get("id")
+
+    if not blog_id:
+        raise ValueError("No Shopify blog available to publish article.")
+
+    article_url = f"https://{shop_domain}/admin/api/{API_VERSION}/blogs/{blog_id}/articles.json"
+    article_payload = {
+        "article": {
+            "title": title.strip(),
+            "body_html": content_html.strip(),
+            "summary_html": summary_html.strip(),
+            "published": bool(publish),
+            "tags": ", ".join(tags or []),
+        }
+    }
+    article_resp = requests.post(
+        article_url,
+        headers=headers,
+        json=article_payload,
+        timeout=25,
+    )
+    if article_resp.status_code not in (200, 201):
+        raise ValueError(
+            f"Shopify article create failed (HTTP {article_resp.status_code}): {article_resp.text[:200]}"
+        )
+
+    article = article_resp.json().get("article", {})
+    return {
+        "id": article.get("id"),
+        "url": article.get("url"),
+        "title": article.get("title"),
+        "published": article.get("published"),
+    }

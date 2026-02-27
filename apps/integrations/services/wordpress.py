@@ -204,3 +204,51 @@ def _compute_daily_publishing(posts: list[dict], start_date: date, end_date: dat
             daily[key]["published_posts"] += 1
 
     return sorted(daily.values(), key=lambda row: row["date"])
+
+
+def publish_wordpress_post(
+    integration,
+    title: str,
+    content: str,
+    excerpt: str = "",
+    status: str = "draft",
+    slug: str = "",
+) -> dict:
+    """
+    Publish or save a draft post to WordPress.
+    Returns a compact post payload for UI confirmation.
+    """
+    site_url = _normalize_site_url(integration.metadata.get("site_url", ""))
+    username = integration.metadata.get("username", "")
+    app_password = integration.get_access_token()
+    headers = _auth_header(username, app_password)
+    headers["Content-Type"] = "application/json"
+
+    post_url = urljoin(site_url + "/", "wp-json/wp/v2/posts")
+    wp_status = "publish" if status == "publish" else "draft"
+    payload = {
+        "title": title.strip(),
+        "content": content.strip(),
+        "excerpt": excerpt.strip(),
+        "status": wp_status,
+    }
+    if slug.strip():
+        payload["slug"] = slug.strip()
+
+    try:
+        resp = requests.post(post_url, headers=headers, json=payload, timeout=25)
+    except requests.RequestException as exc:
+        raise ValueError(f"Failed to reach WordPress publish API: {exc}") from exc
+
+    if resp.status_code not in (200, 201):
+        raise ValueError(
+            f"WordPress publish failed (HTTP {resp.status_code}): {resp.text[:200]}"
+        )
+
+    data = resp.json()
+    return {
+        "id": data.get("id"),
+        "url": data.get("link"),
+        "status": data.get("status"),
+        "title": (data.get("title") or {}).get("rendered", title),
+    }

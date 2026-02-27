@@ -1,5 +1,11 @@
 import logging
+import json
+from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
+import requests
+from django.db import DatabaseError, close_old_connections
+from django.db.utils import InterfaceError, OperationalError
 from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import status
@@ -7,6 +13,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.integrations.models import Integration
 from apps.organizations.models import Organization
 
 from .models import (
@@ -14,6 +21,8 @@ from .models import (
     Recommendation,
     UserAction,
     UserGamification,
+    BlogAutomationConfig,
+    BlogAutomationJob,
     ACHIEVEMENTS_INFO,
     ACTION_TEMPLATES,
 )
@@ -27,10 +36,546 @@ from .serializers import (
     UpdateUserActionSerializer,
     ActionTemplateSerializer,
     ActionStatsSerializer,
+    BlogAutomationConfigSerializer,
+    BlogAutomationJobSerializer,
 )
 from .tasks import start_analysis_task
 
 logger = logging.getLogger("apps")
+
+CRAWL_CHECK_USER_AGENT = (
+    "SignalorBot/1.0 (+https://signalor.ai; crawl-essentials-check)"
+)
+
+
+def _safe_first(queryset, context: str = "query"):
+    try:
+        return queryset.first()
+    except (OperationalError, InterfaceError):
+        close_old_connections()
+        try:
+            return queryset.first()
+        except (OperationalError, InterfaceError, DatabaseError):
+            logger.warning("DB unavailable during %s.", context)
+            return None
+    except DatabaseError:
+        logger.warning("Database error during %s.", context)
+        return None
+
+
+def _normalize_origin(url: str) -> str:
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    if not raw.startswith(("http://", "https://")):
+        raw = f"https://{raw}"
+    parsed = urlparse(raw)
+    if not parsed.netloc:
+        return ""
+    scheme = parsed.scheme if parsed.scheme in ("http", "https") else "https"
+    return f"{scheme}://{parsed.netloc}".rstrip("/")
+
+
+def _resolve_crawl_site(email: str, run_id: int | None, analyzed_url: str) -> tuple[str, str]:
+    """
+    Resolve canonical site URL and source for crawl checks.
+    Priority: WordPress integration -> Shopify integration -> analyzed run URL.
+    """
+    org = _safe_first(
+        Organization.objects.filter(owner_email=email),
+        context="crawl-site org lookup",
+    )
+    if org:
+        wp = _safe_first(
+            Integration.objects.filter(
+                organization=org,
+                provider=Integration.Provider.WORDPRESS,
+                is_active=True,
+            ),
+            context="crawl-site wordpress lookup",
+        )
+        if wp:
+            site_url = _normalize_origin(str(wp.metadata.get("site_url", "")))
+            if site_url:
+                return site_url, "wordpress"
+
+        shopify = _safe_first(
+            Integration.objects.filter(
+                organization=org,
+                provider=Integration.Provider.SHOPIFY,
+                is_active=True,
+            ),
+            context="crawl-site shopify lookup",
+        )
+        if shopify:
+            shop_domain = str(shopify.metadata.get("shop_domain", "")).strip()
+            if shop_domain:
+                return _normalize_origin(f"https://{shop_domain}"), "shopify"
+
+    if run_id:
+        run = _safe_first(
+            AnalysisRun.objects.filter(pk=run_id),
+            context="crawl-site run lookup",
+        )
+        if run and run.url:
+            origin = _normalize_origin(run.url)
+            if origin:
+                return origin, "analyzer_run"
+
+    fallback = _normalize_origin(analyzed_url)
+    if fallback:
+        return fallback, "analyzed_url"
+
+    return "", "unknown"
+
+
+def _evaluate_crawl_file(key: str, label: str, target_url: str, content: str, status_code: int | None):
+    text = (content or "").strip()
+    lower = text.lower()
+    exists = bool(text) and status_code == 200
+    issues = []
+    recommendations = []
+
+    if not exists:
+        if key == "llms":
+            recommendations = [
+                "Create /llms.txt with clear site summary and key content sections.",
+                "Include preferred crawling guidance and support/contact section.",
+            ]
+        elif key == "robots":
+            recommendations = [
+                "Create /robots.txt with User-agent rules and sitemap reference.",
+                "Ensure important content is crawlable and admin paths are restricted.",
+            ]
+        else:
+            recommendations = [
+                "Publish /sitemap.xml from CMS or SEO tooling.",
+                "Include canonical URLs and keep it updated automatically.",
+            ]
+        return {
+            "key": key,
+            "label": label,
+            "url": target_url,
+            "found": False,
+            "status": "missing",
+            "http_status": status_code,
+            "score": 0,
+            "issues": ["File not found at expected URL."],
+            "recommendations": recommendations,
+            "excerpt": "",
+        }
+
+    if key == "robots":
+        if "user-agent:" not in lower:
+            issues.append("Missing User-agent directive.")
+        if "sitemap:" not in lower:
+            issues.append("Missing Sitemap declaration.")
+        if "disallow:" not in lower and "allow:" not in lower:
+            issues.append("Missing Allow/Disallow directives.")
+        recommendations = [
+            "Keep at least one User-agent rule block.",
+            "Add Sitemap: https://yourdomain.com/sitemap.xml",
+            "Review blocked paths to avoid hiding key pages.",
+        ]
+    elif key == "sitemap":
+        if "<urlset" not in lower and "<sitemapindex" not in lower:
+            issues.append("Invalid sitemap XML structure.")
+        if "<loc>" not in lower:
+            issues.append("No URL locations (<loc>) found.")
+        recommendations = [
+            "Serve valid XML using <urlset> or <sitemapindex>.",
+            "Include canonical URLs and refresh after content updates.",
+        ]
+    else:
+        if len(text) < 120:
+            issues.append("Content is too short to guide AI crawlers.")
+        if "#" not in text:
+            issues.append("Missing section headers for structure.")
+        if "contact" not in lower and "support" not in lower:
+            issues.append("Missing contact/support guidance.")
+        recommendations = [
+            "Document your site purpose, key sections, and content boundaries.",
+            "Use headings and concise policies for AI model usage guidance.",
+        ]
+
+    score = max(0, 100 - (len(issues) * 30))
+    status_value = "good" if not issues else "needs_improvement"
+    excerpt = text[:600]
+
+    return {
+        "key": key,
+        "label": label,
+        "url": target_url,
+        "found": True,
+        "status": status_value,
+        "http_status": status_code,
+        "score": score,
+        "issues": issues,
+        "recommendations": recommendations,
+        "excerpt": excerpt,
+    }
+
+
+def _slugify(text: str) -> str:
+    value = "".join(ch.lower() if ch.isalnum() else "-" for ch in (text or "").strip())
+    while "--" in value:
+        value = value.replace("--", "-")
+    return value.strip("-")[:90] or "ai-visibility-guide"
+
+
+def _extract_blog_json(raw: str) -> dict | None:
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        snippet = raw[start : end + 1]
+        try:
+            return json.loads(snippet)
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def _resolve_blog_integration(email: str):
+    org = _safe_first(
+        Organization.objects.filter(owner_email=email),
+        context="blog org lookup",
+    )
+    if not org:
+        return None, "none"
+
+    wp = _safe_first(
+        Integration.objects.filter(
+            organization=org,
+            provider=Integration.Provider.WORDPRESS,
+            is_active=True,
+        ),
+        context="blog wordpress lookup",
+    )
+    if wp:
+        return wp, "wordpress"
+
+    shopify = _safe_first(
+        Integration.objects.filter(
+            organization=org,
+            provider=Integration.Provider.SHOPIFY,
+            is_active=True,
+        ),
+        context="blog shopify lookup",
+    )
+    if shopify:
+        return shopify, "shopify"
+
+    return None, "none"
+
+
+def _generate_blog_draft(
+    site_url: str,
+    topic: str,
+    keywords: list[str],
+    recommendations: list[str],
+) -> dict:
+    from .pipeline.llm import ask_llm
+
+    prompt = f"""
+You are an expert SEO + GEO content strategist.
+Generate a long-form blog post draft for this website:
+
+Site URL: {site_url}
+Primary Topic: {topic}
+Target Keywords: {", ".join(keywords) if keywords else "none"}
+Technical recommendations to align with:
+{chr(10).join(f"- {item}" for item in recommendations[:6]) if recommendations else "- Improve AI visibility and crawlability"}
+
+Return STRICT JSON only with keys:
+title, slug, meta_description, excerpt, content_markdown, tags
+
+Requirements:
+- title: compelling and specific
+- slug: URL-safe
+- meta_description: max 160 chars
+- excerpt: 2-3 sentences
+- content_markdown: 1200-1800 words, clear H2/H3 headings, actionable sections
+- tags: array of 4-8 short tags
+- Mention practical steps readers can apply.
+"""
+
+    raw = ask_llm(
+        prompt=prompt.strip(),
+        preferred_provider="gemini",
+        max_tokens=2200,
+        temperature=0.5,
+        purpose="actions.blog_automation.generate",
+    )
+
+    parsed = _extract_blog_json(raw) or {}
+    title = str(parsed.get("title") or f"{topic} Guide for {urlparse(site_url).netloc}").strip()
+    slug = _slugify(str(parsed.get("slug") or title))
+    meta_description = str(parsed.get("meta_description") or "")[:160].strip()
+    excerpt = str(parsed.get("excerpt") or "").strip()
+    content_markdown = str(parsed.get("content_markdown") or "").strip()
+
+    if not content_markdown:
+        content_markdown = (
+            f"# {title}\n\n"
+            f"{excerpt or 'This guide explains practical actions to improve your AI search visibility.'}\n\n"
+            "## Why this matters\n"
+            "AI-first search experiences reward brands that publish clear, structured, and credible content.\n\n"
+            "## Core strategy\n"
+            f"- Focus topic cluster: {topic}\n"
+            f"- Target keywords: {', '.join(keywords) if keywords else 'n/a'}\n"
+            "- Improve crawl files (llms.txt, robots.txt, sitemap.xml)\n\n"
+            "## Execution checklist\n"
+            "- Publish consistent educational posts\n"
+            "- Add internal links to key pages\n"
+            "- Track rankings and iterate monthly\n"
+        )
+
+    tags = parsed.get("tags")
+    if not isinstance(tags, list):
+        tags = [k for k in keywords[:6]]
+    tags = [str(t).strip() for t in tags if str(t).strip()]
+
+    return {
+        "title": title,
+        "slug": slug,
+        "meta_description": meta_description,
+        "excerpt": excerpt,
+        "content_markdown": content_markdown,
+        "tags": tags,
+        "llm_raw": raw[:1500] if raw else "",
+    }
+
+
+def _parse_publish_time(raw: str | None):
+    from datetime import time
+
+    if not raw:
+        return time(hour=9, minute=0)
+    text = str(raw).strip()
+    try:
+        if len(text) == 5:
+            return datetime.strptime(text, "%H:%M").time()
+        return datetime.strptime(text[:8], "%H:%M:%S").time()
+    except ValueError:
+        return time(hour=9, minute=0)
+
+
+def _to_html_from_markdownish(text: str) -> str:
+    chunks = [chunk.strip() for chunk in (text or "").split("\n\n") if chunk.strip()]
+    if not chunks:
+        return "<p></p>"
+    return "".join(f"<p>{chunk.replace('\n', '<br/>')}</p>" for chunk in chunks)
+
+
+def _get_or_create_blog_config(
+    email: str,
+    run_id: int | None,
+    analyzed_url: str,
+    topic: str = "",
+    keywords: list[str] | None = None,
+    mode: str | None = None,
+    frequency_per_day: int | None = None,
+    publish_time_raw: str | None = None,
+    is_active: bool | None = None,
+):
+    site_url, _ = _resolve_crawl_site(email, run_id, analyzed_url)
+    if not site_url:
+        return None
+
+    integration, provider = _resolve_blog_integration(email)
+    org = _safe_first(
+        Organization.objects.filter(owner_email=email),
+        context="blog config org lookup",
+    )
+    run = (
+        _safe_first(AnalysisRun.objects.filter(pk=run_id), context="blog config run lookup")
+        if run_id else None
+    )
+
+    config = _safe_first(
+        BlogAutomationConfig.objects.filter(user_email=email, site_url=site_url),
+        context="blog config lookup",
+    )
+    if not config:
+        config = BlogAutomationConfig(
+            user_email=email,
+            organization=org,
+            analysis_run=run,
+            site_url=site_url,
+        )
+
+    if topic.strip():
+        config.topic = topic.strip()
+    if keywords is not None:
+        config.keywords = keywords
+    if mode in {
+        BlogAutomationConfig.PublishMode.AUTO_PUBLISH,
+        BlogAutomationConfig.PublishMode.REVIEW_BEFORE_PUBLISH,
+    }:
+        config.mode = mode
+    if frequency_per_day is not None:
+        config.frequency_per_day = max(1, min(4, int(frequency_per_day)))
+    if publish_time_raw is not None:
+        config.publish_time = _parse_publish_time(publish_time_raw)
+    if is_active is not None:
+        config.is_active = bool(is_active)
+    if provider in {
+        BlogAutomationConfig.PublishProvider.WORDPRESS,
+        BlogAutomationConfig.PublishProvider.SHOPIFY,
+    }:
+        config.publish_provider = provider
+    else:
+        config.publish_provider = BlogAutomationConfig.PublishProvider.NONE
+
+    try:
+        config.save()
+    except DatabaseError:
+        logger.exception("Failed saving blog automation config.")
+        return None
+    return config
+
+
+def _enqueue_daily_jobs(config: BlogAutomationConfig, days_ahead: int = 21):
+    start_day = timezone.localdate()
+    end_day = start_day + timedelta(days=days_ahead)
+    freq = max(1, min(4, int(config.frequency_per_day or 1)))
+    interval_hours = 24 / freq
+    tz = timezone.get_current_timezone()
+    created = 0
+
+    current = start_day
+    while current <= end_day:
+        for slot in range(freq):
+            naive_dt = datetime.combine(current, config.publish_time) + timedelta(hours=slot * interval_hours)
+            scheduled_for = timezone.make_aware(naive_dt, tz) if timezone.is_naive(naive_dt) else naive_dt
+
+            try:
+                _, was_created = BlogAutomationJob.objects.get_or_create(
+                    config=config,
+                    scheduled_for=scheduled_for,
+                    defaults={
+                        "user_email": config.user_email,
+                        "analysis_run": config.analysis_run,
+                        "provider": config.publish_provider,
+                        "mode": config.mode,
+                        "status": BlogAutomationJob.Status.SCHEDULED,
+                        "topic": config.topic,
+                        "keywords": config.keywords,
+                    },
+                )
+            except DatabaseError:
+                logger.exception("Failed creating queued blog automation job.")
+                continue
+            if was_created:
+                created += 1
+        current += timedelta(days=1)
+
+    config.last_queued_for = end_day
+    try:
+        config.save(update_fields=["last_queued_for", "updated_at"])
+    except DatabaseError:
+        logger.warning("Failed updating blog config queue marker.")
+    return created
+
+
+def _publish_blog_job(job: BlogAutomationJob, publish_now: bool = True) -> dict:
+    integration, provider = _resolve_blog_integration(job.user_email)
+    if not integration or provider == "none":
+        raise ValueError("No active WordPress/Shopify integration found for publishing.")
+
+    if provider == "wordpress":
+        from apps.integrations.services.wordpress import publish_wordpress_post
+
+        published = publish_wordpress_post(
+            integration=integration,
+            title=job.title,
+            content=job.content_markdown,
+            excerpt=job.excerpt,
+            status="publish" if publish_now else "draft",
+            slug=job.slug,
+        )
+    else:
+        from apps.integrations.services.shopify import create_shopify_blog_article
+
+        published = create_shopify_blog_article(
+            integration=integration,
+            title=job.title,
+            content_html=_to_html_from_markdownish(job.content_markdown),
+            summary_html=job.excerpt,
+            publish=publish_now,
+            tags=[str(t).strip() for t in (job.tags or []) if str(t).strip()],
+        )
+
+    job.provider = provider
+    job.external_post_id = str(published.get("id", ""))
+    job.external_post_url = str(published.get("url", ""))
+    job.published_at = timezone.now() if publish_now else None
+    job.status = BlogAutomationJob.Status.PUBLISHED if publish_now else BlogAutomationJob.Status.DRAFT
+    job.error_message = ""
+    job.save(update_fields=[
+        "provider", "external_post_id", "external_post_url",
+        "published_at", "status", "error_message", "updated_at",
+    ])
+    return published
+
+
+def _process_due_blog_jobs(config: BlogAutomationConfig, limit: int = 20) -> int:
+    now = timezone.now()
+    due_jobs = list(
+        BlogAutomationJob.objects.filter(
+            config=config,
+            status=BlogAutomationJob.Status.SCHEDULED,
+            scheduled_for__lte=now,
+        ).order_by("scheduled_for")[:limit]
+    )
+    processed = 0
+    for job in due_jobs:
+        recommendation_titles = []
+        if job.analysis_run_id:
+            try:
+                run = AnalysisRun.objects.get(pk=job.analysis_run_id)
+                recommendation_titles = list(
+                    run.recommendations.values_list("title", flat=True)[:8]
+                )
+            except Exception:
+                recommendation_titles = []
+
+        if not job.content_markdown or not job.title:
+            draft = _generate_blog_draft(
+                site_url=config.site_url,
+                topic=job.topic or config.topic,
+                keywords=job.keywords or config.keywords or [],
+                recommendations=recommendation_titles,
+            )
+            job.title = draft.get("title", "")
+            job.slug = draft.get("slug", "")
+            job.meta_description = draft.get("meta_description", "")
+            job.excerpt = draft.get("excerpt", "")
+            job.content_markdown = draft.get("content_markdown", "")
+            job.tags = draft.get("tags", [])
+
+        if config.mode == BlogAutomationConfig.PublishMode.REVIEW_BEFORE_PUBLISH:
+            job.status = BlogAutomationJob.Status.NEEDS_REVIEW
+            job.error_message = ""
+            job.save()
+            processed += 1
+            continue
+
+        try:
+            _publish_blog_job(job, publish_now=True)
+        except Exception as exc:
+            job.status = BlogAutomationJob.Status.FAILED
+            job.error_message = str(exc)
+            job.save(update_fields=["status", "error_message", "updated_at"])
+        processed += 1
+    return processed
 
 
 class StartAnalysisView(APIView):
@@ -439,6 +984,387 @@ class ActionStatsView(APIView):
         }
 
         return Response(stats)
+
+
+class CrawlEssentialsStatusView(APIView):
+    """Get llms.txt/robots.txt/sitemap.xml status for Actions submenu."""
+    permission_classes = [AllowAny]
+    throttle_classes = []  # sidebar/actions open frequently
+
+    def get(self, request):
+        email = request.query_params.get("email", "").lower().strip()
+        if not email:
+            return Response(
+                {"error": "Email parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        run_id_param = request.query_params.get("run_id")
+        analyzed_url = request.query_params.get("analyzed_url", "").strip()
+        run_id = None
+        if run_id_param:
+            try:
+                run_id = int(run_id_param)
+            except ValueError:
+                run_id = None
+
+        try:
+            site_url, source = _resolve_crawl_site(email, run_id, analyzed_url)
+        except Exception:
+            # Never fail hard for this diagnostics endpoint; use URL fallback.
+            logger.exception("Crawl essentials: unexpected site-resolution error.")
+            site_url = _normalize_origin(analyzed_url)
+            source = "analyzed_url" if site_url else "unknown"
+
+        if not site_url:
+            return Response(
+                {"error": "Could not resolve site URL from integrations or analysis run."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        checks = [
+            ("llms", "llms.txt", "/llms.txt"),
+            ("robots", "robots.txt", "/robots.txt"),
+            ("sitemap", "sitemap.xml", "/sitemap.xml"),
+        ]
+
+        files = []
+        for key, label, path in checks:
+            target_url = f"{site_url}{path}"
+            try:
+                resp = requests.get(
+                    target_url,
+                    headers={"User-Agent": CRAWL_CHECK_USER_AGENT},
+                    timeout=8,
+                    allow_redirects=True,
+                )
+                files.append(
+                    _evaluate_crawl_file(
+                        key=key,
+                        label=label,
+                        target_url=target_url,
+                        content=resp.text,
+                        status_code=resp.status_code,
+                    )
+                )
+            except requests.RequestException:
+                files.append(
+                    _evaluate_crawl_file(
+                        key=key,
+                        label=label,
+                        target_url=target_url,
+                        content="",
+                        status_code=None,
+                    )
+                )
+
+        overall_score = round(
+            sum(item["score"] for item in files) / len(files), 1
+        ) if files else 0.0
+
+        return Response(
+            {
+                "submenu_key": "ai-crawl-essentials",
+                "submenu_name": "AI Crawl Essentials",
+                "site_url": site_url,
+                "source": source,
+                "overall_score": overall_score,
+                "files": files,
+            }
+        )
+
+
+class BlogAutomationConfigView(APIView):
+    """Create/update automation settings and queue scheduled jobs."""
+    permission_classes = [AllowAny]
+    throttle_classes = []
+
+    def get(self, request):
+        email = request.query_params.get("email", "").lower().strip()
+        analyzed_url = request.query_params.get("analyzed_url", "").strip()
+        run_id_param = request.query_params.get("run_id")
+        run_id = int(run_id_param) if str(run_id_param).isdigit() else None
+
+        if not email:
+            return Response({"error": "Email parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        config = _get_or_create_blog_config(
+            email=email,
+            run_id=run_id,
+            analyzed_url=analyzed_url,
+        )
+        if not config:
+            return Response({"error": "Could not resolve automation config."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if config.is_active:
+            _enqueue_daily_jobs(config, days_ahead=21)
+            _process_due_blog_jobs(config, limit=10)
+
+        return Response({
+            "config": BlogAutomationConfigSerializer(config).data,
+        })
+
+    def post(self, request):
+        email = request.data.get("email", "").lower().strip()
+        analyzed_url = str(request.data.get("analyzed_url", "")).strip()
+        run_id_param = request.data.get("run_id")
+        run_id = int(run_id_param) if str(run_id_param).isdigit() else None
+
+        if not email:
+            return Response({"error": "Email parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        keywords_input = request.data.get("keywords", [])
+        if isinstance(keywords_input, str):
+            keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
+        elif isinstance(keywords_input, list):
+            keywords = [str(k).strip() for k in keywords_input if str(k).strip()]
+        else:
+            keywords = []
+
+        config = _get_or_create_blog_config(
+            email=email,
+            run_id=run_id,
+            analyzed_url=analyzed_url,
+            topic=str(request.data.get("topic", "")).strip(),
+            keywords=keywords,
+            mode=str(request.data.get("mode", "")).strip(),
+            frequency_per_day=request.data.get("frequency_per_day"),
+            publish_time_raw=str(request.data.get("publish_time", "")).strip(),
+            is_active=request.data.get("is_active"),
+        )
+        if not config:
+            return Response({"error": "Could not save automation config."}, status=status.HTTP_400_BAD_REQUEST)
+
+        queued = _enqueue_daily_jobs(config, days_ahead=21) if config.is_active else 0
+
+        return Response({
+            "message": "Automation settings saved.",
+            "queued_jobs": queued,
+            "config": BlogAutomationConfigSerializer(config).data,
+        })
+
+
+class BlogAutomationCalendarView(APIView):
+    """Calendar/list view for scheduled and published automated blogs."""
+    permission_classes = [AllowAny]
+    throttle_classes = []
+
+    def get(self, request):
+        email = request.query_params.get("email", "").lower().strip()
+        if not email:
+            return Response({"error": "Email parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from_date = request.query_params.get("from")
+        to_date = request.query_params.get("to")
+        view = request.query_params.get("view", "month")
+
+        jobs = BlogAutomationJob.objects.filter(user_email=email).order_by("scheduled_for")
+        if from_date:
+            jobs = jobs.filter(scheduled_for__date__gte=from_date)
+        if to_date:
+            jobs = jobs.filter(scheduled_for__date__lte=to_date)
+
+        if not from_date and not to_date:
+            days = 31 if view == "month" else 7
+            start = timezone.localdate() - timedelta(days=2)
+            end = start + timedelta(days=days)
+            jobs = jobs.filter(scheduled_for__date__gte=start, scheduled_for__date__lte=end)
+
+        serializer = BlogAutomationJobSerializer(jobs, many=True)
+        summary = {
+            "scheduled": jobs.filter(status=BlogAutomationJob.Status.SCHEDULED).count(),
+            "draft": jobs.filter(status=BlogAutomationJob.Status.DRAFT).count(),
+            "needs_review": jobs.filter(status=BlogAutomationJob.Status.NEEDS_REVIEW).count(),
+            "published": jobs.filter(status=BlogAutomationJob.Status.PUBLISHED).count(),
+            "failed": jobs.filter(status=BlogAutomationJob.Status.FAILED).count(),
+        }
+        return Response({"summary": summary, "jobs": serializer.data})
+
+
+class BlogAutomationProcessDueView(APIView):
+    """Process due scheduled blogs: auto-publish or move to review queue."""
+    permission_classes = [AllowAny]
+    throttle_classes = []
+
+    def post(self, request):
+        email = request.data.get("email", "").lower().strip()
+        if not email:
+            return Response({"error": "Email parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        processed_total = 0
+        configs = BlogAutomationConfig.objects.filter(user_email=email, is_active=True)
+        for config in configs:
+            _enqueue_daily_jobs(config, days_ahead=21)
+            processed_total += _process_due_blog_jobs(config, limit=15)
+
+        return Response({"message": "Due jobs processed.", "processed": processed_total})
+
+
+class BlogAutomationGenerateView(APIView):
+    """Generate AI blog draft for Actions submenu."""
+    permission_classes = [AllowAny]
+    throttle_classes = []
+
+    def post(self, request):
+        email = request.data.get("email", "").lower().strip()
+        if not email:
+            return Response({"error": "Email parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        topic = str(request.data.get("topic", "")).strip()
+        analyzed_url = str(request.data.get("analyzed_url", "")).strip()
+        run_id_param = request.data.get("run_id")
+        run_id = int(run_id_param) if str(run_id_param).isdigit() else None
+
+        keywords_input = request.data.get("keywords", [])
+        if isinstance(keywords_input, str):
+            keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
+        elif isinstance(keywords_input, list):
+            keywords = [str(k).strip() for k in keywords_input if str(k).strip()]
+        else:
+            keywords = []
+
+        site_url, source = _resolve_crawl_site(email, run_id, analyzed_url)
+        if not site_url:
+            return Response(
+                {"error": "Could not resolve a site URL. Connect WordPress/Shopify or provide analyzed_url."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        run = (
+            _safe_first(AnalysisRun.objects.filter(pk=run_id), context="blog generate run lookup")
+            if run_id else None
+        )
+        if not topic:
+            brand = (run.brand_name if run else "") or urlparse(site_url).netloc
+            topic = f"{brand} AI search strategy"
+
+        recommendation_texts = []
+        if run:
+            try:
+                recommendation_texts = list(run.recommendations.values_list("title", flat=True)[:8])
+            except DatabaseError:
+                recommendation_texts = []
+
+        draft = _generate_blog_draft(
+            site_url=site_url,
+            topic=topic,
+            keywords=keywords,
+            recommendations=recommendation_texts,
+        )
+
+        integration, provider = _resolve_blog_integration(email)
+        save_as_draft = bool(request.data.get("save_as_draft", False))
+        draft_job_payload = None
+        if save_as_draft:
+            config = _get_or_create_blog_config(
+                email=email,
+                run_id=run_id,
+                analyzed_url=analyzed_url,
+                topic=topic,
+                keywords=keywords,
+                is_active=request.data.get("activate_automation"),
+            )
+            if config:
+                job = BlogAutomationJob.objects.create(
+                    config=config,
+                    user_email=email,
+                    analysis_run=run,
+                    scheduled_for=timezone.now(),
+                    provider=provider if integration else BlogAutomationConfig.PublishProvider.NONE,
+                    mode=config.mode,
+                    status=BlogAutomationJob.Status.DRAFT,
+                    topic=topic,
+                    keywords=keywords,
+                    title=draft.get("title", ""),
+                    slug=draft.get("slug", ""),
+                    meta_description=draft.get("meta_description", ""),
+                    excerpt=draft.get("excerpt", ""),
+                    content_markdown=draft.get("content_markdown", ""),
+                    tags=draft.get("tags", []),
+                )
+                draft_job_payload = BlogAutomationJobSerializer(job).data
+
+        return Response({
+            "submenu_key": "ai-blog-automation",
+            "submenu_name": "AI Blog Automation",
+            "site_url": site_url,
+            "source": source,
+            "publish_provider": provider if integration else "none",
+            "draft": draft,
+            "draft_job": draft_job_payload,
+        })
+
+
+class BlogAutomationPublishView(APIView):
+    """Publish AI-generated draft to connected CMS."""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = request.data.get("email", "").lower().strip()
+        if not email:
+            return Response({"error": "Email parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        publish_now = bool(request.data.get("publish_now", False))
+        job_id = request.data.get("job_id")
+        if job_id:
+            job = _safe_first(
+                BlogAutomationJob.objects.filter(pk=job_id, user_email=email),
+                context="blog publish job lookup",
+            )
+            if not job:
+                return Response({"error": "Blog job not found."}, status=status.HTTP_404_NOT_FOUND)
+            if not job.title or not job.content_markdown:
+                return Response({"error": "Selected job has no draft content."}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                published = _publish_blog_job(job, publish_now=publish_now)
+            except ValueError as exc:
+                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            except Exception:
+                logger.exception("Blog publish failed.")
+                return Response({"error": "Unexpected error while publishing draft."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"message": "Blog job published.", "provider": job.provider, "published": published})
+
+        draft = request.data.get("draft") or {}
+        title = str(draft.get("title", "")).strip()
+        content_markdown = str(draft.get("content_markdown", "")).strip()
+        if not title or not content_markdown:
+            return Response({"error": "Draft title and content_markdown are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        config = _get_or_create_blog_config(
+            email=email,
+            run_id=request.data.get("run_id"),
+            analyzed_url=str(request.data.get("analyzed_url", "")),
+            is_active=False,
+        )
+        if not config:
+            return Response({"error": "Could not prepare publish config."}, status=status.HTTP_400_BAD_REQUEST)
+
+        job = BlogAutomationJob.objects.create(
+            config=config,
+            user_email=email,
+            analysis_run=config.analysis_run,
+            scheduled_for=timezone.now(),
+            provider=config.publish_provider,
+            mode=config.mode,
+            status=BlogAutomationJob.Status.DRAFT,
+            topic=config.topic,
+            keywords=config.keywords,
+            title=title,
+            slug=str(draft.get("slug", "")).strip(),
+            meta_description=str(draft.get("meta_description", "")).strip(),
+            excerpt=str(draft.get("excerpt", "")).strip(),
+            content_markdown=content_markdown,
+            tags=draft.get("tags") if isinstance(draft.get("tags"), list) else [],
+        )
+        try:
+            published = _publish_blog_job(job, publish_now=publish_now)
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            logger.exception("Blog publish failed.")
+            return Response({"error": "Unexpected error while publishing draft."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return Response({"message": "Blog draft processed successfully.", "provider": job.provider, "published": published})
 
 
 class QuickActionView(APIView):
