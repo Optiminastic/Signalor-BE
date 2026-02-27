@@ -147,8 +147,8 @@ class ExportPDFView(APIView):
 
         try:
             from django.template.loader import render_to_string
-            from xhtml2pdf import pisa
-            from io import BytesIO
+            from weasyprint import HTML
+            import io
 
             main_page = run.page_scores.filter(url=run.url).first()
             recommendations = run.recommendations.all()
@@ -163,16 +163,11 @@ class ExportPDFView(APIView):
             }
 
             html_string = render_to_string("analyzer/report.html", context)
-            result = BytesIO()
-            pdf = pisa.CreatePDF(html_string, dest=result)
+            
+            # Generate PDF with WeasyPrint
+            pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri('/')).write_pdf()
 
-            if pdf.err:
-                return Response(
-                    {"error": "PDF generation failed."},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                )
-
-            response = HttpResponse(result.getvalue(), content_type="application/pdf")
+            response = HttpResponse(pdf_file, content_type="application/pdf")
             response["Content-Disposition"] = (
                 f'attachment; filename="geo-analysis-{run.id}.pdf"'
             )
@@ -180,7 +175,7 @@ class ExportPDFView(APIView):
 
         except ImportError:
             return Response(
-                {"error": "PDF export requires xhtml2pdf package."},
+                {"error": "PDF export requires weasyprint package."},
                 status=status.HTTP_501_NOT_IMPLEMENTED,
             )
 
