@@ -6,7 +6,7 @@ DEBUG = True
 
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-dev-key-change-in-production')
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0','rankking-be.onrender.com']
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0','rankking-be.onrender.com','ranking-fe-chi.vercel.app']
 
 DATABASE_URL = os.getenv('DATABASE_URL', '')
 if DATABASE_URL:
