@@ -1,5 +1,7 @@
 import json
 import logging
+import re
+from datetime import datetime, timezone
 
 from .crawler import CrawlResult
 from .utils import safe_score
@@ -25,6 +27,9 @@ SCHEMA_REQUIRED_PROPS = {
     "AggregateRating": {"ratingValue", "reviewCount"},
     "SoftwareApplication": {"name"},
     "Service": {"name"},
+    "SpeakableSpecification": {"cssSelector"},
+    "Person": {"name"},
+    "ItemList": {"itemListElement"},
 }
 
 # Recommended (optional but valuable) properties per type
@@ -46,6 +51,9 @@ SCHEMA_RECOMMENDED_PROPS = {
     "AggregateRating": {"bestRating"},
     "SoftwareApplication": {"applicationCategory", "offers", "operatingSystem"},
     "Service": {"description", "provider", "areaServed"},
+    "SpeakableSpecification": {"xpath"},
+    "Person": {"jobTitle", "url", "sameAs", "affiliation"},
+    "ItemList": set(),
 }
 
 
@@ -235,6 +243,23 @@ def score_schema(crawl: CrawlResult) -> tuple[float, dict]:
 
             if report["required_missing"]:
                 details["findings"].append(f"incomplete_{schema_type.lower()}_schema")
+
+    # dateModified freshness bonus (5 pts) — reward recently updated schemas
+    current_year = datetime.now(timezone.utc).year
+    for obj in all_objects:
+        date_modified = obj.get("dateModified", "") or obj.get("datePublished", "")
+        if date_modified:
+            try:
+                year_match = re.search(r"(\d{4})", str(date_modified))
+                if year_match:
+                    content_year = int(year_match.group(1))
+                    if content_year >= current_year - 1:  # Within last year
+                        score += 5
+                        details["checks"]["schema_freshness"] = True
+                        details["checks"]["schema_date"] = date_modified[:10]
+                        break
+            except Exception:
+                pass
 
     # Average completeness across found types, scaled to 50 pts
     if quality_entries > 0:

@@ -23,6 +23,8 @@ from .models import (
     UserGamification,
     BlogAutomationConfig,
     BlogAutomationJob,
+    PromptTrack,
+    PromptResult,
     ACHIEVEMENTS_INFO,
     ACTION_TEMPLATES,
 )
@@ -38,6 +40,10 @@ from .serializers import (
     ActionStatsSerializer,
     BlogAutomationConfigSerializer,
     BlogAutomationJobSerializer,
+    PromptTrackSerializer,
+    AddPromptSerializer,
+    ShareOfVoiceSerializer,
+    CitationTrendPointSerializer,
 )
 from .tasks import start_analysis_task
 
@@ -618,16 +624,55 @@ class StartAnalysisView(APIView):
 
         data = serializer.validated_data
         email = data.get("email", "")
+        org_id = data.get("org_id")
 
-        # Try to link to organization
+        # Block duplicate submissions: same URL still pending/running for the same org (or user)
+        submitted_url = data["url"]
+        in_flight_statuses = [
+            AnalysisRun.Status.PENDING,
+            AnalysisRun.Status.CRAWLING,
+            AnalysisRun.Status.ANALYZING,
+            AnalysisRun.Status.SCORING,
+        ]
+        if org_id:
+            existing = AnalysisRun.objects.filter(
+                organization_id=org_id,
+                url=submitted_url,
+                status__in=in_flight_statuses,
+            ).first()
+        elif email:
+            existing = AnalysisRun.objects.filter(
+                email=email,
+                url=submitted_url,
+                status__in=in_flight_statuses,
+            ).first()
+        else:
+            existing = None
+
+        if existing:
+            return Response(
+                {
+                    "id": existing.id,
+                    "slug": existing.slug,
+                    "url": existing.url,
+                    "status": existing.status,
+                    "message": "Analysis already in progress for this URL",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        # Resolve organization
         org = None
-        if email:
+        if org_id:
+            org = Organization.objects.filter(pk=org_id).first()
+        elif email:
             org = Organization.objects.filter(owner_email=email).first()
 
         run = AnalysisRun.objects.create(
             organization=org,
             url=data["url"],
             brand_name=data.get("brand_name", ""),
+            country=data.get("country", ""),
             email=email,
             run_type=data["run_type"],
             status=AnalysisRun.Status.PENDING,
@@ -639,6 +684,7 @@ class StartAnalysisView(APIView):
         return Response(
             {
                 "id": run.id,
+                "slug": run.slug,
                 "url": run.url,
                 "status": run.status,
                 "message": "Analysis started",
@@ -647,18 +693,40 @@ class StartAnalysisView(APIView):
         )
 
 
+class AnalysisRunBySlugView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = []
+
+    def get(self, request, slug):
+        try:
+            run = AnalysisRun.objects.get(slug=slug)
+        except AnalysisRun.DoesNotExist:
+            return Response(
+                {"error": "Project not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = AnalysisRunDetailSerializer(run)
+        return Response(serializer.data)
+
+
 class AnalysisRunListView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
+        org_id = request.query_params.get("org_id")
         email = request.query_params.get("email", "").lower().strip()
-        if not email:
+
+        if org_id:
+            runs = AnalysisRun.objects.filter(organization_id=org_id)
+        elif email:
+            runs = AnalysisRun.objects.filter(email=email)
+        else:
             return Response(
-                {"error": "Email parameter is required."},
+                {"error": "Either email or org_id parameter is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        runs = AnalysisRun.objects.filter(email=email)
         serializer = AnalysisRunListSerializer(runs, many=True)
         return Response(serializer.data)
 
@@ -723,7 +791,7 @@ class ExportPDFView(APIView):
 
         try:
             from django.template.loader import render_to_string
-            from weasyprint import HTML
+            from xhtml2pdf import pisa
             import io
 
             main_page = run.page_scores.filter(url=run.url).first()
@@ -739,20 +807,35 @@ class ExportPDFView(APIView):
             }
 
             html_string = render_to_string("analyzer/report.html", context)
-            
-            # Generate PDF with WeasyPrint
-            pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri('/')).write_pdf()
 
-            response = HttpResponse(pdf_file, content_type="application/pdf")
+            pdf_buffer = io.BytesIO()
+            pisa_status = pisa.CreatePDF(html_string, dest=pdf_buffer, encoding="utf-8")
+
+            if pisa_status.err:
+                logger.error("PDF generation error for run %d: %s", run_id, pisa_status.err)
+                return Response(
+                    {"error": "PDF generation failed."},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+            pdf_buffer.seek(0)
+            response = HttpResponse(pdf_buffer.read(), content_type="application/pdf")
             response["Content-Disposition"] = (
                 f'attachment; filename="geo-analysis-{run.id}.pdf"'
             )
             return response
 
-        except ImportError:
+        except ImportError as exc:
+            logger.error("PDF export import error: %s", exc)
             return Response(
-                {"error": "PDF export requires weasyprint package."},
+                {"error": "PDF export library not available."},
                 status=status.HTTP_501_NOT_IMPLEMENTED,
+            )
+        except Exception as exc:
+            logger.error("PDF export failed for run %d: %s", run_id, exc, exc_info=True)
+            return Response(
+                {"error": "PDF generation failed.", "detail": str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
 
@@ -1572,3 +1655,163 @@ class BulkCreateUserActionView(APIView):
 
         serializer = UserActionSerializer(created_actions, many=True)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+# ============ Prompt Tracking Views ============
+
+def _fire_and_save_prompt(track: PromptTrack, brand_name: str, brand_url: str):
+    """Background worker: fires prompt across engines and saves PromptResult rows."""
+    from django.db import close_old_connections
+    from .pipeline.prompt_tracker import fire_prompt_across_engines
+
+    close_old_connections()
+    try:
+        engine_results = fire_prompt_across_engines(track.prompt_text, brand_name, brand_url)
+        for r in engine_results:
+            PromptResult.objects.create(prompt_track=track, **r)
+        logger.info("PromptTrack #%d: %d engine results saved", track.pk, len(engine_results))
+    except Exception as exc:
+        logger.warning("PromptTrack #%d fire failed: %s", track.pk, exc)
+
+
+class PromptListCreateView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        tracks = run.prompt_tracks.prefetch_related("results").order_by("-created_at")
+        serializer = PromptTrackSerializer(tracks, many=True)
+        return Response(serializer.data)
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        import threading
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        ser = AddPromptSerializer(data=request.data)
+        if not ser.is_valid():
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        track = PromptTrack.objects.create(
+            analysis_run=run,
+            prompt_text=ser.validated_data["prompt_text"],
+            is_custom=True,
+        )
+
+        brand_name = run.brand_name or run.url
+        brand_url = run.url
+        t = threading.Thread(
+            target=_fire_and_save_prompt,
+            args=(track, brand_name, brand_url),
+            daemon=True,
+        )
+        t.start()
+
+        return Response(PromptTrackSerializer(track).data, status=status.HTTP_202_ACCEPTED)
+
+
+class RecheckPromptView(APIView):
+    """POST /runs/s/<slug>/prompts/<track_id>/recheck/ — re-fire one prompt now."""
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug, track_id):
+        from django.shortcuts import get_object_or_404
+        import threading
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        track = get_object_or_404(PromptTrack, pk=track_id, analysis_run=run)
+
+        brand_name = run.brand_name or run.url
+        brand_url = run.url
+
+        def _do():
+            from .pipeline.prompt_tracker import recheck_track
+            from django.db import close_old_connections
+            close_old_connections()
+            recheck_track(track, brand_name, brand_url)
+
+        threading.Thread(target=_do, daemon=True).start()
+        return Response({"status": "rechecking"}, status=status.HTTP_202_ACCEPTED)
+
+
+class RecheckAllPromptsView(APIView):
+    """POST /runs/s/<slug>/recheck-all/ — re-fire every prompt for this run."""
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        import threading
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        tracks = list(run.prompt_tracks.all())
+
+        if not tracks:
+            return Response({"status": "no_tracks", "count": 0})
+
+        brand_name = run.brand_name or run.url
+        brand_url = run.url
+
+        def _do_all():
+            from .pipeline.prompt_tracker import recheck_track
+            from django.db import close_old_connections
+            close_old_connections()
+            for track in tracks:
+                try:
+                    recheck_track(track, brand_name, brand_url)
+                except Exception as exc:
+                    logger.warning("recheck_all: track #%d failed: %s", track.pk, exc)
+
+        threading.Thread(target=_do_all, daemon=True).start()
+        return Response(
+            {"status": "rechecking", "count": len(tracks)},
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
+class ShareOfVoiceView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from django.db.models import Count, Q
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        engines = [e[0] for e in PromptResult.Engine.choices]
+        data = []
+        for engine in engines:
+            qs = PromptResult.objects.filter(prompt_track__analysis_run=run, engine=engine)
+            total = qs.count()
+            mentioned = qs.filter(brand_mentioned=True).count()
+            sov_pct = round((mentioned / total * 100), 1) if total > 0 else 0.0
+            data.append({"engine": engine, "total": total, "mentioned": mentioned, "sov_pct": sov_pct})
+        return Response(ShareOfVoiceSerializer(data, many=True).data)
+
+
+class CitationTrendView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from django.db.models.functions import TruncWeek
+        from django.db.models import Count, Q
+        run = get_object_or_404(AnalysisRun, slug=slug)
+
+        qs = (
+            PromptResult.objects
+            .filter(prompt_track__analysis_run=run)
+            .annotate(week_start=TruncWeek("checked_at"))
+            .values("week_start", "engine")
+            .annotate(
+                total=Count("id"),
+                mentioned=Count("id", filter=Q(brand_mentioned=True)),
+            )
+            .order_by("week_start", "engine")
+        )
+
+        data = []
+        for row in qs:
+            total = row["total"]
+            mentioned = row["mentioned"]
+            data.append({
+                "week_start": row["week_start"].date() if row["week_start"] else None,
+                "engine": row["engine"],
+                "rate_pct": round((mentioned / total * 100), 1) if total > 0 else 0.0,
+            })
+        return Response(CitationTrendPointSerializer(data, many=True).data)

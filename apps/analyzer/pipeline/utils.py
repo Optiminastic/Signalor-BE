@@ -59,8 +59,14 @@ def extract_brand_name(soup: BeautifulSoup, url: str) -> str:
         if candidates and len(candidates[0]) <= 30:
             return candidates[0]
 
-    # Fallback: domain name (most reliable for well-known sites)
-    return extract_domain(url).split(".")[0].capitalize()
+    # Fallback: pick the most meaningful domain part (skip generic TLDs and common subdomains)
+    _SKIP = {"www", "com", "net", "org", "io", "co", "uk", "de", "fr", "app", "ai", "dev", "ui", "api", "get", "try"}
+    domain = extract_domain(url)
+    parts = [p for p in domain.split(".") if len(p) >= 3 and p.lower() not in _SKIP]
+    if parts:
+        # Prefer longest (most specific/unique) part — e.g. "aceternity" from "ui.aceternity.com"
+        return max(parts, key=len).capitalize()
+    return domain.split(".")[0].capitalize()
 
 
 def safe_score(value: float, max_val: float = 100.0) -> float:

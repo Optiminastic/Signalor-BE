@@ -11,6 +11,8 @@ from .models import (
     UserGamification,
     BlogAutomationConfig,
     BlogAutomationJob,
+    PromptTrack,
+    PromptResult,
     ACHIEVEMENTS_INFO,
     ACTION_TEMPLATES,
 )
@@ -62,7 +64,10 @@ class CompetitorSerializer(serializers.ModelSerializer):
     class Meta:
         model = Competitor
         fields = [
-            "id", "name", "url", "industry", "composite_score", "scored", "page_score",
+            "id", "name", "url", "industry",
+            "tier", "target_market", "geography", "pricing_model",
+            "estimated_revenue_band", "positioning", "relevance_score",
+            "composite_score", "scored", "page_score",
         ]
 
 
@@ -70,7 +75,7 @@ class AnalysisRunListSerializer(serializers.ModelSerializer):
     class Meta:
         model = AnalysisRun
         fields = [
-            "id", "url", "run_type", "status", "progress",
+            "id", "slug", "url", "country", "run_type", "status", "progress",
             "composite_score", "created_at",
         ]
 
@@ -85,7 +90,7 @@ class AnalysisRunDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = AnalysisRun
         fields = [
-            "id", "url", "brand_name", "email", "run_type", "status", "progress",
+            "id", "slug", "url", "brand_name", "country", "email", "run_type", "status", "progress",
             "composite_score", "error_message", "created_at", "updated_at",
             "page_scores", "competitors", "recommendations", "ai_probes",
             "brand_visibility", "llm_logs",
@@ -102,6 +107,10 @@ class StartAnalysisSerializer(serializers.Serializer):
     brand_name = serializers.CharField(
         max_length=255, required=False, allow_blank=True, default=""
     )
+    country = serializers.CharField(
+        max_length=100, required=False, allow_blank=True, default=""
+    )
+    org_id = serializers.IntegerField(required=False, allow_null=True)
 
     def validate_url(self, value):
         value = value.strip()
@@ -111,6 +120,9 @@ class StartAnalysisSerializer(serializers.Serializer):
 
     def validate_email(self, value):
         return value.lower().strip() if value else ""
+
+    def validate_country(self, value):
+        return value.strip() if value else ""
 
 
 # ============ Gamification Serializers ============
@@ -228,6 +240,40 @@ class ActionStatsSerializer(serializers.Serializer):
     level_name = serializers.CharField()
     level_progress = serializers.FloatField()
     recent_achievements = AchievementSerializer(many=True)
+
+
+class PromptResultSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PromptResult
+        fields = [
+            "id", "engine", "response_text", "brand_mentioned",
+            "sentiment", "confidence", "rank_position", "checked_at",
+        ]
+
+
+class PromptTrackSerializer(serializers.ModelSerializer):
+    results = PromptResultSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = PromptTrack
+        fields = ["id", "prompt_text", "is_custom", "created_at", "results"]
+
+
+class AddPromptSerializer(serializers.Serializer):
+    prompt_text = serializers.CharField(max_length=2000)
+
+
+class ShareOfVoiceSerializer(serializers.Serializer):
+    engine = serializers.CharField()
+    total = serializers.IntegerField()
+    mentioned = serializers.IntegerField()
+    sov_pct = serializers.FloatField()
+
+
+class CitationTrendPointSerializer(serializers.Serializer):
+    week_start = serializers.DateField()
+    engine = serializers.CharField()
+    rate_pct = serializers.FloatField()
 
 
 class BlogAutomationConfigSerializer(serializers.ModelSerializer):

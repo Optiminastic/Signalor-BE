@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+from datetime import datetime
 from urllib.parse import urlparse, quote_plus
 
 import requests
@@ -18,7 +19,7 @@ _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like
 # {industry} is replaced with detected industry keywords (NOT the brand name)
 INDUSTRY_PROBES = {
     "software_developer": [
-        "Who are the best freelance software developers to hire in 2024?",
+        "Who are the best freelance software developers to hire in {year}?",
         "What portfolio websites do top software engineers use?",
         "What should I look for when hiring a full-stack developer?",
         "Who are the most recommended web developers for startups?",
@@ -28,7 +29,7 @@ INDUSTRY_PROBES = {
         "What are the best {industry} tools available today?",
         "Compare the top {industry} platforms for businesses",
         "Which {industry} solution would you recommend for a growing company?",
-        "What are the leading {industry} providers in 2024?",
+        "What are the leading {industry} providers in {year}?",
         "What should I consider when choosing a {industry} platform?",
     ],
     "ecommerce": [
@@ -175,17 +176,43 @@ def _build_site_context(soup, url: str, text: str) -> str:
     return "\n".join(parts)
 
 
-def _generate_probes_llm(brand_name: str, site_context: str, industry_desc: str) -> list[str]:
+def _apply_country_context(prompt: str, target_country: str | None) -> str:
+    text = (prompt or "").strip()
+    country = (target_country or "").strip()
+    if not text or not country:
+        return text
+    lower = text.lower()
+    if f" in {country.lower()}" in lower or f" for {country.lower()}" in lower:
+        return text
+    if text.endswith("?"):
+        return f"{text[:-1]} in {country}?"
+    return f"{text} in {country}"
+
+
+def _generate_probes_llm(
+    brand_name: str,
+    site_context: str,
+    industry_desc: str,
+    target_country: str | None = None,
+) -> list[str]:
     """Use LLM (via OpenRouter) to generate 5 category-specific probe prompts."""
     try:
         from .llm import ask_llm
 
+        current_year = datetime.now().year
+        country_line = (
+            f"Target country for this analysis: {target_country}. "
+            f"Questions must reflect user intent in this country.\n"
+            if (target_country or "").strip()
+            else ""
+        )
         prompt = (
             f"I need to test whether the brand '{brand_name}' appears in AI search results.\n\n"
             f"Their website is about: {industry_desc}\n"
             f"Site context:\n{site_context}\n\n"
+            f"{country_line}"
             f"Generate exactly 5 questions that a potential CUSTOMER would naturally ask "
-            f"an AI assistant (ChatGPT, Perplexity, Gemini) about this INDUSTRY/CATEGORY.\n\n"
+            f"an AI assistant (ChatGPT, Perplexity, Gemini) about this INDUSTRY/CATEGORY in {current_year}.\n\n"
             f"CRITICAL RULES:\n"
             f"- Questions must be about the CATEGORY/INDUSTRY, NOT about the brand\n"
             f"- Do NOT include the brand name '{brand_name}' anywhere in the questions\n"
@@ -217,7 +244,7 @@ def _generate_probes_llm(brand_name: str, site_context: str, industry_desc: str)
                         continue
                     if any(part in p_lower for part in brand_parts):
                         continue
-                    clean_probes.append(str(p))
+                    clean_probes.append(_apply_country_context(str(p), target_country))
                 if len(clean_probes) >= 3:
                     return clean_probes[:5]
     except Exception as exc:
@@ -239,11 +266,12 @@ def _build_brand_aliases(brand_name: str, url: str) -> list[str]:
         if brand_lower.endswith(suffix):
             aliases.add(brand_lower[: -len(suffix)].strip())
 
-    # Domain name as alias (e.g., "stripe" from stripe.com)
+    # All meaningful domain parts (e.g., "aceternity" from ui.aceternity.com, "stripe" from stripe.com)
+    _SKIP_PARTS = {"www", "com", "net", "org", "io", "co", "uk", "de", "fr", "app", "ai", "dev", "ui", "api"}
     domain = extract_domain(url)
-    domain_name = domain.split(".")[0].lower()
-    if len(domain_name) >= 3:
-        aliases.add(domain_name)
+    for part in domain.lower().split("."):
+        if len(part) >= 3 and part not in _SKIP_PARTS:
+            aliases.add(part)
 
     # CamelCase split (e.g., "CarbonCut" → "carbon cut")
     camel_split = re.sub(r"([a-z])([A-Z])", r"\1 \2", brand_name).lower()
@@ -417,8 +445,8 @@ def _fire_probe(prompt: str, brand_aliases: list[str]) -> tuple[str, bool, float
     try:
         from .llm import ask_multiple_llms
 
-        # Ask all 3 providers the same question
-        responses = ask_multiple_llms(prompt, purpose="AI Visibility Probe", max_tokens=400)
+        # Ask 3 providers the same question (exclude perplexity to control cost)
+        responses = ask_multiple_llms(prompt, providers=["gpt", "claude", "gemini"], purpose="AI Visibility Probe", max_tokens=400)
 
         # Combine all responses for matching
         all_text = "\n\n".join(f"[{provider}]: {resp}" for provider, resp in responses.items() if resp)
@@ -617,7 +645,7 @@ def _check_brand_website_quality(crawl: CrawlResult) -> dict:
     return result
 
 
-def score_ai_visibility(crawl: CrawlResult) -> tuple[float, dict, list[dict]]:
+def score_ai_visibility(crawl: CrawlResult, target_country: str | None = None) -> tuple[float, dict, list[dict]]:
     """Returns (score, details, probes_data)."""
     if not crawl.ok:
         return 0.0, {"error": crawl.error}, []
@@ -637,6 +665,7 @@ def score_ai_visibility(crawl: CrawlResult) -> tuple[float, dict, list[dict]]:
             "brand_aliases": brand_aliases[:5],
             "industry_detected": industry_desc,
             "category": category,
+            "target_country": (target_country or "").strip(),
         },
         "findings": [],
     }
@@ -645,14 +674,26 @@ def score_ai_visibility(crawl: CrawlResult) -> tuple[float, dict, list[dict]]:
 
     # ── Part 1: LLM Probe Testing (60 pts) ──────────────────────────────
     # Try LLM-generated probes first
-    probe_prompts = _generate_probes_llm(brand_name, site_context, industry_desc)
+    probe_prompts = _generate_probes_llm(
+        brand_name,
+        site_context,
+        industry_desc,
+        target_country=(target_country or "").strip() or None,
+    )
 
     if probe_prompts:
         details["checks"]["probe_source"] = "gemini"
     else:
         # Fallback: use industry-specific templates with category keywords
         templates = INDUSTRY_PROBES.get(category, INDUSTRY_PROBES["default"])
-        probe_prompts = [t.format(industry=industry_desc) for t in templates]
+        current_year = datetime.now().year
+        probe_prompts = [
+            _apply_country_context(
+                t.format(industry=industry_desc, year=current_year),
+                (target_country or "").strip() or None,
+            )
+            for t in templates
+        ]
         details["checks"]["probe_source"] = "fallback"
 
     details["checks"]["probes_generated"] = len(probe_prompts)

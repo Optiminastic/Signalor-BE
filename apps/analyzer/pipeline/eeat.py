@@ -116,10 +116,11 @@ def _score_structural_signals(crawl: CrawlResult) -> tuple[float, dict]:
         nav_links.add(href)
         nav_links.add(text)
 
-    has_about = any(x in nav_links for x in ["about", "/about", "/about-us", "about us"])
-    has_contact = any(x in nav_links for x in ["contact", "/contact", "/contact-us", "contact us"])
-    has_privacy = any(x in nav_links for x in ["privacy", "/privacy", "/privacy-policy", "privacy policy"])
-    has_terms = any(x in nav_links for x in ["terms", "/terms", "/terms-of-service", "terms of service"])
+    nav_links_list = list(nav_links)
+    has_about = any("about" in x for x in nav_links_list)
+    has_contact = any("contact" in x for x in nav_links_list)
+    has_privacy = any("privacy" in x for x in nav_links_list)
+    has_terms = any("terms" in x or "tos" in x for x in nav_links_list)
 
     details["has_about_page"] = has_about
     details["has_contact_page"] = has_contact

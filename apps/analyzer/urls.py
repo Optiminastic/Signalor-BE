@@ -1,12 +1,13 @@
 from django.urls import path
 
 from .views import (
+    AnalysisRunBySlugView,
     AnalysisRunDetailView,
     AnalysisRunListView,
     AnalysisRunStatusView,
     ExportPDFView,
     StartAnalysisView,
-    HealthCheckView,  # Add this import
+    HealthCheckView,
     # Gamification views
     UserGamificationView,
     ActionTemplatesView,
@@ -23,6 +24,12 @@ from .views import (
     BlogAutomationPublishView,
     QuickActionView,
     BulkCreateUserActionView,
+    # Prompt tracking views
+    PromptListCreateView,
+    ShareOfVoiceView,
+    CitationTrendView,
+    RecheckPromptView,
+    RecheckAllPromptsView,
 )
 
 app_name = "analyzer"
@@ -32,6 +39,12 @@ urlpatterns = [
     path("analyze/", StartAnalysisView.as_view(), name="start-analysis"),
     path("runs/", AnalysisRunListView.as_view(), name="run-list"),
     path("runs/<int:run_id>/", AnalysisRunDetailView.as_view(), name="run-detail"),
+    path("runs/s/<str:slug>/prompts/",                          PromptListCreateView.as_view(),   name="prompt-list-create"),
+    path("runs/s/<str:slug>/prompts/<int:track_id>/recheck/",  RecheckPromptView.as_view(),      name="prompt-recheck"),
+    path("runs/s/<str:slug>/recheck-all/",                     RecheckAllPromptsView.as_view(),  name="prompt-recheck-all"),
+    path("runs/s/<str:slug>/share-of-voice/",                  ShareOfVoiceView.as_view(),       name="share-of-voice"),
+    path("runs/s/<str:slug>/citation-trend/",                  CitationTrendView.as_view(),      name="citation-trend"),
+    path("runs/s/<str:slug>/", AnalysisRunBySlugView.as_view(), name="run-by-slug"),
     path("runs/<int:run_id>/status/", AnalysisRunStatusView.as_view(), name="run-status"),
     path("runs/<int:run_id>/export-pdf/", ExportPDFView.as_view(), name="export-pdf"),
     

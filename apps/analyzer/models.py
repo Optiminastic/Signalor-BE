@@ -1,6 +1,11 @@
+import secrets
 from datetime import time
 
 from django.db import models
+
+
+def _generate_slug():
+    return secrets.token_urlsafe(8)
 
 
 class AnalysisRun(models.Model):
@@ -16,6 +21,7 @@ class AnalysisRun(models.Model):
         SINGLE_PAGE = "single_page"
         FULL_SITE = "full_site"
 
+    slug = models.CharField(max_length=20, unique=True, blank=True, default="")
     organization = models.ForeignKey(
         "organizations.Organization",
         on_delete=models.CASCADE,
@@ -25,6 +31,7 @@ class AnalysisRun(models.Model):
     )
     url = models.URLField(max_length=2048)
     brand_name = models.CharField(max_length=255, blank=True, default="")
+    country = models.CharField(max_length=100, blank=True, default="")
     email = models.EmailField(blank=True, default="")
     run_type = models.CharField(
         max_length=20, choices=RunType.choices, default=RunType.SINGLE_PAGE
@@ -44,10 +51,20 @@ class AnalysisRun(models.Model):
         indexes = [
             models.Index(fields=["email"]),
             models.Index(fields=["status"]),
+            models.Index(fields=["slug"]),
         ]
 
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            while True:
+                candidate = _generate_slug()
+                if not AnalysisRun.objects.filter(slug=candidate).exists():
+                    self.slug = candidate
+                    break
+        super().save(*args, **kwargs)
+
     def __str__(self):
-        return f"Run #{self.pk} - {self.url} ({self.status})"
+        return f"Run #{self.pk} [{self.slug}] - {self.url} ({self.status})"
 
 
 class PageScore(models.Model):
@@ -84,6 +101,13 @@ class Competitor(models.Model):
     name = models.CharField(max_length=255)
     url = models.URLField(max_length=2048)
     industry = models.CharField(max_length=255, blank=True, default="")
+    tier = models.CharField(max_length=20, blank=True, default="")
+    target_market = models.CharField(max_length=80, blank=True, default="")
+    geography = models.CharField(max_length=80, blank=True, default="")
+    pricing_model = models.CharField(max_length=80, blank=True, default="")
+    estimated_revenue_band = models.CharField(max_length=40, blank=True, default="")
+    positioning = models.CharField(max_length=240, blank=True, default="")
+    relevance_score = models.IntegerField(null=True, blank=True)
     composite_score = models.FloatField(null=True, blank=True)
     scored = models.BooleanField(default=False)
     page_score = models.OneToOneField(
@@ -566,6 +590,50 @@ ACTION_TEMPLATES = {
         "category": "technical",
     },
 }
+
+
+class PromptTrack(models.Model):
+    analysis_run = models.ForeignKey(
+        AnalysisRun, on_delete=models.CASCADE, related_name="prompt_tracks"
+    )
+    prompt_text = models.TextField()
+    is_custom = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"PromptTrack #{self.pk} — {self.prompt_text[:60]}"
+
+
+class PromptResult(models.Model):
+    class Engine(models.TextChoices):
+        CHATGPT = "chatgpt", "ChatGPT"
+        CLAUDE = "claude", "Claude"
+        GEMINI = "gemini", "Gemini"
+        PERPLEXITY = "perplexity", "Perplexity"
+
+    class Sentiment(models.TextChoices):
+        POSITIVE = "positive", "Positive"
+        NEUTRAL = "neutral", "Neutral"
+        NEGATIVE = "negative", "Negative"
+
+    prompt_track = models.ForeignKey(
+        PromptTrack, on_delete=models.CASCADE, related_name="results"
+    )
+    engine = models.CharField(max_length=20, choices=Engine.choices)
+    response_text = models.TextField(blank=True)
+    brand_mentioned = models.BooleanField(default=False)
+    sentiment = models.CharField(
+        max_length=10, choices=Sentiment.choices, default=Sentiment.NEUTRAL
+    )
+    confidence = models.FloatField(default=0.0)
+    rank_position = models.IntegerField(default=0)
+    checked_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["checked_at"]
+
+    def __str__(self):
+        return f"PromptResult [{self.engine}] {'✓' if self.brand_mentioned else '✗'} {self.sentiment}"
 
 
 class BlogAutomationConfig(models.Model):

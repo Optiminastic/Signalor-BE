@@ -118,23 +118,30 @@ def detect_industry(soup, text: str = "") -> str:
 
     combined = " ".join(signals)
 
-    # Industry detection rules (order matters — first match wins)
+    # Industry detection — score all industries, return best match
+    # Use minimum_matches threshold: specific industries need fewer hits to win
     rules = [
-        ("health", ["health", "medical", "doctor", "patient", "clinic", "hospital", "wellness", "therapy", "pharmaceutical"]),
-        ("medical", ["diagnosis", "treatment", "symptom", "medication", "surgery"]),
-        ("finance", ["finance", "banking", "investment", "loan", "mortgage", "insurance", "trading", "fintech", "crypto"]),
-        ("legal", ["lawyer", "attorney", "legal", "law firm", "litigation", "court"]),
-        ("ecommerce", ["shop", "store", "buy", "cart", "product", "price", "shipping", "ecommerce", "e-commerce", "marketplace"]),
-        ("saas", ["saas", "software", "platform", "api", "cloud", "dashboard", "subscription", "app", "tool", "solution"]),
-        ("education", ["learn", "course", "education", "university", "school", "training", "tutorial", "student"]),
-        ("news", ["news", "journalist", "breaking", "report", "editorial", "magazine", "press"]),
-        ("local_business", ["local", "near me", "address", "location", "visit us", "directions", "appointment"]),
+        # (industry, keywords, min_matches, weight)
+        # Specific/distinctive keywords carry more weight
+        ("health",        ["health", "medical", "doctor", "patient", "clinic", "hospital", "wellness", "therapy", "pharmaceutical"], 2, 1.5),
+        ("medical",       ["diagnosis", "treatment", "symptom", "medication", "surgery", "prescription", "physician"], 2, 1.5),
+        ("finance",       ["finance", "banking", "investment", "loan", "mortgage", "insurance", "trading", "fintech", "crypto", "portfolio"], 2, 1.3),
+        ("legal",         ["lawyer", "attorney", "legal", "law firm", "litigation", "court", "jurisdiction", "compliance"], 2, 1.3),
+        ("ecommerce",     ["shop", "store", "add to cart", "checkout", "shipping", "ecommerce", "e-commerce", "marketplace", "buy now"], 2, 1.2),
+        ("saas",          ["saas", "subscription", "free trial", "pricing plan", "per month", "sign up for free", "dashboard", "integrations"], 2, 1.0),
+        ("education",     ["course", "curriculum", "enrollment", "certificate", "university", "school", "learning management", "quiz", "lecture"], 2, 1.2),
+        ("news",          ["journalist", "breaking news", "editorial", "newsroom", "wire service", "byline"], 2, 1.5),
+        ("local_business", ["near me", "visit us", "store hours", "book appointment", "our location", "local delivery"], 2, 1.2),
     ]
 
-    for industry, keywords in rules:
+    scores = {}
+    for industry, keywords, min_matches, weight in rules:
         match_count = sum(1 for kw in keywords if kw in combined)
-        if match_count >= 2:
-            return industry
+        if match_count >= min_matches:
+            scores[industry] = match_count * weight
+
+    if scores:
+        return max(scores, key=scores.get)
 
     return "default"
 

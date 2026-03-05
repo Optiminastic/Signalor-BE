@@ -40,8 +40,17 @@ def _check_wikipedia(brand_name: str) -> bool:
             data = resp.json()
             results = data.get("query", {}).get("search", [])
             for r in results:
-                if brand_name.lower() in r.get("title", "").lower():
-                    return True
+                title_lower = r.get("title", "").lower()
+                snippet_lower = r.get("snippet", "").lower()
+                if brand_name.lower() in title_lower:
+                    # Skip disambiguation pages
+                    if "(disambiguation)" in title_lower:
+                        continue
+                    # Skip if snippet is clearly about something else
+                    if snippet_lower and len(snippet_lower) > 10:
+                        return True
+                    elif not snippet_lower:
+                        return True
     except Exception as exc:
         logger.warning("Wikipedia check failed for %s: %s", brand_name, exc)
     return False
@@ -166,11 +175,17 @@ def _static_entity_signals(soup, crawl_url: str) -> tuple[float, dict]:
     else:
         details["contact_info"] = False
 
-    # Domain quality (10 pts)
+    # Domain legitimacy (10 pts)
     domain = urlparse(crawl_url).netloc.replace("www.", "")
-    domain_name = domain.split(".")[0]
     details["domain"] = domain
-    if len(domain_name) <= 15:
+    # Check: not an IP address, has a recognized TLD, reasonable length
+    is_ip = bool(re.match(r"^\d{1,3}(\.\d{1,3}){3}$", domain))
+    parts = domain.split(".")
+    has_tld = len(parts) >= 2 and 2 <= len(parts[-1]) <= 6
+    reasonable_length = len(domain) <= 50
+    domain_ok = not is_ip and has_tld and reasonable_length
+    details["domain_legitimate"] = domain_ok
+    if domain_ok:
         score += 10
 
     return score, details
@@ -245,11 +260,27 @@ def score_entity(crawl: CrawlResult, industry: str = "") -> tuple[float, dict]:
         else:
             details["findings"].append("no_social_profiles")
 
-        # Domain maturity (10 pts)
+        # Brand name coherence — brand name appears in title/H1 (10 pts)
         domain = urlparse(crawl.url).netloc
         details["checks"]["domain"] = domain
-        if len(domain.replace("www.", "").split(".")[0]) <= 15:
+        brand_in_title = False
+        brand_lower = brand_name.lower()
+        page_title = soup.find("title")
+        if page_title and brand_lower in page_title.get_text(strip=True).lower():
+            brand_in_title = True
+        if not brand_in_title:
+            og_title = soup.find("meta", property="og:title")
+            if og_title and brand_lower in (og_title.get("content", "")).lower():
+                brand_in_title = True
+        if not brand_in_title:
+            h1 = soup.find("h1")
+            if h1 and brand_lower in h1.get_text(strip=True).lower():
+                brand_in_title = True
+        details["checks"]["brand_in_identity"] = brand_in_title
+        if brand_in_title:
             score += 10
+        else:
+            details["findings"].append("brand_not_in_title")
 
     else:
         # FALLBACK: Score using only static signals (no Gemini)

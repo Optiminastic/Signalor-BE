@@ -48,11 +48,26 @@ def score_technical(crawl: CrawlResult) -> tuple[float, dict]:
 
     # ── Checks that work WITHOUT page HTML ────────────────────────────
 
-    # llms.txt exists (20 pts)
-    has_llms_txt = check_file_exists(crawl.url, "llms.txt")
+    # llms.txt exists and has quality content (20 pts)
+    llms_content = fetch_file_content(crawl.url, "llms.txt")
+    has_llms_txt = bool(llms_content.strip())
     details["checks"]["llms_txt"] = has_llms_txt
     if has_llms_txt:
-        score += 20
+        llms_len = len(llms_content.strip())
+        details["checks"]["llms_txt_length"] = llms_len
+        # Quality check: has real content (not just a blank/minimal file)
+        has_urls = "http" in llms_content.lower() or "/" in llms_content
+        has_descriptions = llms_len > 200
+        if has_descriptions and has_urls:
+            score += 20  # Full score: exists + has URLs + substantial content
+            details["checks"]["llms_txt_quality"] = "good"
+        elif llms_len > 50:
+            score += 15  # Exists with some content
+            details["checks"]["llms_txt_quality"] = "basic"
+        else:
+            score += 8   # Exists but very minimal
+            details["checks"]["llms_txt_quality"] = "minimal"
+            details["findings"].append("llms_txt_minimal_content")
     else:
         details["findings"].append("no_llms_txt")
 
@@ -129,6 +144,32 @@ def score_technical(crawl: CrawlResult) -> tuple[float, dict]:
             score += 10
         else:
             details["findings"].append("no_canonical")
+
+        # OG / Twitter Card metadata (10 pts) — affects AI scraping quality
+        og_title = soup.find("meta", property="og:title")
+        og_desc = soup.find("meta", property="og:description")
+        og_image = soup.find("meta", property="og:image")
+        twitter_card = soup.find("meta", attrs={"name": "twitter:card"})
+        og_score = 0
+        if og_title and og_title.get("content"):
+            og_score += 3
+        if og_desc and og_desc.get("content"):
+            og_score += 3
+        if og_image and og_image.get("content"):
+            og_score += 2
+        if twitter_card and twitter_card.get("content"):
+            og_score += 2
+        details["checks"]["og_metadata_score"] = og_score
+        details["checks"]["has_og_title"] = bool(og_title and og_title.get("content"))
+        details["checks"]["has_og_description"] = bool(og_desc and og_desc.get("content"))
+        if og_score >= 6:
+            score += 10
+        elif og_score >= 3:
+            score += 5
+        elif og_score == 0:
+            details["findings"].append("no_og_metadata")
+        else:
+            score += og_score
     else:
         details["checks"]["meta_robots_ok"] = None
         details["checks"]["has_viewport"] = None
