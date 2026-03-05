@@ -4,7 +4,7 @@ from django.db import models
 class Organization(models.Model):
     name = models.CharField(max_length=255)
     url = models.URLField(blank=True, default="")
-    owner_email = models.EmailField(unique=True)
+    owner_email = models.EmailField()
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

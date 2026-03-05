@@ -51,7 +51,8 @@ def crawl_page(url: str) -> CrawlResult:
             "User-Agent": ua,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
+            # Avoid brotli payloads in environments without brotli decoder support.
+            "Accept-Encoding": "gzip, deflate",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
         }
@@ -68,9 +69,15 @@ def crawl_page(url: str) -> CrawlResult:
             result.status_code = resp.status_code
 
             if resp.status_code == 200:
-                result.html = resp.text
-                result.soup = BeautifulSoup(resp.text, "html.parser")
-                text_soup = BeautifulSoup(resp.text, "html.parser")
+                html = resp.text or ""
+                # If server declares/guesses a bad encoding, force a safer fallback.
+                if html and html.count("\ufffd") > 50:
+                    resp.encoding = resp.apparent_encoding or "utf-8"
+                    html = resp.text or ""
+
+                result.html = html
+                result.soup = BeautifulSoup(html, "html.parser")
+                text_soup = BeautifulSoup(html, "html.parser")
                 result.text = extract_text(text_soup)
                 result.internal_links = extract_internal_links(result.soup, url)
                 return result

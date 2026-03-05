@@ -99,9 +99,8 @@ def _score_structure(crawl: CrawlResult) -> tuple[float, dict]:
 
     # 2. Proper heading hierarchy (5 pts)
     headings = []
-    for level in range(1, 7):
-        for tag in soup.find_all(f"h{level}"):
-            headings.append(level)
+    for tag in soup.find_all(re.compile(r"^h[1-6]$")):
+        headings.append(int(tag.name[1]))
     hierarchy_ok = True
     for i in range(1, len(headings)):
         if headings[i] - headings[i - 1] > 1:
@@ -124,6 +123,21 @@ def _score_structure(crawl: CrawlResult) -> tuple[float, dict]:
         faq_found = bool(soup.find(class_=re.compile(r"faq", re.I)))
     if not faq_found:
         faq_found = bool(soup.find(id=re.compile(r"faq", re.I)))
+    if not faq_found:
+        # Check for details/summary elements (accordion FAQ pattern)
+        for details_el in soup.find_all("details"):
+            summary = details_el.find("summary")
+            if summary and summary.get_text(strip=True).endswith("?"):
+                faq_found = True
+                break
+    if not faq_found:
+        # Check for headings that are questions (end with ?)
+        question_headings = [
+            tag for tag in soup.find_all(re.compile(r"^h[2-5]$"))
+            if tag.get_text(strip=True).endswith("?")
+        ]
+        if len(question_headings) >= 3:
+            faq_found = True
     details["faq_section"] = faq_found
     if faq_found:
         score += 8
@@ -384,7 +398,13 @@ def _score_geo_quality(crawl: CrawlResult) -> tuple[float, dict]:
     if word_count >= 100:
         # Detect keyword stuffing: high frequency of repeated 2-3 word phrases
         # Split into bigrams
-        words_list = re.findall(r"\b[a-z]{2,}\b", text_lower)
+        _STOP_WORDS = {
+            "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+            "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
+            "it", "its", "this", "that", "as", "if", "so", "not", "no", "can",
+            "will", "do", "you", "we", "he", "she", "they", "have", "has", "had",
+        }
+        words_list = [w for w in re.findall(r"\b[a-z]{2,}\b", text_lower) if w not in _STOP_WORDS]
         bigrams = [f"{words_list[i]} {words_list[i+1]}" for i in range(len(words_list)-1)]
         if bigrams:
             bigram_counts = Counter(bigrams)

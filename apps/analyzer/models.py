@@ -1,4 +1,11 @@
+import secrets
+from datetime import time
+
 from django.db import models
+
+
+def _generate_slug():
+    return secrets.token_urlsafe(8)
 
 
 class AnalysisRun(models.Model):
@@ -14,6 +21,7 @@ class AnalysisRun(models.Model):
         SINGLE_PAGE = "single_page"
         FULL_SITE = "full_site"
 
+    slug = models.CharField(max_length=20, unique=True, blank=True, default="")
     organization = models.ForeignKey(
         "organizations.Organization",
         on_delete=models.CASCADE,
@@ -23,6 +31,7 @@ class AnalysisRun(models.Model):
     )
     url = models.URLField(max_length=2048)
     brand_name = models.CharField(max_length=255, blank=True, default="")
+    country = models.CharField(max_length=100, blank=True, default="")
     email = models.EmailField(blank=True, default="")
     run_type = models.CharField(
         max_length=20, choices=RunType.choices, default=RunType.SINGLE_PAGE
@@ -42,10 +51,20 @@ class AnalysisRun(models.Model):
         indexes = [
             models.Index(fields=["email"]),
             models.Index(fields=["status"]),
+            models.Index(fields=["slug"]),
         ]
 
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            while True:
+                candidate = _generate_slug()
+                if not AnalysisRun.objects.filter(slug=candidate).exists():
+                    self.slug = candidate
+                    break
+        super().save(*args, **kwargs)
+
     def __str__(self):
-        return f"Run #{self.pk} - {self.url} ({self.status})"
+        return f"Run #{self.pk} [{self.slug}] - {self.url} ({self.status})"
 
 
 class PageScore(models.Model):
@@ -82,6 +101,13 @@ class Competitor(models.Model):
     name = models.CharField(max_length=255)
     url = models.URLField(max_length=2048)
     industry = models.CharField(max_length=255, blank=True, default="")
+    tier = models.CharField(max_length=20, blank=True, default="")
+    target_market = models.CharField(max_length=80, blank=True, default="")
+    geography = models.CharField(max_length=80, blank=True, default="")
+    pricing_model = models.CharField(max_length=80, blank=True, default="")
+    estimated_revenue_band = models.CharField(max_length=40, blank=True, default="")
+    positioning = models.CharField(max_length=240, blank=True, default="")
+    relevance_score = models.IntegerField(null=True, blank=True)
     composite_score = models.FloatField(null=True, blank=True)
     scored = models.BooleanField(default=False)
     page_score = models.OneToOneField(
@@ -564,3 +590,185 @@ ACTION_TEMPLATES = {
         "category": "technical",
     },
 }
+
+
+class PromptTrack(models.Model):
+    analysis_run = models.ForeignKey(
+        AnalysisRun, on_delete=models.CASCADE, related_name="prompt_tracks"
+    )
+    prompt_text = models.TextField()
+    is_custom = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"PromptTrack #{self.pk} — {self.prompt_text[:60]}"
+
+
+class PromptResult(models.Model):
+    class Engine(models.TextChoices):
+        CHATGPT = "chatgpt", "ChatGPT"
+        CLAUDE = "claude", "Claude"
+        GEMINI = "gemini", "Gemini"
+        PERPLEXITY = "perplexity", "Perplexity"
+
+    class Sentiment(models.TextChoices):
+        POSITIVE = "positive", "Positive"
+        NEUTRAL = "neutral", "Neutral"
+        NEGATIVE = "negative", "Negative"
+
+    prompt_track = models.ForeignKey(
+        PromptTrack, on_delete=models.CASCADE, related_name="results"
+    )
+    engine = models.CharField(max_length=20, choices=Engine.choices)
+    response_text = models.TextField(blank=True)
+    brand_mentioned = models.BooleanField(default=False)
+    sentiment = models.CharField(
+        max_length=10, choices=Sentiment.choices, default=Sentiment.NEUTRAL
+    )
+    confidence = models.FloatField(default=0.0)
+    rank_position = models.IntegerField(default=0)
+    checked_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["checked_at"]
+
+    def __str__(self):
+        return f"PromptResult [{self.engine}] {'✓' if self.brand_mentioned else '✗'} {self.sentiment}"
+
+
+class BlogAutomationConfig(models.Model):
+    class PublishMode(models.TextChoices):
+        AUTO_PUBLISH = "auto_publish", "Auto Publish"
+        REVIEW_BEFORE_PUBLISH = "review_before_publish", "Review Before Publish"
+
+    class PublishProvider(models.TextChoices):
+        WORDPRESS = "wordpress", "WordPress"
+        SHOPIFY = "shopify", "Shopify"
+        NONE = "none", "None"
+
+    user_email = models.EmailField(db_index=True)
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="blog_automation_configs",
+    )
+    analysis_run = models.ForeignKey(
+        AnalysisRun,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="blog_automation_configs",
+    )
+
+    site_url = models.URLField(max_length=2048)
+    topic = models.CharField(max_length=255, default="AI search visibility strategy")
+    keywords = models.JSONField(default=list, blank=True)
+
+    frequency_per_day = models.PositiveSmallIntegerField(default=1)
+    publish_time = models.TimeField(default=time(hour=9, minute=0))
+    mode = models.CharField(
+        max_length=30,
+        choices=PublishMode.choices,
+        default=PublishMode.REVIEW_BEFORE_PUBLISH,
+    )
+    publish_provider = models.CharField(
+        max_length=20,
+        choices=PublishProvider.choices,
+        default=PublishProvider.NONE,
+    )
+    is_active = models.BooleanField(default=True)
+    last_queued_for = models.DateField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user_email", "site_url"],
+                name="unique_blog_config_per_user_site",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["user_email", "is_active"]),
+        ]
+
+    def __str__(self):
+        return f"BlogConfig<{self.user_email} {self.site_url}>"
+
+
+class BlogAutomationJob(models.Model):
+    class Status(models.TextChoices):
+        SCHEDULED = "scheduled", "Scheduled"
+        DRAFT = "draft", "Draft"
+        NEEDS_REVIEW = "needs_review", "Needs Review"
+        PUBLISHED = "published", "Published"
+        FAILED = "failed", "Failed"
+
+    config = models.ForeignKey(
+        BlogAutomationConfig,
+        on_delete=models.CASCADE,
+        related_name="jobs",
+    )
+    user_email = models.EmailField(db_index=True)
+    analysis_run = models.ForeignKey(
+        AnalysisRun,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="blog_automation_jobs",
+    )
+
+    scheduled_for = models.DateTimeField(db_index=True)
+    provider = models.CharField(
+        max_length=20,
+        choices=BlogAutomationConfig.PublishProvider.choices,
+        default=BlogAutomationConfig.PublishProvider.NONE,
+    )
+    mode = models.CharField(
+        max_length=30,
+        choices=BlogAutomationConfig.PublishMode.choices,
+        default=BlogAutomationConfig.PublishMode.REVIEW_BEFORE_PUBLISH,
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.SCHEDULED,
+    )
+
+    topic = models.CharField(max_length=255, blank=True, default="")
+    keywords = models.JSONField(default=list, blank=True)
+
+    title = models.CharField(max_length=300, blank=True, default="")
+    slug = models.CharField(max_length=120, blank=True, default="")
+    meta_description = models.CharField(max_length=180, blank=True, default="")
+    excerpt = models.TextField(blank=True, default="")
+    content_markdown = models.TextField(blank=True, default="")
+    tags = models.JSONField(default=list, blank=True)
+
+    external_post_id = models.CharField(max_length=120, blank=True, default="")
+    external_post_url = models.URLField(max_length=2048, blank=True, default="")
+    published_at = models.DateTimeField(null=True, blank=True)
+    error_message = models.TextField(blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["scheduled_for"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["config", "scheduled_for"],
+                name="unique_scheduled_slot_per_blog_config",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["user_email", "status"]),
+            models.Index(fields=["scheduled_for", "status"]),
+        ]
+
+    def __str__(self):
+        return f"BlogJob<{self.user_email} {self.status} {self.scheduled_for}>"

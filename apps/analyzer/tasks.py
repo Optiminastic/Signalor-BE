@@ -9,6 +9,8 @@ from .models import (
     Competitor,
     PageScore,
     Recommendation,
+    PromptTrack,
+    PromptResult,
 )
 from .pipeline.brand_visibility import extract_brand_name, run_brand_visibility
 from .pipeline.aggregator import compute_composite, compute_static_composite, detect_industry
@@ -24,6 +26,27 @@ from .pipeline.schema import score_schema
 from .pipeline.technical import score_technical
 
 logger = logging.getLogger("apps")
+
+
+def _save_probes_and_tracks(run: AnalysisRun, probes_data: list[dict], brand_name: str, brand_url: str):
+    """Save AIVisibilityProbe rows and backfill PromptTrack/PromptResult rows."""
+    from .pipeline.prompt_tracker import fire_prompt_across_engines
+
+    for probe in probes_data:
+        AIVisibilityProbe.objects.create(analysis_run=run, **probe)
+
+        # Backfill into the new prompt tracking models
+        try:
+            track = PromptTrack.objects.create(
+                analysis_run=run,
+                prompt_text=probe["prompt_used"],
+                is_custom=False,
+            )
+            engine_results = fire_prompt_across_engines(probe["prompt_used"], brand_name, brand_url)
+            for r in engine_results:
+                PromptResult.objects.create(prompt_track=track, **r)
+        except Exception as exc:
+            logger.warning("PromptTrack backfill failed for run %d: %s", run.id, exc)
 
 
 def _update_status(run: AnalysisRun, status: str, progress: int = 0):
@@ -111,7 +134,7 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
         return score_entity(crawl)
 
     def _run_ai_vis():
-        return score_ai_visibility(crawl)
+        return score_ai_visibility(crawl, target_country=(run.country or "").strip() or None)
 
     def _run_brand_vis():
         return run_brand_visibility(brand_name, run.url)
@@ -142,8 +165,7 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
 
     _update_status(run, AnalysisRun.Status.ANALYZING, 80)
 
-    for probe in probes_data:
-        AIVisibilityProbe.objects.create(analysis_run=run, **probe)
+    _save_probes_and_tracks(run, probes_data, run.brand_name or run.url, run.url)
 
     _update_status(run, AnalysisRun.Status.SCORING, 85)
 
@@ -253,7 +275,7 @@ def run_single_page_analysis(run_id: int):
             return score_entity(crawl, industry=industry)
 
         def _run_ai_vis():
-            return score_ai_visibility(crawl)
+            return score_ai_visibility(crawl, target_country=(run.country or "").strip() or None)
 
         def _run_brand_vis():
             return run_brand_visibility(brand_name, run.url)
@@ -293,9 +315,8 @@ def run_single_page_analysis(run_id: int):
 
         _update_status(run, AnalysisRun.Status.ANALYZING, 75)
 
-        # Save AI probes
-        for probe in probes_data:
-            AIVisibilityProbe.objects.create(analysis_run=run, **probe)
+        # Save AI probes + backfill prompt tracking
+        _save_probes_and_tracks(run, probes_data, run.brand_name or run.url, run.url)
 
         # Phase 4: Scoring
         _update_status(run, AnalysisRun.Status.SCORING, 80)
@@ -344,7 +365,7 @@ def run_single_page_analysis(run_id: int):
         # Phase 6: Competitor discovery & scoring (static-only, no LLM for competitors)
         _update_status(run, AnalysisRun.Status.SCORING, 85)
         try:
-            competitor_list = discover_competitors(crawl)
+            competitor_list = discover_competitors(crawl, user_country=(run.country or "").strip() or None)
 
             # Score competitors in parallel (static-only, no LLM)
             def _score_comp(comp_data):
@@ -361,6 +382,13 @@ def run_single_page_analysis(run_id: int):
                             name=comp_data["name"],
                             url=comp_data["url"],
                             industry=comp_data.get("industry", ""),
+                            tier=comp_data.get("tier", ""),
+                            target_market=comp_data.get("target_market", ""),
+                            geography=comp_data.get("geography", ""),
+                            pricing_model=comp_data.get("pricing_model", ""),
+                            estimated_revenue_band=comp_data.get("estimated_revenue_band", ""),
+                            positioning=comp_data.get("positioning", ""),
+                            relevance_score=comp_data.get("relevance_score"),
                         )
                         if page_data:
                             comp_page = PageScore.objects.create(

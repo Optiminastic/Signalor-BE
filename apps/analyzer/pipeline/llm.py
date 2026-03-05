@@ -16,7 +16,7 @@ logger = logging.getLogger("apps")
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# 3 cheap models — one from each provider
+# Default models
 MODELS = {
     "gpt": "openai/gpt-4o-mini",
     "claude": "anthropic/claude-3.5-haiku",
@@ -319,3 +319,4 @@ def ask_multiple_llms(prompt: str, providers: list[str] | None = None, purpose: 
                 results[provider] = ""
 
     return results
+

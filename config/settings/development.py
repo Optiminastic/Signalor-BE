@@ -6,7 +6,16 @@ DEBUG = True
 
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-dev-key-change-in-production')
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0','rankking-be.onrender.com','ranking-fe-chi.vercel.app']
+_default_hosts = [
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+    "rankking-be.onrender.com",
+    "ranking-fe-chi.vercel.app",
+    "api.signalor.ai",
+]
+_env_hosts = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "").split(",") if h.strip()]
+ALLOWED_HOSTS = list(dict.fromkeys(_default_hosts + _env_hosts))
 
 DATABASE_URL = os.getenv('DATABASE_URL', '')
 if DATABASE_URL:
@@ -23,6 +32,10 @@ else:
 
 # CORS settings for development
 CORS_ALLOW_ALL_ORIGINS = True
+
+# Render/Cloudflare proxy support
+USE_X_FORWARDED_HOST = True
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 # Email backend for development
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
