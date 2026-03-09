@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, unquote, urlparse
 
 import requests
 
@@ -28,6 +28,61 @@ VALID_REVENUE_BANDS = {"Bootstrap", "<10M", "10M-50M", "50M-200M", "200M+"}
 RELEVANCE_THRESHOLD = 6
 MARKET_CONFIDENCE_STRICT = 0.35
 MARKET_CONFIDENCE_SOFT = 0.18
+SEARCH_TIMEOUT_SEC = 4
+WEB_CANDIDATE_LIMIT = 24
+WEB_SHORTLIST_LIMIT = 40
+
+MARKETPLACE_HINTS = (
+    "marketplace",
+    "aggregator",
+    "directory",
+    "compare",
+    "comparison",
+    "price comparison",
+    "coupons",
+    "listings",
+)
+
+NON_COMPETITOR_HOST_HINTS = (
+    "wikipedia.org",
+    "youtube.com",
+    "instagram.com",
+    "facebook.com",
+    "linkedin.com",
+    "x.com",
+    "twitter.com",
+    "reddit.com",
+    "medium.com",
+    "quora.com",
+    "pinterest.com",
+    "blogspot.com",
+    "wordpress.com",
+)
+
+MARKETPLACE_SOURCE_HINTS = (
+    "marketplace",
+    "multi-brand",
+    "multibrand",
+    "shop by brand",
+    "shop-by-brand",
+    "all brands",
+    "browse brands",
+    "curated brands",
+    "one stop store",
+    "one-stop store",
+)
+
+DERM_SOURCE_HINTS = (
+    "dermatologist",
+    "dermatology",
+    "skin clinic",
+    "consultation",
+    "consult",
+    "teleconsult",
+    "telemedicine",
+    "prescription",
+    "acne treatment",
+)
 
 # TLD → country mapping (expand as needed)
 TLD_COUNTRY_MAP = {
@@ -155,6 +210,202 @@ GLOBAL_KEYWORDS = {
     "100+ countries", "180+ countries", "available in", "ships to",
     "serving customers in", "operating in", "offices in",
 }
+
+
+def _domain_to_name(url: str) -> str:
+    host = urlparse(url or "").netloc.lower().strip()
+    if host.startswith("www."):
+        host = host[4:]
+    base = host.split(":")[0].split(".")[0]
+    parts = re.findall(r"[A-Za-z0-9]+", base)
+    if not parts:
+        return host or "Unknown"
+    return " ".join(p.capitalize() for p in parts)
+
+
+def _extract_ddg_result_urls(html: str, brand_host: str) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for encoded in re.findall(r"uddg=([^&\"']+)", html or ""):
+        try:
+            candidate = unquote(encoded)
+        except Exception:
+            continue
+        normalized = _normalize_homepage_url(candidate)
+        if not normalized:
+            continue
+        host = urlparse(normalized).netloc.lower().replace("www.", "")
+        if any(h in host for h in NON_COMPETITOR_HOST_HINTS):
+            continue
+        if not host or host == brand_host or host.endswith("." + brand_host):
+            continue
+        if host in seen:
+            continue
+        seen.add(host)
+        urls.append(normalized)
+        if len(urls) >= WEB_CANDIDATE_LIMIT:
+            break
+    return urls
+
+
+def _merge_competitor_candidates(items: list[dict]) -> list[dict]:
+    merged_by_host: dict[str, dict] = {}
+    for comp in items:
+        url = _normalize_homepage_url(comp.get("url", ""))
+        if not url:
+            continue
+        host = urlparse(url).netloc.lower()
+        if not host:
+            continue
+        comp = dict(comp)
+        comp["url"] = url
+        existing = merged_by_host.get(host)
+        if existing is None:
+            merged_by_host[host] = comp
+            continue
+        prev_score = existing.get("relevance_score") or 0
+        new_score = comp.get("relevance_score") or 0
+        if new_score > prev_score:
+            merged_by_host[host] = comp
+    return list(merged_by_host.values())
+
+
+def _discover_web_candidates(
+    brand_name: str,
+    brand_url: str,
+    product_category: str,
+    industry: str,
+    country: str | None,
+) -> list[dict]:
+    brand_host = urlparse(brand_url or "").netloc.lower().replace("www.", "")
+    country_q = f" {country}" if country else ""
+    query_fragments = [
+        f"{brand_name} alternatives{country_q}",
+        f"{brand_name} competitors{country_q}",
+        f"best {product_category} brands{country_q}",
+        f"{industry} companies like {brand_name}{country_q}",
+    ]
+
+    candidates: list[dict] = []
+    seen_hosts: set[str] = set()
+    for q in query_fragments:
+        query = quote_plus(q.strip())
+        search_url = f"https://duckduckgo.com/html/?q={query}"
+        try:
+            resp = requests.get(
+                search_url,
+                headers={"User-Agent": USER_AGENT},
+                timeout=SEARCH_TIMEOUT_SEC,
+            )
+            if resp.status_code >= 400:
+                continue
+            result_urls = _extract_ddg_result_urls(resp.text, brand_host)
+        except requests.RequestException:
+            continue
+
+        for result_url in result_urls:
+            host = urlparse(result_url).netloc.lower()
+            if host in seen_hosts:
+                continue
+            seen_hosts.add(host)
+            candidates.append(
+                {
+                    "name": _domain_to_name(result_url),
+                    "url": result_url,
+                    "source": "web_search",
+                }
+            )
+            if len(candidates) >= WEB_CANDIDATE_LIMIT:
+                return candidates
+    return candidates
+
+
+def _is_likely_marketplace(comp: dict) -> bool:
+    sample = " ".join(
+        [
+            str(comp.get("name") or ""),
+            str(comp.get("industry") or ""),
+            str(comp.get("positioning") or ""),
+            str(comp.get("url") or ""),
+        ]
+    ).lower()
+    return any(hint in sample for hint in MARKETPLACE_HINTS)
+
+
+def _build_source_flags(site_context: str) -> dict:
+    text = (site_context or "").lower()
+    return {
+        "derm_led": any(h in text for h in DERM_SOURCE_HINTS),
+    }
+
+
+def _passes_source_specific_gate(comp: dict, is_marketplace: bool, source_flags: dict | None = None) -> bool:
+    source_flags = source_flags or {}
+    blob = " ".join(
+        [
+            str(comp.get("target_market") or ""),
+            str(comp.get("industry") or ""),
+            str(comp.get("positioning") or ""),
+            str(comp.get("name") or ""),
+            str(comp.get("url") or ""),
+        ]
+    ).lower()
+
+    if is_marketplace:
+        if any(k in blob for k in ("dtc", "direct-to-consumer", "single brand", "single-brand")):
+            return False
+        if not (_is_likely_marketplace(comp) or any(k in blob for k in ("marketplace", "platform", "retailer"))):
+            return False
+
+    if source_flags.get("derm_led"):
+        if not any(k in blob for k in ("derm", "skin", "clinic", "consult", "doctor", "prescription")):
+            return False
+
+    return True
+
+
+def _is_marketplace_like_competitor(comp: dict) -> bool:
+    blob = " ".join(
+        [
+            str(comp.get("target_market") or ""),
+            str(comp.get("industry") or ""),
+            str(comp.get("positioning") or ""),
+            str(comp.get("name") or ""),
+            str(comp.get("url") or ""),
+        ]
+    ).lower()
+    return _is_likely_marketplace(comp) or any(
+        k in blob for k in ("marketplace", "platform", "retailer", "multi-brand", "multibrand")
+    )
+
+
+def _infer_source_is_marketplace(
+    crawl: CrawlResult,
+    market_profile: dict | None,
+    understanding: dict | None,
+    site_context: str,
+) -> tuple[bool, list[str]]:
+    reasons: list[str] = []
+    model_type = str((market_profile or {}).get("model_type") or "").lower()
+    model_details = (market_profile or {}).get("model_details") or {}
+    product_brand_count = int(model_details.get("product_brand_count") or 0)
+
+    if model_type == "marketplace":
+        reasons.append("market_profile:model_type=marketplace")
+    if product_brand_count >= 8:
+        reasons.append(f"market_profile:product_brand_count={product_brand_count}")
+
+    business_model = str((understanding or {}).get("business_model") or "").lower()
+    if any(k in business_model for k in ("marketplace", "multi-brand", "multibrand", "aggregator", "platform")):
+        reasons.append(f"site_understanding:business_model={business_model[:60]}")
+
+    context_sample = f"{site_context}\n{crawl.text[:2000]}".lower()
+    matched_hints = [hint for hint in MARKETPLACE_SOURCE_HINTS if hint in context_sample]
+    if matched_hints:
+        reasons.append("context_hints:" + ",".join(matched_hints[:3]))
+
+    # At least one strong signal is enough for marketplace mode.
+    return (len(reasons) > 0), reasons
 
 def _detect_country_from_signals(crawl: CrawlResult) -> tuple[str | None, bool]:
     """
@@ -378,6 +629,8 @@ def _understand_site(
                 # Hard signals always override LLM's answer
                 if user_country:
                     data["primary_country"] = user_country
+                    # When user picks country, avoid mismatched city from model inference.
+                    data["primary_city"] = ""
                 elif is_global:
                     data["primary_country"] = "Global"
                 elif detected_country:
@@ -551,8 +804,68 @@ def _sort_competitors(candidates: list[dict], top_market: str | None = None) -> 
     )
 
 
+def _select_competitors_from_web_candidates_llm(
+    brand_name: str,
+    understanding: dict,
+    web_candidates: list[dict],
+    is_marketplace: bool,
+    primary_country: str,
+    is_global: bool,
+    customer_segment: str,
+    brand_revenue: str,
+) -> list[dict]:
+    if not web_candidates:
+        return []
+    try:
+        from .llm import ask_llm
+
+        candidates_block = "\n".join(
+            f"- {item.get('name', '')}: {item.get('url', '')}"
+            for item in web_candidates[:WEB_SHORTLIST_LIMIT]
+        )
+
+        prompt = (
+            f"You are selecting DIRECT competitors for '{brand_name}' from a web-retrieved shortlist.\n\n"
+            f"IMPORTANT: You must choose competitors ONLY from the provided candidate list.\n\n"
+            f"Brand profile:\n"
+            f"- Product category: {understanding.get('product_category', '')}\n"
+            f"- Industry: {understanding.get('industry', '')}\n"
+            f"- Business model: {understanding.get('business_model', '')}\n"
+            f"- Customer segment: {customer_segment or 'same as brand'}\n"
+            f"- Geography: {_geography_constraint(primary_country, is_global)}\n"
+            f"- Revenue band: {brand_revenue or 'unknown'}\n"
+            f"- Source brand marketplace: {'yes' if is_marketplace else 'no'}\n\n"
+            f"Candidates:\n{candidates_block}\n\n"
+            f"Return ONLY a JSON array (max 5), each object containing:\n"
+            f"- name\n- url\n- industry\n- tier\n- target_market\n- geography\n- pricing_model\n"
+            f"- estimated_revenue_band\n- positioning\n- relevance_score\n"
+            f"Use relevance_score 1-10 for directness."
+        )
+        text = ask_llm(
+            prompt,
+            preferred_provider="gemini",
+            max_tokens=1200,
+            purpose="Competitor Selection From Web Candidates",
+        )
+        shortlisted = _parse_competitors_from_llm(text, brand_name, is_marketplace=is_marketplace)
+        allowed_hosts = {
+            urlparse(_normalize_homepage_url(item.get("url", ""))).netloc.lower()
+            for item in web_candidates
+        }
+        filtered = []
+        for comp in shortlisted:
+            host = urlparse(_normalize_homepage_url(comp.get("url", ""))).netloc.lower()
+            if host in allowed_hosts:
+                filtered.append(comp)
+        return filtered[:5]
+    except Exception as exc:
+        logger.warning("Web-candidate competitor selection failed: %s", exc)
+        return []
+
+
 def _discover_competitors_llm(
     brand_name: str,
+    brand_url: str,
     understanding: dict,
     site_context: str,
     detected_country: str | None = None,
@@ -643,6 +956,28 @@ def _discover_competitors_llm(
             if user_country
             else f"Primary market country: {primary_country or 'Unknown'}."
         )
+        web_candidates = _discover_web_candidates(
+            brand_name=brand_name,
+            brand_url=brand_url,
+            product_category=product_category if understanding else "",
+            industry=industry if understanding else "",
+            country=primary_country if primary_country not in {"Global", "Unknown", ""} else None,
+        )
+        grounded_candidates = _select_competitors_from_web_candidates_llm(
+            brand_name=brand_name,
+            understanding=understanding or {},
+            web_candidates=web_candidates,
+            is_marketplace=is_marketplace,
+            primary_country=primary_country,
+            is_global=is_global,
+            customer_segment=customer_segment,
+            brand_revenue=brand_revenue,
+        )
+        web_candidates_block = (
+            "\n".join(f"- {item['name']}: {item['url']}" for item in web_candidates)
+            if web_candidates
+            else "No live web candidates fetched."
+        )
         prompt = (
             f"You are a senior competitive intelligence analyst.\n\n"
             f"Find exactly 5 DIRECT competitors for '{brand_name}'.\n\n"
@@ -651,6 +986,7 @@ def _discover_competitors_llm(
             f"{country_source_line}\n"
             f"Market profiler:\n{_market_profile_prompt_block(market_profile)}\n"
             f"Additional site signals:\n{compact_context}\n\n"
+            f"Live web candidate domains (internet-retrieved):\n{web_candidates_block}\n\n"
             f"HARD REQUIREMENTS — every competitor MUST satisfy ALL of these:\n"
             f"1. Same industry and same specific product/service category\n"
             f"2. Same or closely substitutable business model for the same buyer intent "
@@ -659,6 +995,8 @@ def _discover_competitors_llm(
             f"4. {_geography_constraint(primary_country, is_global)}\n"
             f"5. Similar revenue scale — within 1-2 bands of the brand ({brand_revenue or 'unknown'})\n"
             f"6. Active company with a real, working homepage URL\n\n"
+            f"Prefer selecting from the live web candidate domains whenever they satisfy direct-competitor rules.\n"
+            f"If the source brand is not a marketplace, marketplaces/aggregators/directories are not direct competitors.\n\n"
             f"{local_leader_preference}\n"
             f"{marketplace_rules}\n"
             f"STRICTLY EXCLUDE:\n"
@@ -681,7 +1019,24 @@ def _discover_competitors_llm(
         )
 
         text = ask_llm(prompt, preferred_provider="gemini", max_tokens=1200, purpose="Competitor Discovery")
-        candidates = _parse_competitors_from_llm(text, brand_name)
+        llm_candidates = _parse_competitors_from_llm(text, brand_name, is_marketplace=is_marketplace)
+        candidates = _merge_competitor_candidates(grounded_candidates + llm_candidates)
+        source_flags = _build_source_flags(site_context)
+        filtered_candidates = []
+        for comp in candidates:
+            if _passes_source_specific_gate(comp, is_marketplace=is_marketplace, source_flags=source_flags):
+                filtered_candidates.append(comp)
+            else:
+                logger.info("Dropping competitor %s: source-specific gate mismatch", comp.get("name"))
+        if len(filtered_candidates) >= 2:
+            candidates = filtered_candidates
+        else:
+            logger.info(
+                "Source-specific gate too restrictive for %s (kept %d/%d); relaxing gate fallback",
+                brand_name,
+                len(filtered_candidates),
+                len(candidates),
+            )
 
         gate_mode, gate_market, gate_conf = _market_gate_mode(
             primary_country=primary_country,
@@ -734,7 +1089,19 @@ def _discover_competitors_llm(
                 max_tokens=900,
                 purpose="Competitor Discovery Refill",
             )
-            refill_candidates = _parse_competitors_from_llm(refill_text, brand_name)
+            refill_candidates = _parse_competitors_from_llm(refill_text, brand_name, is_marketplace=is_marketplace)
+            gated_refill_candidates = [
+                comp
+                for comp in refill_candidates
+                if _passes_source_specific_gate(comp, is_marketplace=is_marketplace, source_flags=source_flags)
+            ]
+            if gated_refill_candidates:
+                refill_candidates = gated_refill_candidates
+            else:
+                logger.info(
+                    "Source-specific gate removed all refill candidates for %s; relaxing refill gate fallback",
+                    brand_name,
+                )
 
             selected_hosts = {urlparse(c["url"]).netloc.lower() for c in selected}
             unique_refill = []
@@ -877,7 +1244,7 @@ def _normalize_competitor_item(item: object, brand_name: str) -> dict | None:
     }
 
 
-def _parse_competitors_from_llm(text: str, brand_name: str) -> list[dict]:
+def _parse_competitors_from_llm(text: str, brand_name: str, is_marketplace: bool = False) -> list[dict]:
     match = re.search(r"\[.*\]", text or "", re.DOTALL)
     if not match:
         return []
@@ -901,6 +1268,9 @@ def _parse_competitors_from_llm(text: str, brand_name: str) -> list[dict]:
                 comp["name"], comp["relevance_score"], RELEVANCE_THRESHOLD,
             )
             continue
+        if not is_marketplace and _is_likely_marketplace(comp):
+            logger.info("Dropping competitor %s: looks like marketplace/aggregator", comp["name"])
+            continue
         host = urlparse(comp["url"]).netloc.lower()
         if host in seen_hosts:
             continue
@@ -917,9 +1287,37 @@ def _validate_url(url: str) -> bool:
             timeout=3,
             allow_redirects=True,
         )
-        return resp.status_code < 400
-    except requests.RequestException:
+        if resp.status_code < 400:
+            return True
+        # Some sites block HEAD; fall back to lightweight GET validation.
+        if resp.status_code in {403, 405}:
+            get_resp = requests.get(
+                url,
+                headers={"User-Agent": USER_AGENT},
+                timeout=4,
+                allow_redirects=True,
+                stream=True,
+            )
+            try:
+                return get_resp.status_code < 400
+            finally:
+                get_resp.close()
         return False
+    except requests.RequestException:
+        try:
+            get_resp = requests.get(
+                url,
+                headers={"User-Agent": USER_AGENT},
+                timeout=4,
+                allow_redirects=True,
+                stream=True,
+            )
+            try:
+                return get_resp.status_code < 400
+            finally:
+                get_resp.close()
+        except requests.RequestException:
+            return False
 
 
 def discover_competitors(crawl: CrawlResult, user_country: str | None = None) -> list[dict]:
@@ -980,9 +1378,23 @@ def discover_competitors(crawl: CrawlResult, user_country: str | None = None) ->
             understanding.get("estimated_annual_revenue_usd", ""),
             is_global,
         )
+    inferred_marketplace, marketplace_reasons = _infer_source_is_marketplace(
+        crawl=crawl,
+        market_profile=market_profile,
+        understanding=understanding,
+        site_context=site_context,
+    )
+    if inferred_marketplace and not is_marketplace:
+        is_marketplace = True
+        logger.info(
+            "Marketplace mode override for %s using signals: %s",
+            brand_name,
+            "; ".join(marketplace_reasons[:4]),
+        )
 
     competitors = _discover_competitors_llm(
         brand_name,
+        crawl.url,
         understanding,
         site_context,
         detected_country,
@@ -993,6 +1405,7 @@ def discover_competitors(crawl: CrawlResult, user_country: str | None = None) ->
     )
 
     validated = []
+    unvalidated = []
     for comp in competitors:
         if _validate_url(comp["url"]):
             validated.append(comp)
@@ -1001,12 +1414,25 @@ def discover_competitors(crawl: CrawlResult, user_country: str | None = None) ->
             if _validate_url(https_url):
                 comp["url"] = https_url
                 validated.append(comp)
+            else:
+                unvalidated.append(comp)
+        else:
+            unvalidated.append(comp)
+
+    selected = list(validated)
+    if len(selected) < 5 and unvalidated:
+        needed = 5 - len(selected)
+        for comp in unvalidated[:needed]:
+            comp["positioning"] = (
+                (comp.get("positioning") or "").strip() + " [LOW_CONFIDENCE_URL_UNVERIFIED]"
+            ).strip()
+            selected.append(comp)
 
     logger.info(
-        "Competitors for %s: %d discovered, %d validated",
-        brand_name, len(competitors), len(validated),
+        "Competitors for %s: %d discovered, %d validated, %d returned",
+        brand_name, len(competitors), len(validated), len(selected),
     )
-    return validated[:5]
+    return selected[:5]
 
 
 def score_competitor(url: str) -> tuple[dict | None, float]:

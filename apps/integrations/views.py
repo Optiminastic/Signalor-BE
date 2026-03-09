@@ -54,6 +54,20 @@ def _get_org_or_400(email):
     return org, None
 
 
+def _resolve_org(email: str, org_id: int | None = None):
+    """Resolve org by id (preferred) or fall back to email lookup."""
+    if org_id:
+        try:
+            org = Organization.objects.get(pk=org_id)
+            return org, None
+        except Organization.DoesNotExist:
+            return None, Response(
+                {"error": "Organization not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+    return _get_org_or_400(email)
+
+
 def _sign_state(payload: dict) -> str:
     """HMAC-sign a JSON state payload."""
     raw = json.dumps(payload, sort_keys=True)
@@ -232,19 +246,22 @@ class GACallbackView(APIView):
 
 
 class IntegrationStatusView(APIView):
-    """GET /api/integrations/status/?email="""
+    """GET /api/integrations/status/?email=&org_id="""
     permission_classes = [AllowAny]
     throttle_classes = []  # high-frequency read for dashboard/sidebar state
 
     def get(self, request):
         email = request.query_params.get("email", "").lower().strip()
+        org_id = request.query_params.get("org_id")
+        org_id = int(org_id) if org_id and org_id.isdigit() else None
+
         if not email:
             return Response(
                 {"error": "Email parameter is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        org, err = _get_org_or_400(email)
+        org, err = _resolve_org(email, org_id)
         if err:
             return err
 
@@ -620,13 +637,15 @@ class ShopifyConnectView(APIView):
 
 
 class ShopifyAuthURLView(APIView):
-    """GET /api/integrations/shopify/auth-url/?email=&shop=&return_to="""
+    """GET /api/integrations/shopify/auth-url/?email=&shop=&org_id=&return_to="""
     permission_classes = [AllowAny]
 
     def get(self, request):
         email = request.query_params.get("email", "").lower().strip()
         shop = request.query_params.get("shop", "").strip()
         return_to = request.query_params.get("return_to", "").strip() or "/settings/integrations"
+        org_id = request.query_params.get("org_id")
+        org_id = int(org_id) if org_id and org_id.isdigit() else None
 
         if not email or not shop:
             return Response(
@@ -634,7 +653,7 @@ class ShopifyAuthURLView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        org, err = _get_org_or_400(email)
+        org, err = _resolve_org(email, org_id)
         if err:
             return err
 
@@ -799,18 +818,21 @@ class ShopifyAppUninstalledWebhookView(APIView):
 
 
 class ShopifyDisconnectView(APIView):
-    """DELETE /api/integrations/shopify/disconnect/?email="""
+    """DELETE /api/integrations/shopify/disconnect/?email=&org_id="""
     permission_classes = [AllowAny]
 
     def delete(self, request):
         email = request.query_params.get("email", "").lower().strip()
+        org_id = request.query_params.get("org_id")
+        org_id = int(org_id) if org_id and org_id.isdigit() else None
+
         if not email:
             return Response(
                 {"error": "Email parameter is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        org, err = _get_org_or_400(email)
+        org, err = _resolve_org(email, org_id)
         if err:
             return err
 
@@ -832,18 +854,21 @@ class ShopifyDisconnectView(APIView):
 
 
 class ShopifySyncView(APIView):
-    """POST /api/integrations/shopify/sync/?email="""
+    """POST /api/integrations/shopify/sync/?email=&org_id="""
     permission_classes = [AllowAny]
 
     def post(self, request):
         email = request.query_params.get("email", "").lower().strip()
+        org_id = request.query_params.get("org_id")
+        org_id = int(org_id) if org_id and org_id.isdigit() else None
+
         if not email:
             return Response(
                 {"error": "Email parameter is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        org, err = _get_org_or_400(email)
+        org, err = _resolve_org(email, org_id)
         if err:
             return err
 
@@ -866,7 +891,7 @@ class ShopifySyncView(APIView):
 
 
 class ShopifyDataView(APIView):
-    """GET /api/integrations/shopify/data/?email="""
+    """GET /api/integrations/shopify/data/?email=&org_id="""
     permission_classes = [AllowAny]
 
     def get(self, request):
@@ -874,13 +899,16 @@ class ShopifyDataView(APIView):
         from django.utils import timezone
 
         email = request.query_params.get("email", "").lower().strip()
+        org_id = request.query_params.get("org_id")
+        org_id = int(org_id) if org_id and org_id.isdigit() else None
+
         if not email:
             return Response(
                 {"error": "Email parameter is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        org, err = _get_org_or_400(email)
+        org, err = _resolve_org(email, org_id)
         if err:
             return err
 

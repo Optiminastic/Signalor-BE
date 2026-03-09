@@ -10,7 +10,7 @@ import requests
 
 logger = logging.getLogger("apps")
 
-API_VERSION = "2024-01"
+API_VERSION = "2026-01"
 AUTH_SCOPES = ["read_products", "read_orders", "read_customers"]
 
 
@@ -18,8 +18,20 @@ def normalize_shop_domain(shop_domain: str) -> str:
     domain = shop_domain.strip().lower()
     domain = domain.replace("https://", "").replace("http://", "")
     domain = domain.rstrip("/")
+
+    # New Shopify admin URL: admin.shopify.com/store/<handle>[/...]
+    if "admin.shopify.com/store/" in domain:
+        handle = domain.split("admin.shopify.com/store/")[1].split("/")[0]
+        return f"{handle}.myshopify.com"
+
+    # Strip any path (e.g. mystore.myshopify.com/admin/products → mystore.myshopify.com)
+    domain = domain.split("/")[0]
+
     if not domain.endswith(".myshopify.com"):
-        domain = domain.split(".")[0] + ".myshopify.com"
+        # Use only the first subdomain/label as the store handle
+        subdomain = domain.split(".")[0]
+        return f"{subdomain}.myshopify.com"
+
     return domain
 
 
