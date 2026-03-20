@@ -1,134 +1,488 @@
 <!DOCTYPE html>
-<html>
+<html xmlns:pdf="http://www.w3.org/1999/xhtml">
 <head>
-    <meta charset="utf-8">
-    <title>GEO Analysis Report — {{ run.url }}</title>
-    <style>
-        body {
-            font-family: Helvetica, Arial, sans-serif;
-            color: #1a1a2e;
-            margin: 40px;
-            font-size: 12px;
-            line-height: 1.5;
-        }
-        h1 { color: #6c5ce7; font-size: 24px; margin-bottom: 5px; }
-        h2 { color: #2d3436; font-size: 18px; border-bottom: 2px solid #6c5ce7; padding-bottom: 5px; margin-top: 30px; }
-        h3 { color: #636e72; font-size: 14px; margin-top: 20px; }
-        .subtitle { color: #636e72; font-size: 14px; margin-bottom: 30px; }
-        .score-big {
-            font-size: 48px;
-            font-weight: bold;
-            color: #6c5ce7;
-            text-align: center;
-            margin: 20px 0;
-        }
-        .score-label { text-align: center; color: #636e72; font-size: 14px; }
-        table { width: 100%; border-collapse: collapse; margin: 10px 0; }
-        th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #dfe6e9; }
-        th { background: #f8f9fa; font-weight: 600; color: #2d3436; }
-        .pillar-row td:last-child { font-weight: bold; text-align: right; }
-        .badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 10px;
-            font-weight: bold;
-            text-transform: uppercase;
-        }
-        .badge-critical { background: #ff7675; color: white; }
-        .badge-high { background: #fdcb6e; color: #2d3436; }
-        .badge-medium { background: #74b9ff; color: white; }
-        .badge-low { background: #b2bec3; color: white; }
-        .rec-card {
-            border: 1px solid #dfe6e9;
-            border-radius: 6px;
-            padding: 12px;
-            margin: 8px 0;
-        }
-        .rec-title { font-weight: bold; margin-bottom: 4px; }
-        .rec-action { color: #2d3436; margin-top: 6px; font-style: italic; }
-        .footer {
-            margin-top: 40px;
-            padding-top: 15px;
-            border-top: 1px solid #dfe6e9;
-            color: #636e72;
-            font-size: 10px;
-            text-align: center;
-        }
-        .probe-result { margin: 5px 0; padding: 5px; background: #f8f9fa; border-radius: 4px; }
-        .mentioned { color: #00b894; font-weight: bold; }
-        .not-mentioned { color: #d63031; }
-    </style>
+  <meta charset="utf-8">
+  <title>GEO Analysis Report &mdash; {{ run.url }}</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 40pt 44pt 56pt 44pt;
+    }
+
+    body {
+      font-family: Helvetica, Arial, sans-serif;
+      color: #0D1117;
+      font-size: 10.5pt;
+      line-height: 1.65;
+      margin: 0;
+      padding: 0;
+    }
+
+    /* ─────────────────────────────────────────────
+       REPEATING PAGE FOOTER
+       Moved to end of <body> so its in-flow render
+       does not appear before the cover.
+       position:fixed keeps it on every page.
+    ───────────────────────────────────────────── */
+    .page-footer {
+      position: fixed;
+      bottom: -44pt;     /* 56pt bottom margin - 44pt height = 12pt from page edge */
+      left:   -44pt;
+      right:  -44pt;
+      height: 36pt;
+      background-color: #ffffff;
+      border-top: 1.5pt solid #C5CDFF;
+      padding: 8pt 44pt 0 44pt;
+    }
+    .footer-table { width: 100%; border: none; margin: 0; }
+    .footer-table td {
+      border: none; padding: 0;
+      font-size: 8.5pt; color: #5A6A7A; vertical-align: middle;
+    }
+    .footer-brand { font-weight: 600; color: #3A4ACF; }
+
+    /* ─────────────────────────────────────────────
+       COVER — table layout so xhtml2pdf renders ONE
+       solid background block, not fragmented boxes.
+    ───────────────────────────────────────────── */
+
+    /* Accent strip: negative margins bleed to page edges */
+    .cover-accent-strip {
+      background-color: #5B6BF8;
+      height: 5pt;
+      margin: -40pt -44pt 0 -44pt;
+      padding: 0;
+      font-size: 0;
+      line-height: 0;
+    }
+
+    /* Main cover block — table for reliable bg rendering */
+    .cover-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 0 -44pt;
+    }
+    .cover-main-cell {
+      background-color: #1E2A4A;
+      padding: 48pt 52pt 0 52pt;
+      vertical-align: top;
+    }
+    .cover-bottom-cell {
+      background-color: #172140;
+      padding: 22pt 52pt 48pt 52pt;
+      vertical-align: top;
+    }
+
+    /* Cover typography — padding-bottom only, never margin */
+    .cover-eyebrow {
+      font-size: 7pt;
+      font-weight: 700;
+      letter-spacing: 2.2pt;
+      text-transform: uppercase;
+      color: #8BA3FF;
+      padding: 0 0 26pt 0;
+      margin: 0;
+    }
+    .cover-title {
+      font-size: 34pt;
+      font-weight: 700;
+      color: #ffffff;
+      line-height: 1.12;
+      padding: 0 0 8pt 0;
+      margin: 0;
+    }
+    .cover-subtitle {
+      font-size: 11pt;
+      color: #6B7EA3;
+      font-weight: 400;
+      padding: 0 0 32pt 0;
+      margin: 0;
+    }
+    .cover-rule-cell {
+      background-color: #1E2A4A;
+      border-bottom: 1pt solid #2A3B5E;
+      padding: 0;
+      height: 0;
+      font-size: 0;
+      line-height: 0;
+    }
+    .cover-spacer-cell {
+      background-color: #1E2A4A;
+      height: 24pt;
+      padding: 0;
+      font-size: 0;
+      line-height: 0;
+    }
+    .cover-meta-cell {
+      background-color: #1E2A4A;
+      padding: 0 52pt 32pt 52pt;
+      vertical-align: top;
+    }
+    .cover-label {
+      font-size: 7pt;
+      color: #5A6F8C;
+      text-transform: uppercase;
+      letter-spacing: 1.5pt;
+      font-weight: 700;
+      padding: 0 0 5pt 0;
+      margin: 0;
+    }
+    .cover-brand-name {
+      font-size: 15pt;
+      color: #C8D5E8;
+      font-weight: 700;
+      padding: 0 0 20pt 0;
+      margin: 0;
+    }
+    .cover-url {
+      font-size: 11pt;
+      color: #8A9DBB;
+      font-weight: 500;
+      word-break: break-all;
+      padding: 0 0 24pt 0;
+      margin: 0;
+    }
+    .cover-meta {
+      font-size: 8.5pt;
+      color: #4A5E7A;
+      padding: 0 0 4pt 0;
+      margin: 0;
+    }
+    .cover-badge {
+      display: inline-block;
+      border: 1pt solid #2E4060;
+      color: #4A6080;
+      font-size: 7pt;
+      font-weight: 700;
+      letter-spacing: 1.8pt;
+      text-transform: uppercase;
+      padding: 3pt 12pt;
+    }
+
+    /* ── Section Headings ── */
+    h2 {
+      font-size: 14pt;
+      font-weight: 700;
+      color: #1E2A4A;
+      margin: 26pt 0 10pt 0;
+      padding-bottom: 6pt;
+      border-bottom: 2pt solid #5B6BF8;
+    }
+    p { margin: 0 0 8pt 0; }
+
+    /* ── Score Hero ── */
+    .score-hero-outer {
+      text-align: center;
+      margin: 12pt 0 24pt 0;
+    }
+    .score-hero-box {
+      display: inline-block;
+      background-color: #EEF1FF;
+      border: 1.5pt solid #B8C1FF;
+      padding: 22pt 52pt;
+      text-align: center;
+    }
+    .score-number {
+      font-size: 56pt;
+      font-weight: 700;
+      color: #3A4ACF;
+      line-height: 1;
+      margin: 0;
+    }
+    .score-label {
+      font-size: 8.5pt;
+      font-weight: 700;
+      color: #5A6A7A;
+      text-transform: uppercase;
+      letter-spacing: 0.6pt;
+      margin: 8pt 0 2pt 0;
+    }
+    .score-max {
+      font-size: 9pt;
+      color: #5A6A7A;
+      margin: 0;
+    }
+
+    /* ── Tables ── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 6pt 0 16pt 0;
+      font-size: 10pt;
+    }
+    th {
+      background-color: #1E2A4A;
+      color: #ffffff;
+      font-size: 8.5pt;
+      font-weight: 700;
+      padding: 8pt 11pt;
+      text-align: left;
+      text-transform: uppercase;
+      letter-spacing: 0.4pt;
+    }
+    td {
+      padding: 8pt 11pt;
+      border-bottom: 1pt solid #E1E7EF;
+      vertical-align: top;
+      color: #0D1117;
+    }
+    .row-even td { background-color: #F7F9FC; }
+    .pillar-score {
+      font-weight: 700;
+      text-align: right;
+      color: #3A4ACF;
+      font-size: 11.5pt;
+    }
+
+    /* ── Priority Badges ── */
+    .badge {
+      display: inline-block;
+      padding: 2pt 8pt;
+      font-size: 7.5pt;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5pt;
+      color: #ffffff;
+    }
+    .badge-critical { background-color: #DC2626; }
+    .badge-high     { background-color: #D97706; }
+    .badge-medium   { background-color: #2563EB; }
+    .badge-low      { background-color: #5A6A7A; }
+
+    /* ── Recommendation Cards ── */
+    .rec-card {
+      border: 1pt solid #E1E7EF;
+      border-left: 4pt solid #5B6BF8;
+      background-color: #F7F9FC;
+      padding: 10pt 14pt;
+      margin: 8pt 0;
+    }
+    .rec-card-critical { border-left-color: #DC2626; }
+    .rec-card-high     { border-left-color: #D97706; }
+    .rec-card-medium   { border-left-color: #2563EB; }
+    .rec-card-low      { border-left-color: #5A6A7A; }
+    .rec-title {
+      font-weight: 700;
+      font-size: 10.5pt;
+      color: #0D1117;
+    }
+    .rec-desc {
+      color: #374151;
+      font-size: 10pt;
+      margin: 5pt 0 4pt 0;
+    }
+    .rec-action {
+      color: #3A4ACF;
+      font-size: 9.5pt;
+      font-weight: 600;
+      margin: 4pt 0 0 0;
+    }
+    .rec-impact {
+      color: #5A6A7A;
+      font-size: 9pt;
+      margin: 3pt 0 0 0;
+    }
+
+    /* ── Competitor Table ── */
+    .comp-score {
+      text-align: right;
+      font-weight: 700;
+      color: #3A4ACF;
+      font-size: 11pt;
+    }
+
+    /* ── AI Probes ── */
+    .probe-card {
+      padding: 8pt 12pt;
+      border: 1pt solid #E1E7EF;
+      border-left: 3.5pt solid #E1E7EF;
+      background-color: #F7F9FC;
+      margin: 6pt 0;
+    }
+    .probe-mentioned     { border-left-color: #16A34A; }
+    .probe-not-mentioned { border-left-color: #DC2626; }
+    .probe-question {
+      font-weight: 700;
+      font-size: 10pt;
+      color: #0D1117;
+      margin: 0 0 4pt 0;
+    }
+    .mentioned     { color: #16A34A; font-weight: 700; font-size: 9.5pt; }
+    .not-mentioned { color: #DC2626; font-weight: 600; font-size: 9.5pt; }
+
+    /* ── Utils ── */
+    .muted      { color: #5A6A7A; }
+    .page-break { page-break-after: always; }
+  </style>
 </head>
 <body>
-    <h1>GEO Analysis Report</h1>
-    <p class="subtitle">{{ run.url }} — Generated {{ run.updated_at|date:"F j, Y" }}</p>
 
-    {% if run.composite_score is not None %}
-    <div class="score-big">{{ run.composite_score|floatformat:1 }}</div>
-    <p class="score-label">Overall GEO Score (out of 100)</p>
-    {% endif %}
+  <!-- ══════════════════════════════════════════
+       COVER PAGE
+       Uses table layout so xhtml2pdf renders a
+       single solid background — no fragmented boxes.
+  ═══════════════════════════════════════════ -->
 
-    {% if main_page %}
-    <h2>Pillar Breakdown</h2>
-    <table>
-        <tr><th>Pillar</th><th style="text-align:right">Score</th></tr>
-        <tr class="pillar-row"><td>Content Structure</td><td>{{ main_page.content_score|floatformat:1 }}</td></tr>
-        <tr class="pillar-row"><td>Schema Markup</td><td>{{ main_page.schema_score|floatformat:1 }}</td></tr>
-        <tr class="pillar-row"><td>E-E-A-T Signals</td><td>{{ main_page.eeat_score|floatformat:1 }}</td></tr>
-        <tr class="pillar-row"><td>Technical GEO</td><td>{{ main_page.technical_score|floatformat:1 }}</td></tr>
-        <tr class="pillar-row"><td>Entity Authority</td><td>{{ main_page.entity_score|floatformat:1 }}</td></tr>
-        <tr class="pillar-row"><td>AI Visibility</td><td>{{ main_page.ai_visibility_score|floatformat:1 }}</td></tr>
-    </table>
-    {% endif %}
+  <!-- Brand-color accent strip bleeding to page edges -->
+  <div class="cover-accent-strip">&nbsp;</div>
 
-    {% if recommendations %}
-    <h2>Recommendations</h2>
-    {% for rec in recommendations %}
-    <div class="rec-card">
-        <div>
-            <span class="badge badge-{{ rec.priority }}">{{ rec.priority }}</span>
-            <span class="rec-title">{{ rec.title }}</span>
-        </div>
-        <p>{{ rec.description }}</p>
-        <p class="rec-action">Fix: {{ rec.action }}</p>
-        {% if rec.impact_estimate %}
-        <p><small>{{ rec.impact_estimate }}</small></p>
+  <!-- Main dark cover block -->
+  <table class="cover-table">
+    <!-- ── Top content ── -->
+    <tr>
+      <td class="cover-main-cell">
+        <div class="cover-eyebrow">Optiminastic &mdash; AI Search Optimization</div>
+        <div class="cover-title">GEO Analysis<br>Report</div>
+        <div class="cover-subtitle">Generative Engine Optimization Intelligence</div>
+      </td>
+    </tr>
+    <!-- ── Hairline divider ── -->
+    <tr><td class="cover-rule-cell"></td></tr>
+    <tr><td class="cover-spacer-cell"></td></tr>
+    <!-- ── Brand & URL metadata ── -->
+    <tr>
+      <td class="cover-meta-cell">
+        {% if run.brand_name %}
+        <div class="cover-label">Brand</div>
+        <div class="cover-brand-name">{{ run.brand_name }}</div>
         {% endif %}
-    </div>
-    {% endfor %}
-    {% endif %}
+        <div class="cover-label">Analyzed URL</div>
+        <div class="cover-url">{{ run.url }}</div>
+      </td>
+    </tr>
+    <!-- ── Bottom meta band ── -->
+    <tr>
+      <td class="cover-bottom-cell">
+        <div class="cover-meta">Generated {{ run.updated_at|date:"F j, Y" }}</div>
+        <div class="cover-meta" style="padding-bottom: 16pt;">Prepared by Optiminastic</div>
+        <div class="cover-badge">Confidential</div>
+      </td>
+    </tr>
+  </table>
 
-    {% if competitors %}
-    <h2>Competitor Comparison</h2>
-    <table>
-        <tr><th>Competitor</th><th>URL</th><th style="text-align:right">Score</th></tr>
-        {% for comp in competitors %}
-        <tr>
-            <td>{{ comp.name }}</td>
-            <td>{{ comp.url }}</td>
-            <td style="text-align:right; font-weight:bold">{{ comp.composite_score|floatformat:1|default:"—" }}</td>
-        </tr>
-        {% endfor %}
+  <div class="page-break"></div>
+
+  <!-- ── Overall Score ── -->
+  {% if run.composite_score is not None %}
+  <h2>Overall GEO Score</h2>
+  <div class="score-hero-outer">
+    <div class="score-hero-box">
+      <div class="score-number">{{ run.composite_score|floatformat:0 }}</div>
+      <div class="score-label">GEO Score</div>
+      <div class="score-max">out of 100</div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- ── Pillar Breakdown ── -->
+  {% if main_page %}
+  <h2>Pillar Breakdown</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Pillar</th>
+        <th style="text-align: right;">Score / 100</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Content Structure</td>
+        <td class="pillar-score">{{ main_page.content_score|floatformat:1 }}</td>
+      </tr>
+      <tr class="row-even">
+        <td>Schema Markup</td>
+        <td class="pillar-score">{{ main_page.schema_score|floatformat:1 }}</td>
+      </tr>
+      <tr>
+        <td>E-E-A-T Signals</td>
+        <td class="pillar-score">{{ main_page.eeat_score|floatformat:1 }}</td>
+      </tr>
+      <tr class="row-even">
+        <td>Technical GEO</td>
+        <td class="pillar-score">{{ main_page.technical_score|floatformat:1 }}</td>
+      </tr>
+      <tr>
+        <td>Entity Authority</td>
+        <td class="pillar-score">{{ main_page.entity_score|floatformat:1 }}</td>
+      </tr>
+      <tr class="row-even">
+        <td>AI Visibility</td>
+        <td class="pillar-score">{{ main_page.ai_visibility_score|floatformat:1 }}</td>
+      </tr>
+    </tbody>
+  </table>
+  {% endif %}
+
+  <!-- ── Recommendations ── -->
+  {% if recommendations %}
+  <h2>Recommendations</h2>
+  {% for rec in recommendations %}
+  <div class="rec-card rec-card-{{ rec.priority }}">
+    <div>
+      <span class="badge badge-{{ rec.priority }}">{{ rec.priority }}</span>
+      &ensp;<span class="rec-title">{{ rec.title }}</span>
+    </div>
+    <p class="rec-desc">{{ rec.description }}</p>
+    <p class="rec-action">&#x25BA;&ensp;{{ rec.action }}</p>
+    {% if rec.impact_estimate %}
+    <p class="rec-impact">{{ rec.impact_estimate }}</p>
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% endif %}
+
+  <!-- ── Competitor Comparison ── -->
+  {% if competitors %}
+  <h2>Competitor Comparison</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Competitor</th>
+        <th>URL</th>
+        <th style="text-align: right;">GEO Score</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for comp in competitors %}
+      <tr{% if forloop.counter|divisibleby:2 %} class="row-even"{% endif %}>
+        <td style="font-weight: 600;">{{ comp.name }}</td>
+        <td class="muted" style="font-size: 9.5pt; word-break: break-all;">{{ comp.url }}</td>
+        <td class="comp-score">{{ comp.composite_score|floatformat:1|default:"&mdash;" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <!-- ── AI Visibility Probes ── -->
+  {% if ai_probes %}
+  <h2>AI Visibility Probes</h2>
+  {% for probe in ai_probes %}
+  <div class="probe-card {% if probe.brand_mentioned %}probe-mentioned{% else %}probe-not-mentioned{% endif %}">
+    <div class="probe-question">{{ probe.prompt_used }}</div>
+    {% if probe.brand_mentioned %}
+    <span class="mentioned">&#x2713;&ensp;Brand mentioned in AI response</span>
+    {% else %}
+    <span class="not-mentioned">&#x2717;&ensp;Brand not mentioned in AI response</span>
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% endif %}
+
+  <!-- ══════════════════════════════════════════
+       PAGE FOOTER — placed at end of body so its
+       in-flow render (xhtml2pdf quirk) falls at the
+       end of the last page, not the top of page 1.
+       position:fixed makes it repeat on every page.
+  ═══════════════════════════════════════════ -->
+  <div class="page-footer">
+    <table class="footer-table">
+      <tr>
+        <td><span class="footer-brand">Optiminastic</span> &mdash; GEO Analysis Report</td>
+        <td style="text-align: right; color: #9AA5B4;">Page <pdf:pagenumber> of <pdf:pagecount></td>
+      </tr>
     </table>
-    {% endif %}
+  </div>
 
-    {% if ai_probes %}
-    <h2>AI Visibility Probes</h2>
-    {% for probe in ai_probes %}
-    <div class="probe-result">
-        <strong>{{ probe.prompt_used }}</strong><br>
-        {% if probe.brand_mentioned %}
-        <span class="mentioned">Brand mentioned</span>
-        {% else %}
-        <span class="not-mentioned">Brand not mentioned</span>
-        {% endif %}
-    </div>
-    {% endfor %}
-    {% endif %}
-
-    <div class="footer">
-        <p>Generated by GEO Analyzer — Optiminastic</p>
-    </div>
 </body>
 </html>

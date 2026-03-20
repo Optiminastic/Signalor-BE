@@ -1,5 +1,6 @@
 from django.contrib import admin
 from django.urls import path, include
+
 from apps.analyzer.views import HealthCheckView
 
 urlpatterns = [
@@ -10,4 +11,5 @@ urlpatterns = [
     path('api/analyzer/', include('apps.analyzer.urls')),
     path('api/integrations/', include('apps.integrations.urls')),
     path('api/visibility/', include('apps.visibility.urls')),
+    path('api/recommendations/', include('apps.recommendation.urls')),
 ]

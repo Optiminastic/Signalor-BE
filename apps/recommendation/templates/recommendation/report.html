@@ -1,0 +1,78 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Recommendations Report</title>
+    <style>
+      body {
+        font-family: Arial, Helvetica, sans-serif;
+        color: #111827;
+        font-size: 12px;
+      }
+      h1, h2, h3 {
+        margin: 0 0 6px 0;
+      }
+      .muted {
+        color: #6b7280;
+      }
+      .summary {
+        border: 1px solid #e5e7eb;
+        padding: 10px;
+        border-radius: 8px;
+        margin-bottom: 16px;
+      }
+      .rec {
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 10px;
+        margin-bottom: 10px;
+      }
+      .pill {
+        display: inline-block;
+        padding: 2px 6px;
+        border-radius: 999px;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .high { background: #fee2e2; color: #b91c1c; }
+      .medium { background: #fef3c7; color: #92400e; }
+      .low { background: #e0f2fe; color: #075985; }
+      .section {
+        margin-bottom: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Recommendations Report</h1>
+    <p class="muted">Source URL: {{ source_url }}</p>
+
+    <div class="summary">
+      <h3>Summary</h3>
+      <div>Total recommendations: {{ summary.total }}</div>
+      <div>High: {{ summary.by_priority.high }} | Medium: {{ summary.by_priority.medium }} | Low: {{ summary.by_priority.low }}</div>
+    </div>
+
+    {% if recommendations %}
+      {% for rec in recommendations %}
+        <div class="rec">
+          <div class="section">
+            <span class="pill {{ rec.priority }}">{{ rec.priority }}</span>
+            <strong style="margin-left: 6px;">{{ rec.title }}</strong>
+          </div>
+          <div class="section">
+            <span class="muted">Category:</span> {{ rec.category }}
+          </div>
+          <div class="section">
+            <span class="muted">Why this matters:</span> {{ rec.reason }}
+          </div>
+          <div class="section">
+            <span class="muted">Recommended action:</span> {{ rec.action }}
+          </div>
+        </div>
+      {% endfor %}
+    {% else %}
+      <p>No recommendations were generated from this report.</p>
+    {% endif %}
+  </body>
+</html>

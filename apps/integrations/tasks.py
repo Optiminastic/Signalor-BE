@@ -10,6 +10,7 @@ from .models import (
     GADataSnapshot,
     Integration,
     ShopifyDataSnapshot,
+    WooCommerceDataSnapshot,
     WordPressDataSnapshot,
 )
 
@@ -179,6 +180,62 @@ def _run_wordpress_sync(integration_id: int):
 
     except Exception as e:
         logger.error("WordPress sync failed for integration %s: %s", integration_id, str(e))
+        snapshot.sync_status = "failed"
+        snapshot.error_message = str(e)
+        snapshot.save(update_fields=["sync_status", "error_message"])
+
+
+def start_woocommerce_sync(integration_id: int):
+    """Spawn a daemon thread to sync WooCommerce data."""
+    thread = threading.Thread(
+        target=_run_woocommerce_sync,
+        args=(integration_id,),
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def _run_woocommerce_sync(integration_id: int):
+    """Fetch WooCommerce data and store as a snapshot."""
+    try:
+        integration = Integration.objects.get(pk=integration_id)
+    except Integration.DoesNotExist:
+        logger.error("Integration %s not found for WooCommerce sync", integration_id)
+        return
+
+    end_date = date.today()
+    start_date = end_date - timedelta(days=30)
+
+    snapshot = WooCommerceDataSnapshot.objects.create(
+        integration=integration,
+        date_start=start_date,
+        date_end=end_date,
+        sync_status="syncing",
+    )
+
+    try:
+        from .services.woocommerce import fetch_woocommerce_data
+
+        data = fetch_woocommerce_data(integration, days=30)
+
+        snapshot.total_orders = data["total_orders"]
+        snapshot.total_revenue = data["total_revenue"]
+        snapshot.average_order_value = data["average_order_value"]
+        snapshot.total_products = data["total_products"]
+        snapshot.total_customers = data["total_customers"]
+        snapshot.top_products = data["top_products"]
+        snapshot.daily_orders = data["daily_orders"]
+        snapshot.sync_status = "complete"
+        snapshot.save()
+
+        logger.info(
+            "WooCommerce sync complete for integration %s: %d orders",
+            integration_id, data["total_orders"],
+        )
+
+    except Exception as e:
+        logger.error("WooCommerce sync failed for integration %s: %s", integration_id, str(e))
         snapshot.sync_status = "failed"
         snapshot.error_message = str(e)
         snapshot.save(update_fields=["sync_status", "error_message"])

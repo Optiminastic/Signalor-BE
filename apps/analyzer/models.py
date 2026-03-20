@@ -700,6 +700,60 @@ class BlogAutomationConfig(models.Model):
         return f"BlogConfig<{self.user_email} {self.site_url}>"
 
 
+class GeoImprovement(models.Model):
+    """Tracks an auto-applied GEO SEO improvement pushed to Shopify or WordPress."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        APPLIED = "applied", "Applied"
+        FAILED = "failed", "Failed"
+
+    class ImprovementType(models.TextChoices):
+        META_TITLE = "meta_title", "Meta Title"
+        META_DESCRIPTION = "meta_description", "Meta Description"
+        HREFLANG = "hreflang", "Hreflang Tag"
+        SCHEMA_MARKUP = "schema_markup", "Schema Markup"
+        ALT_TEXT = "alt_text", "Image Alt Text"
+        GEO_META = "geo_meta", "Geo Meta Tag"
+        CONTENT_UPDATE = "content_update", "Content Update"
+
+    analysis_run = models.ForeignKey(
+        AnalysisRun,
+        on_delete=models.CASCADE,
+        related_name="geo_improvements",
+    )
+    provider = models.CharField(max_length=20)  # shopify | wordpress
+    improvement_type = models.CharField(max_length=30, choices=ImprovementType.choices)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+
+    # What resource was updated (e.g. product ID, post ID, page ID)
+    resource_type = models.CharField(max_length=50, blank=True, default="")
+    resource_id = models.CharField(max_length=100, blank=True, default="")
+    resource_title = models.CharField(max_length=500, blank=True, default="")
+
+    # Before / after
+    field_name = models.CharField(max_length=100, blank=True, default="")
+    old_value = models.TextField(blank=True, default="")
+    new_value = models.TextField(blank=True, default="")
+
+    # Score impact
+    score_before = models.FloatField(null=True, blank=True)
+    score_after = models.FloatField(null=True, blank=True)
+
+    error_message = models.TextField(blank=True, default="")
+    applied_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["analysis_run", "status"]),
+        ]
+
+    def __str__(self):
+        return f"GeoImprovement<{self.improvement_type} {self.status}>"
+
+
 class BlogAutomationJob(models.Model):
     class Status(models.TextChoices):
         SCHEDULED = "scheduled", "Scheduled"

@@ -4,7 +4,8 @@ import json
 import logging
 import os
 import secrets
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
+import requests
 
 from django.conf import settings
 from django.core.cache import cache
@@ -23,6 +24,7 @@ from .models import (
     GADataSnapshot,
     Integration,
     ShopifyDataSnapshot,
+    WooCommerceDataSnapshot,
     WordPressDataSnapshot,
 )
 from .serializers import (
@@ -31,6 +33,8 @@ from .serializers import (
     SelectPropertySerializer,
     ShopifyConnectSerializer,
     ShopifyDataSnapshotSerializer,
+    WooCommerceConnectSerializer,
+    WooCommerceDataSnapshotSerializer,
     WordPressConnectSerializer,
     WordPressDataSnapshotSerializer,
 )
@@ -44,27 +48,25 @@ GA_SCOPES = [
 # ---------- helpers ----------
 
 def _get_org_or_400(email):
-    """Look up organization by email, return (org, None) or (None, Response)."""
+    """Return the org for this email, auto-creating a default one if needed."""
     org = Organization.objects.filter(owner_email=email).first()
     if not org:
-        return None, Response(
-            {"error": "Organization not found for this email."},
-            status=status.HTTP_404_NOT_FOUND,
+        org = Organization.objects.create(
+            name=email.split("@")[0],
+            url="",
+            owner_email=email,
         )
     return org, None
 
 
 def _resolve_org(email: str, org_id: int | None = None):
-    """Resolve org by id (preferred) or fall back to email lookup."""
+    """Resolve org by id (preferred) or fall back to email lookup (auto-creates)."""
     if org_id:
         try:
             org = Organization.objects.get(pk=org_id)
             return org, None
         except Organization.DoesNotExist:
-            return None, Response(
-                {"error": "Organization not found."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+            pass  # fall through to email lookup
     return _get_org_or_400(email)
 
 
@@ -637,6 +639,7 @@ class ShopifyAuthURLView(APIView):
         email = request.query_params.get("email", "").lower().strip()
         shop = request.query_params.get("shop", "").strip()
         return_to = request.query_params.get("return_to", "").strip() or "/settings/integrations"
+        frontend_base = request.query_params.get("frontend_base", "").strip()
         org_id = request.query_params.get("org_id")
         org_id = int(org_id) if org_id and org_id.isdigit() else None
 
@@ -650,6 +653,14 @@ class ShopifyAuthURLView(APIView):
         if err:
             return err
 
+        # Prefer the frontend origin supplied by the caller so local/prod
+        # environments redirect back to the same place the flow started.
+        parsed_frontend = urlparse(frontend_base) if frontend_base else None
+        if parsed_frontend and parsed_frontend.scheme in ("http", "https") and parsed_frontend.netloc:
+            resolved_frontend_base = f"{parsed_frontend.scheme}://{parsed_frontend.netloc}"
+        else:
+            resolved_frontend_base = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000").rstrip("/")
+
         from .services.shopify import build_shopify_oauth_url, normalize_shop_domain
 
         shop_domain = normalize_shop_domain(shop)
@@ -660,6 +671,7 @@ class ShopifyAuthURLView(APIView):
             "shop_domain": shop_domain,
             "nonce": nonce,
             "return_to": return_to,
+            "frontend_base": resolved_frontend_base,
         }
         cache.set(f"shopify_oauth_state:{nonce}", payload, timeout=15 * 60)
         state = _sign_state(payload)
@@ -718,6 +730,8 @@ class ShopifyCallbackView(APIView):
         payload = _verify_state(state_str)
         if not payload:
             return _redirect_with_status(False, "invalid_state")
+
+        frontend_base = (payload.get("frontend_base") or frontend_base).rstrip("/")
 
         return_to = payload.get("return_to", default_return_to)
         nonce = payload.get("nonce", "")
@@ -946,20 +960,60 @@ class WordPressConnectView(APIView):
     """POST /api/integrations/wordpress/connect/"""
     permission_classes = [AllowAny]
 
-    def post(self, request):
-        serializer = WordPressConnectSerializer(data=request.data)
+    def _connect(self, payload):
+        serializer = WordPressConnectSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+
+        site_url = data["site_url"]
+        is_wpcom = "wordpress.com" in site_url or "wp.com" in site_url
+
+        if not is_wpcom and not (data.get("username") and data.get("app_password")):
+            return Response(
+                {"error": "Username and Application Password are required for self-hosted WordPress."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         org, err = _get_org_or_400(data["email"])
         if err:
             return err
 
+        if is_wpcom:
+            client_id = os.getenv("WPCOM_CLIENT_ID", "").strip()
+            client_secret = os.getenv("WPCOM_CLIENT_SECRET", "").strip()
+            redirect_uri = os.getenv("WPCOM_REDIRECT_URI", "").strip()
+            if not (client_id and client_secret and redirect_uri):
+                return Response(
+                    {"error": "WordPress.com OAuth is not configured on this server."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            nonce = secrets.token_urlsafe(24)
+            state_payload = {
+                "nonce": nonce,
+                "email": data["email"],
+                "site_url": site_url,
+                "return_to": data.get("return_to", ""),
+                "frontend_base": data.get("frontend_base", ""),
+            }
+            cache.set(f"wp_oauth_state:{nonce}", state_payload, timeout=15 * 60)
+            auth_url = "https://public-api.wordpress.com/oauth2/authorize?" + urlencode(
+                {
+                    "client_id": client_id,
+                    "redirect_uri": redirect_uri,
+                    "response_type": "code",
+                    "blog": site_url,
+                    "scope": "global",
+                    "state": _sign_state(state_payload),
+                }
+            )
+            return Response({"oauth_url": auth_url})
+
         from .services.wordpress import validate_wordpress_connection
 
         try:
             wp_info = validate_wordpress_connection(
-                data["site_url"], data["username"], data["app_password"]
+                site_url, data.get("username", ""), data.get("app_password", "")
             )
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -973,7 +1027,7 @@ class WordPressConnectView(APIView):
         integration.metadata = {
             "site_url": wp_info["site_url"],
             "site_name": wp_info["site_name"],
-            "username": data["username"],
+            "username": data.get("username", ""),
             "wp_version": wp_info.get("wp_version", ""),
         }
         integration.save()
@@ -984,6 +1038,105 @@ class WordPressConnectView(APIView):
                 "integration": IntegrationSerializer(integration).data,
             }
         )
+
+    def post(self, request):
+        return self._connect(request.data)
+
+    def get(self, request):
+        # Fallback for accidental GET form submissions from client/UI.
+        return self._connect(request.query_params)
+
+
+class WordPressCallbackView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        def _redirect(ok: bool, reason: str = "", return_to: str = "", frontend_base: str = ""):
+            base = frontend_base or os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
+            safe_return = return_to or "/onboarding/company-info"
+            sep = "&" if "?" in safe_return else "?"
+            status_qs = f"wordpress={'connected' if ok else 'error'}"
+            if not ok and reason:
+                status_qs += f"&reason={reason}"
+            return HttpResponseRedirect(f"{base}{safe_return}{sep}{status_qs}")
+
+        code = request.query_params.get("code", "").strip()
+        state = request.query_params.get("state", "").strip()
+        if not code or not state:
+            return _redirect(False, "missing_code_or_state")
+
+        payload = _verify_state(state)
+        if not payload:
+            return _redirect(False, "invalid_state")
+
+        nonce = payload.get("nonce", "")
+        cached = cache.get(f"wp_oauth_state:{nonce}") if nonce else None
+        if nonce:
+            cache.delete(f"wp_oauth_state:{nonce}")
+        if not cached:
+            return _redirect(False, "state_expired")
+
+        email = cached.get("email", "").lower().strip()
+        site_url = cached.get("site_url", "").strip()
+        return_to = cached.get("return_to", "")
+        frontend_base = cached.get("frontend_base", "")
+
+        client_id = os.getenv("WPCOM_CLIENT_ID", "").strip()
+        client_secret = os.getenv("WPCOM_CLIENT_SECRET", "").strip()
+        redirect_uri = os.getenv("WPCOM_REDIRECT_URI", "").strip()
+        if not (client_id and client_secret and redirect_uri):
+            return _redirect(False, "oauth_not_configured", return_to, frontend_base)
+
+        try:
+            token_resp = requests.post(
+                "https://public-api.wordpress.com/oauth2/token",
+                data={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                    "grant_type": "authorization_code",
+                },
+                timeout=20,
+            )
+            if token_resp.status_code != 200:
+                return _redirect(False, "token_exchange_failed", return_to, frontend_base)
+            token_data = token_resp.json()
+            access_token = token_data.get("access_token", "")
+            if not access_token:
+                return _redirect(False, "missing_access_token", return_to, frontend_base)
+
+            me_resp = requests.get(
+                "https://public-api.wordpress.com/rest/v1.1/me",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=20,
+            )
+            me = me_resp.json() if me_resp.status_code == 200 else {}
+            username = me.get("username", "")
+            display_name = me.get("display_name", "") or username
+
+            org, err = _get_org_or_400(email)
+            if err:
+                return _redirect(False, "org_not_found", return_to, frontend_base)
+
+            integration, _ = Integration.objects.update_or_create(
+                organization=org,
+                provider=Integration.Provider.WORDPRESS,
+                defaults={"is_active": True},
+            )
+            integration.set_access_token(access_token)
+            integration.metadata = {
+                "site_url": site_url,
+                "site_name": display_name or site_url,
+                "username": username,
+                "auth_type": "wpcom_oauth",
+            }
+            integration.save()
+        except Exception:
+            logger.exception("WordPress OAuth callback failed")
+            return _redirect(False, "callback_exception", return_to, frontend_base)
+
+        return _redirect(True, return_to=return_to, frontend_base=frontend_base)
 
 
 class WordPressDisconnectView(APIView):
@@ -1105,4 +1258,172 @@ class WordPressDataView(APIView):
             start_wordpress_sync(integration.id)
 
         serializer = WordPressDataSnapshotSerializer(snapshot)
+        return Response(serializer.data)
+
+
+# ─────────────────────────────────────────────────────────────
+# WooCommerce
+# ─────────────────────────────────────────────────────────────
+
+class WooCommerceConnectView(APIView):
+    """POST /api/integrations/woocommerce/connect/"""
+    permission_classes = [AllowAny]
+
+    def _connect(self, payload):
+        serializer = WooCommerceConnectSerializer(data=payload)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        email = data["email"]
+        org_id = data.get("org_id")
+
+        org, err = _resolve_org(email, org_id)
+        if err:
+            return err
+
+        from .services.woocommerce import validate_woocommerce_connection
+
+        try:
+            site_info = validate_woocommerce_connection(
+                data["site_url"], data["consumer_key"], data["consumer_secret"]
+            )
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        integration, _ = Integration.objects.update_or_create(
+            organization=org,
+            provider=Integration.Provider.WOOCOMMERCE,
+            defaults={"is_active": True},
+        )
+        # consumer_secret → access_token (encrypted)
+        integration.set_access_token(data["consumer_secret"])
+        integration.metadata = {
+            "site_url": site_info["site_url"],
+            "site_name": site_info.get("site_name", data["site_url"]),
+            "wc_version": site_info.get("wc_version", ""),
+            "consumer_key": data["consumer_key"],  # not secret — stored in metadata
+        }
+        integration.save()
+
+        return Response({
+            "message": "WooCommerce connected successfully.",
+            "integration": IntegrationSerializer(integration).data,
+        })
+
+    def post(self, request):
+        return self._connect(request.data)
+
+    def get(self, request):
+        # Fallback for accidental GET form submissions from client/UI.
+        return self._connect(request.query_params)
+
+
+class WooCommerceDisconnectView(APIView):
+    """DELETE /api/integrations/woocommerce/disconnect/?email=&org_id="""
+    permission_classes = [AllowAny]
+
+    def delete(self, request):
+        email = request.query_params.get("email", "").lower().strip()
+        org_id = request.query_params.get("org_id")
+        org_id = int(org_id) if org_id and org_id.isdigit() else None
+
+        if not email:
+            return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        org, err = _resolve_org(email, org_id)
+        if err:
+            return err
+
+        deleted, _ = Integration.objects.filter(
+            organization=org,
+            provider=Integration.Provider.WOOCOMMERCE,
+        ).delete()
+
+        if not deleted:
+            return Response({"error": "WooCommerce not connected."}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({"message": "WooCommerce disconnected."})
+
+
+class WooCommerceSyncView(APIView):
+    """POST /api/integrations/woocommerce/sync/?email=&org_id="""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = (request.query_params.get("email") or request.data.get("email", "")).lower().strip()
+        org_id = request.query_params.get("org_id") or request.data.get("org_id")
+        org_id = int(org_id) if org_id and str(org_id).isdigit() else None
+
+        if not email:
+            return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        org, err = _resolve_org(email, org_id)
+        if err:
+            return err
+
+        try:
+            integration = Integration.objects.get(
+                organization=org,
+                provider=Integration.Provider.WOOCOMMERCE,
+                is_active=True,
+            )
+        except Integration.DoesNotExist:
+            return Response({"error": "WooCommerce not connected."}, status=status.HTTP_404_NOT_FOUND)
+
+        from .tasks import start_woocommerce_sync
+        start_woocommerce_sync(integration.id)
+
+        return Response({"message": "WooCommerce sync started."})
+
+
+class WooCommerceDataView(APIView):
+    """GET /api/integrations/woocommerce/data/?email=&org_id="""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from datetime import timedelta
+        from django.utils import timezone
+
+        email = request.query_params.get("email", "").lower().strip()
+        org_id = request.query_params.get("org_id")
+        org_id = int(org_id) if org_id and org_id.isdigit() else None
+
+        if not email:
+            return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        org, err = _resolve_org(email, org_id)
+        if err:
+            return err
+
+        try:
+            integration = Integration.objects.get(
+                organization=org,
+                provider=Integration.Provider.WOOCOMMERCE,
+                is_active=True,
+            )
+        except Integration.DoesNotExist:
+            return Response({"error": "WooCommerce not connected."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Prune old snapshots
+        cutoff = timezone.now() - timedelta(days=90)
+        integration.woocommerce_snapshots.filter(created_at__lt=cutoff).delete()
+
+        snapshot = integration.woocommerce_snapshots.first()
+        if not snapshot:
+            return Response(
+                {"error": "No data available. Trigger a sync first."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        stale_threshold = timezone.now() - timedelta(hours=24)
+        if (
+            snapshot.created_at < stale_threshold
+            and snapshot.sync_status == "complete"
+            and not integration.woocommerce_snapshots.filter(sync_status="syncing").exists()
+        ):
+            from .tasks import start_woocommerce_sync
+            start_woocommerce_sync(integration.id)
+
+        serializer = WooCommerceDataSnapshotSerializer(snapshot)
         return Response(serializer.data)

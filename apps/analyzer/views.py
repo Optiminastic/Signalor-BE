@@ -19,6 +19,7 @@ from apps.organizations.models import Organization
 from .models import (
     AnalysisRun,
     Competitor,
+    GeoImprovement,
     Recommendation,
     UserAction,
     UserGamification,
@@ -86,8 +87,24 @@ def _normalize_origin(url: str) -> str:
 def _resolve_crawl_site(email: str, run_id: int | None, analyzed_url: str) -> tuple[str, str]:
     """
     Resolve canonical site URL and source for crawl checks.
-    Priority: WordPress integration -> Shopify integration -> analyzed run URL.
+    Priority: analyzed URL -> analyzer run URL -> WordPress integration -> Shopify integration.
     """
+    # Prefer the exact analyzed URL origin first to avoid checking a different
+    # integration domain (e.g., myshopify.com vs custom storefront domain).
+    analyzed_origin = _normalize_origin(analyzed_url)
+    if analyzed_origin:
+        return analyzed_origin, "analyzed_url"
+
+    if run_id:
+        run = _safe_first(
+            AnalysisRun.objects.filter(pk=run_id),
+            context="crawl-site run lookup",
+        )
+        if run and run.url:
+            origin = _normalize_origin(run.url)
+            if origin:
+                return origin, "analyzer_run"
+
     org = _safe_first(
         Organization.objects.filter(owner_email=email),
         context="crawl-site org lookup",
@@ -118,20 +135,6 @@ def _resolve_crawl_site(email: str, run_id: int | None, analyzed_url: str) -> tu
             shop_domain = str(shopify.metadata.get("shop_domain", "")).strip()
             if shop_domain:
                 return _normalize_origin(f"https://{shop_domain}"), "shopify"
-
-    if run_id:
-        run = _safe_first(
-            AnalysisRun.objects.filter(pk=run_id),
-            context="crawl-site run lookup",
-        )
-        if run and run.url:
-            origin = _normalize_origin(run.url)
-            if origin:
-                return origin, "analyzer_run"
-
-    fallback = _normalize_origin(analyzed_url)
-    if fallback:
-        return fallback, "analyzed_url"
 
     return "", "unknown"
 
@@ -1867,3 +1870,104 @@ class CompetitorDetailView(APIView):
         competitor = get_object_or_404(Competitor, pk=competitor_id, analysis_run=run)
         competitor.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class GeoImprovementsView(APIView):
+    """GET /api/analyzer/runs/s/<slug>/geo-improvements/ — list auto-applied GEO fixes."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .pipeline.geo_improvement import get_all_recommendations_fix_plan
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        improvements = GeoImprovement.objects.filter(analysis_run=run).order_by("-created_at")
+
+        applied = [i for i in improvements if i.status == GeoImprovement.Status.APPLIED]
+        failed = [i for i in improvements if i.status == GeoImprovement.Status.FAILED]
+
+        def _serialize(imp):
+            return {
+                "id": imp.id,
+                "improvement_type": imp.improvement_type,
+                "provider": imp.provider,
+                "status": imp.status,
+                "resource_type": imp.resource_type,
+                "resource_id": imp.resource_id,
+                "resource_title": imp.resource_title,
+                "field_name": imp.field_name,
+                "old_value": imp.old_value,
+                "new_value": imp.new_value,
+                "score_before": imp.score_before,
+                "score_after": imp.score_after,
+                "error_message": imp.error_message,
+                "applied_at": imp.applied_at.isoformat() if imp.applied_at else None,
+                "created_at": imp.created_at.isoformat(),
+            }
+
+        return Response({
+            "total": len(improvements),
+            "applied_count": len(applied),
+            "failed_count": len(failed),
+            "improvements": [_serialize(i) for i in improvements],
+            "suggested_fixes": get_all_recommendations_fix_plan(run),
+        })
+
+
+class ApplyGeoFixesAndReanalyzeView(APIView):
+    """
+    POST /api/analyzer/runs/s/<slug>/apply-geo-fixes/
+    Manually apply GEO improvements to connected platform.
+    Optionally start a fresh analysis run (controlled by request body `reanalyze`).
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .pipeline.geo_improvement import get_geo_fix_plan, get_all_recommendations_fix_plan, run_geo_improvements
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        if run.status != AnalysisRun.Status.COMPLETE:
+            return Response(
+                {"error": "Analysis must be complete before applying fixes."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        reanalyze = bool(request.data.get("reanalyze", False))
+        applied_count = run_geo_improvements(run.id)
+
+        if reanalyze:
+            # Start a new run immediately so user can see score improvement
+            next_run = AnalysisRun.objects.create(
+                organization=run.organization,
+                url=run.url,
+                brand_name=run.brand_name,
+                country=run.country,
+                email=run.email,
+                run_type=run.run_type,
+                status=AnalysisRun.Status.PENDING,
+            )
+            start_analysis_task(next_run.id)
+
+            return Response(
+                {
+                    "message": "GEO fixes applied and re-analysis started.",
+                    "applied_count": applied_count,
+                    "requested_fixes": len(get_all_recommendations_fix_plan(run)),
+                    "next_run": {
+                        "id": next_run.id,
+                        "slug": next_run.slug,
+                        "status": next_run.status,
+                    },
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+        return Response(
+            {
+                "message": "GEO fixes applied.",
+                "applied_count": applied_count,
+                "requested_fixes": len(get_all_recommendations_fix_plan(run)),
+                "next_run": None,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )

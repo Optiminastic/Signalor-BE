@@ -24,6 +24,7 @@ class Integration(models.Model):
         GOOGLE_ANALYTICS = "google_analytics", "Google Analytics"
         SHOPIFY = "shopify", "Shopify"
         WORDPRESS = "wordpress", "WordPress"
+        WOOCOMMERCE = "woocommerce", "WooCommerce"
 
     organization = models.ForeignKey(
         "organizations.Organization",
@@ -208,3 +209,49 @@ class WordPressDataSnapshot(models.Model):
 
     def __str__(self):
         return f"WordPress Snapshot {self.date_start} - {self.date_end} ({self.sync_status})"
+
+
+class WooCommerceDataSnapshot(models.Model):
+    integration = models.ForeignKey(
+        Integration,
+        on_delete=models.CASCADE,
+        related_name="woocommerce_snapshots",
+    )
+    date_start = models.DateField()
+    date_end = models.DateField()
+
+    # Summary metrics
+    total_orders = models.IntegerField(default=0)
+    total_revenue = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    average_order_value = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    total_products = models.IntegerField(default=0)
+    total_customers = models.IntegerField(default=0)
+
+    # Detailed JSON data
+    top_products = models.JSONField(default=list, blank=True)
+    # [{"id": 123, "name": "...", "slug": "...", "total_sales": 50, "price": "29.99"}, ...]
+
+    daily_orders = models.JSONField(default=list, blank=True)
+    # [{"date": "2026-01-01", "orders": 5, "revenue": "250.00"}, ...]
+
+    sync_status = models.CharField(
+        max_length=20,
+        choices=[
+            ("pending", "Pending"),
+            ("syncing", "Syncing"),
+            ("complete", "Complete"),
+            ("failed", "Failed"),
+        ],
+        default="pending",
+    )
+    error_message = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["integration", "-created_at"]),
+        ]
+
+    def __str__(self):
+        return f"WooCommerce Snapshot {self.date_start} - {self.date_end} ({self.sync_status})"

@@ -17,7 +17,12 @@ from .views import (
     ShopifyDataView,
     ShopifyDisconnectView,
     ShopifySyncView,
+    WooCommerceConnectView,
+    WooCommerceDataView,
+    WooCommerceDisconnectView,
+    WooCommerceSyncView,
     WordPressConnectView,
+    WordPressCallbackView,
     WordPressDataView,
     WordPressDisconnectView,
     WordPressSyncView,
@@ -118,6 +123,11 @@ urlpatterns = [
         name="wordpress-connect",
     ),
     path(
+        "wordpress/callback/",
+        WordPressCallbackView.as_view(),
+        name="wordpress-callback",
+    ),
+    path(
         "wordpress/disconnect/",
         WordPressDisconnectView.as_view(),
         name="wordpress-disconnect",
@@ -132,6 +142,12 @@ urlpatterns = [
         WordPressDataView.as_view(),
         name="wordpress-data",
     ),
+
+    # WooCommerce
+    path("woocommerce/connect/",    WooCommerceConnectView.as_view(),    name="woocommerce-connect"),
+    path("woocommerce/disconnect/", WooCommerceDisconnectView.as_view(), name="woocommerce-disconnect"),
+    path("woocommerce/sync/",       WooCommerceSyncView.as_view(),       name="woocommerce-sync"),
+    path("woocommerce/data/",       WooCommerceDataView.as_view(),       name="woocommerce-data"),
 
     # Status
     path("status/", IntegrationStatusView.as_view(), name="status"),

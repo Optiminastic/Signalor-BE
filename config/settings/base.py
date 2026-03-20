@@ -1,4 +1,5 @@
 import os
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -27,6 +28,7 @@ INSTALLED_APPS = [
     'apps.analyzer.apps.AnalyzerConfig',
     'apps.integrations.apps.IntegrationsConfig',
     'apps.visibility.apps.VisibilityConfig',
+    'apps.recommendation.apps.RecommendationConfig',
     'core',
 ]
 
@@ -89,6 +91,12 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+# Discovery-engine PDF reports directory (override via env if needed)
+DISCOVERY_REPORTS_DIR = os.getenv(
+    "DISCOVERY_REPORTS_DIR",
+    str(BASE_DIR.parent / "discovery-engine" / "reports"),
+)
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 

@@ -4,6 +4,7 @@ from .models import (
     GADataSnapshot,
     Integration,
     ShopifyDataSnapshot,
+    WooCommerceDataSnapshot,
     WordPressDataSnapshot,
 )
 
@@ -74,8 +75,10 @@ class ShopifyDataSnapshotSerializer(serializers.ModelSerializer):
 class WordPressConnectSerializer(serializers.Serializer):
     email = serializers.EmailField()
     site_url = serializers.CharField(max_length=500)
-    username = serializers.CharField(max_length=255)
-    app_password = serializers.CharField(max_length=255)
+    username = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    app_password = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    return_to = serializers.CharField(max_length=500, required=False, allow_blank=True, default="")
+    frontend_base = serializers.CharField(max_length=500, required=False, allow_blank=True, default="")
 
     def validate_email(self, value):
         return value.lower().strip()
@@ -100,6 +103,43 @@ class WordPressDataSnapshotSerializer(serializers.ModelSerializer):
             "updated_posts_30d",
             "top_posts",
             "daily_publishing",
+            "sync_status",
+            "error_message",
+            "created_at",
+        ]
+
+
+class WooCommerceConnectSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    org_id = serializers.IntegerField(required=False, allow_null=True)
+    site_url = serializers.CharField(max_length=500)
+    consumer_key = serializers.CharField(max_length=500)
+    consumer_secret = serializers.CharField(max_length=500)
+
+    def validate_email(self, value):
+        return value.lower().strip()
+
+    def validate_site_url(self, value):
+        site_url = value.strip().rstrip("/")
+        if not site_url.startswith(("http://", "https://")):
+            site_url = f"https://{site_url}"
+        return site_url
+
+
+class WooCommerceDataSnapshotSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WooCommerceDataSnapshot
+        fields = [
+            "id",
+            "date_start",
+            "date_end",
+            "total_orders",
+            "total_revenue",
+            "average_order_value",
+            "total_products",
+            "total_customers",
+            "top_products",
+            "daily_orders",
             "sync_status",
             "error_message",
             "created_at",

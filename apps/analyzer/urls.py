@@ -32,6 +32,8 @@ from .views import (
     CitationTrendView,
     RecheckPromptView,
     RecheckAllPromptsView,
+    GeoImprovementsView,
+    ApplyGeoFixesAndReanalyzeView,
 )
 
 app_name = "analyzer"
@@ -46,6 +48,8 @@ urlpatterns = [
     path("runs/s/<str:slug>/recheck-all/",                     RecheckAllPromptsView.as_view(),  name="prompt-recheck-all"),
     path("runs/s/<str:slug>/share-of-voice/",                  ShareOfVoiceView.as_view(),       name="share-of-voice"),
     path("runs/s/<str:slug>/citation-trend/",                  CitationTrendView.as_view(),      name="citation-trend"),
+    path("runs/s/<str:slug>/geo-improvements/", GeoImprovementsView.as_view(), name="geo-improvements"),
+    path("runs/s/<str:slug>/apply-geo-fixes/", ApplyGeoFixesAndReanalyzeView.as_view(), name="apply-geo-fixes"),
     path("runs/s/<str:slug>/competitors/", CompetitorListCreateView.as_view(), name="competitor-list-create"),
     path("runs/s/<str:slug>/competitors/<int:competitor_id>/", CompetitorDetailView.as_view(), name="competitor-detail"),
     path("runs/s/<str:slug>/", AnalysisRunBySlugView.as_view(), name="run-by-slug"),

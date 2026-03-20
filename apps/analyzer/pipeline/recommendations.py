@@ -846,7 +846,7 @@ IMPACT_SCORES = {
     "crawl_timeout": 96,        # Too slow for any crawler
 }
 
-MAX_RECOMMENDATIONS = 10
+MAX_RECOMMENDATIONS = None
 
 
 def generate_recommendations(pillar_details: dict[str, dict]) -> list[dict]:
@@ -872,8 +872,8 @@ def generate_recommendations(pillar_details: dict[str, dict]) -> list[dict]:
         key=lambda r: (-r["impact_score"], PRIORITY_ORDER.get(r["priority"], 99))
     )
 
-    # Take top N recommendations
-    top = candidates[:MAX_RECOMMENDATIONS]
+    # Take all recommendations (no hard cap)
+    top = candidates if MAX_RECOMMENDATIONS is None else candidates[:MAX_RECOMMENDATIONS]
 
     # Remove internal impact_score before returning
     for rec in top:
