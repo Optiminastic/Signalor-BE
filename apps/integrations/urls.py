@@ -26,7 +26,6 @@ from .views import (
     WordPressDataView,
     WordPressDisconnectView,
     WordPressSyncView,
-    WordPressCallbackView
 )
 
 app_name = "integrations"
@@ -119,11 +118,6 @@ urlpatterns = [
         "wordpress/connect/",
         WordPressConnectView.as_view(),
         name="wordpress-connect",
-    ),
-    path(
-        "wordpress/callback/",
-        WordPressCallbackView.as_view(),
-        name="wordpress-callback",
     ),
     path(
         "wordpress/callback/",

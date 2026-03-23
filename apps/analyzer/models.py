@@ -826,3 +826,70 @@ class BlogAutomationJob(models.Model):
 
     def __str__(self):
         return f"BlogJob<{self.user_email} {self.status} {self.scheduled_for}>"
+
+
+class ScheduledAnalysis(models.Model):
+    class Frequency(models.TextChoices):
+        WEEKLY = "weekly"
+        MONTHLY = "monthly"
+
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="scheduled_analyses",
+    )
+    email = models.EmailField(db_index=True)
+    url = models.URLField(max_length=2048)
+    brand_name = models.CharField(max_length=255, blank=True, default="")
+    frequency = models.CharField(max_length=10, choices=Frequency.choices, default=Frequency.WEEKLY)
+    next_run_at = models.DateTimeField()
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    last_run_slug = models.CharField(max_length=20, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [("organization", "email")]
+        indexes = [
+            models.Index(fields=["next_run_at", "is_active"]),
+        ]
+
+    def __str__(self):
+        return f"Schedule<{self.email} {self.frequency}>"
+
+
+class AutoFixJob(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending"
+        RUNNING = "running"
+        SUCCESS = "success"
+        PARTIAL = "partial"
+        FAILED = "failed"
+
+    class FixType(models.TextChoices):
+        SCHEMA_MARKUP = "schema_markup"
+        META_DESCRIPTION = "meta_description"
+        FAQ_SECTION = "faq_section"
+
+    analysis_run = models.ForeignKey(
+        AnalysisRun, on_delete=models.CASCADE, related_name="auto_fix_jobs"
+    )
+    recommendation = models.ForeignKey(
+        Recommendation, on_delete=models.CASCADE, related_name="auto_fix_jobs"
+    )
+    integration = models.ForeignKey(
+        "integrations.Integration", on_delete=models.CASCADE, related_name="auto_fix_jobs"
+    )
+    fix_type = models.CharField(max_length=30, choices=FixType.choices)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    payload_sent = models.JSONField(default=dict, blank=True)
+    response_data = models.JSONField(default=dict, blank=True)
+    error_message = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"AutoFix<{self.fix_type} {self.status}>"

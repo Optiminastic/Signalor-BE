@@ -18,6 +18,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.accounts.subscription_utils import integration_connect_allowed_for_email
 from apps.organizations.models import Organization
 
 from .models import (
@@ -92,6 +93,35 @@ def _verify_state(state_str: str) -> dict | None:
     except (json.JSONDecodeError, KeyError, TypeError):
         pass
     return None
+
+
+def _deactivate_other_store_integration(org: Organization, keep_provider: str) -> None:
+    """
+    Only one store platform (WordPress or Shopify) may be active per organization.
+    When connecting `keep_provider`, deactivate the other integration row if present.
+    """
+    if keep_provider not in (
+        Integration.Provider.SHOPIFY,
+        Integration.Provider.WORDPRESS,
+    ):
+        return
+    other = (
+        Integration.Provider.WORDPRESS
+        if keep_provider == Integration.Provider.SHOPIFY
+        else Integration.Provider.SHOPIFY
+    )
+    n = Integration.objects.filter(
+        organization=org,
+        provider=other,
+        is_active=True,
+    ).update(is_active=False)
+    if n:
+        logger.info(
+            "Deactivated %s for org %s; %s is now the active store.",
+            other,
+            org.id,
+            keep_provider,
+        )
 
 
 def _redirect_with_status(
@@ -606,6 +636,13 @@ class ShopifyConnectView(APIView):
         if err:
             return err
 
+        allowed, sub_err = integration_connect_allowed_for_email(data["email"])
+        if not allowed:
+            return Response(
+                {"error": sub_err},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         # Validate against Shopify API
         from .services.shopify import validate_shopify_connection
 
@@ -631,6 +668,7 @@ class ShopifyConnectView(APIView):
             "shop_name": shop_info.get("name", data["shop_domain"]),
         }
         integration.save()
+        _deactivate_other_store_integration(org, Integration.Provider.SHOPIFY)
 
         return Response({
             "message": "Shopify connected successfully.",
@@ -659,6 +697,13 @@ class ShopifyAuthURLView(APIView):
         org, err = _resolve_org(email, org_id)
         if err:
             return err
+
+        allowed, sub_err = integration_connect_allowed_for_email(email)
+        if not allowed:
+            return Response(
+                {"error": sub_err},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         # Prefer the frontend origin supplied by the caller so local/prod
         # environments redirect back to the same place the flow started.
@@ -765,6 +810,15 @@ class ShopifyCallbackView(APIView):
         except Organization.DoesNotExist:
             return _shopify_redirect(False, "org_not_found", return_to=return_to)
 
+        oauth_email = (cached_payload.get("email") or "").lower().strip()
+        allowed, _ = integration_connect_allowed_for_email(oauth_email)
+        if not allowed:
+            return _shopify_redirect(
+                False,
+                "subscription_required",
+                return_to=return_to,
+            )
+
         try:
             tokens = exchange_shopify_oauth_code(
                 shop_domain=shop_domain,
@@ -790,13 +844,50 @@ class ShopifyCallbackView(APIView):
                 "scope": tokens.get("scope", ""),
             }
             integration.save()
+            _deactivate_other_store_integration(org, Integration.Provider.SHOPIFY)
 
+            # Keep org URL in sync for GEO analysis auto-start
+            primary_domain = (
+                shop_info.get("domain")
+                or shop_info.get("myshopify_domain")
+                or shop_domain
+            )
+            store_url = (
+                primary_domain
+                if str(primary_domain).startswith("http")
+                else f"https://{primary_domain}"
+            )
+            if org.url != store_url:
+                org.url = store_url
+                org.save(update_fields=["url"])
+
+            # Do not fail OAuth if webhook registration fails (network, wrong URL, dev vs prod).
             webhook_url = os.getenv("SHOPIFY_APP_UNINSTALLED_WEBHOOK_URL", "").strip()
             if webhook_url:
-                register_app_uninstalled_webhook(shop_domain, access_token, webhook_url)
+                try:
+                    register_app_uninstalled_webhook(
+                        shop_domain, access_token, webhook_url
+                    )
+                except Exception as webhook_exc:
+                    logger.warning(
+                        "Shopify app/uninstalled webhook skipped (non-fatal): %s",
+                        webhook_exc,
+                    )
+
+        except ValueError as exc:
+            # exchange_shopify_oauth_code / validate_shopify_connection
+            err = str(exc).lower()
+            if "token exchange" in err or "failed token exchange" in err:
+                reason = "token_exchange_failed"
+            elif "shopify_shop_frozen" in err:
+                reason = "shop_frozen"
+            else:
+                reason = "shopify_api_error"
+            logger.warning("Shopify OAuth validation: %s", exc)
+            return _shopify_redirect(False, reason, return_to=return_to)
 
         except Exception as exc:
-            logger.error("Shopify callback failed: %s", exc)
+            logger.exception("Shopify callback failed")
             return _shopify_redirect(False, "callback_failed", return_to=return_to)
 
         return _shopify_redirect(True, return_to=return_to)
@@ -965,140 +1056,68 @@ class ShopifyDataView(APIView):
 
 
 class WordPressConnectView(APIView):
-    """POST /api/integrations/wordpress/connect/"""
+    """POST /api/integrations/wordpress/connect/ — WordPress.com OAuth only."""
+
     permission_classes = [AllowAny]
 
-    def _connect(self, payload):
+    def _connect(self, request):
+        payload = request.data if request.method == "POST" else request.query_params
         serializer = WordPressConnectSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-
-        site_url = data["site_url"]
-        is_wpcom = "wordpress.com" in site_url or "wp.com" in site_url
-
-        if not is_wpcom and not (data.get("username") and data.get("app_password")):
-            return Response(
-                {"error": "Username and Application Password are required for self-hosted WordPress."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
 
         org, err = _get_org_or_400(data["email"])
         if err:
             return err
 
-        site_url = data["site_url"]
-
-        if ".wordpress.com" in site_url or ".wp.com" in site_url:
-            client_id = os.getenv("WORDPRESS_COM_CLIENT_ID", "")
-            redirect_uri = os.getenv("WORDPRESS_COM_REDIRECT_URI", "http://localhost:8000/api/integrations/wordpress/callback/")
-
-            if not client_id:
-                return Response(
-                    {"error": "WordPress.com OAuth is not configured."},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                )
-            state = secrets.token_urlsafe(32)
-            referer = request.META.get("HTTP_REFERER", "")
-            return_to = request.data.get("return_to", "")
-            if not return_to and referer:
-                from urllib.parse import urlparse
-                parsed = urlparse(referer)
-                return_to = parsed.path or "/settings/integrations"
-            if not return_to:
-                return_to = "/settings/integrations"
-
-            cache.set(
-                f"wordpress_oauth_state:{state}",
-                {
-                    "email": data["email"],
-                    "return_to": return_to,
-                },
-                timeout=600,  # 10 minutes
+        allowed, sub_err = integration_connect_allowed_for_email(data["email"])
+        if not allowed:
+            return Response(
+                {"error": sub_err},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
-            auth_params = {
+        site_url = data["site_url"]
+        client_id = os.getenv("WPCOM_CLIENT_ID", "").strip()
+        client_secret = os.getenv("WPCOM_CLIENT_SECRET", "").strip()
+        redirect_uri = os.getenv("WPCOM_REDIRECT_URI", "").strip()
+        if not (client_id and client_secret and redirect_uri):
+            return Response(
+                {"error": "WordPress.com OAuth is not configured on this server."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        nonce = secrets.token_urlsafe(24)
+        state_payload = {
+            "nonce": nonce,
+            "email": data["email"],
+            "site_url": site_url,
+            "return_to": (data.get("return_to") or "").strip(),
+            "frontend_base": (data.get("frontend_base") or "").strip(),
+        }
+        cache.set(f"wp_oauth_state:{nonce}", state_payload, timeout=15 * 60)
+        auth_url = "https://public-api.wordpress.com/oauth2/authorize?" + urlencode(
+            {
                 "client_id": client_id,
                 "redirect_uri": redirect_uri,
                 "response_type": "code",
-                "state": state,
-                "blog": site_url.rstrip("/"),
+                "blog": site_url,
+                "scope": "global",
+                "state": _sign_state(state_payload),
             }
-            auth_url = f"https://public-api.wordpress.com/oauth2/authorize?{urlencode(auth_params)}"
-
-            return Response({
-                "oauth_url": auth_url,
-                "message": "Redirect user to complete WordPress.com OAuth",
-            })
-
-        # Self-hosted WordPress with Application Password
-        if is_wpcom:
-            client_id = os.getenv("WPCOM_CLIENT_ID", "").strip()
-            client_secret = os.getenv("WPCOM_CLIENT_SECRET", "").strip()
-            redirect_uri = os.getenv("WPCOM_REDIRECT_URI", "").strip()
-            if not (client_id and client_secret and redirect_uri):
-                return Response(
-                    {"error": "WordPress.com OAuth is not configured on this server."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            nonce = secrets.token_urlsafe(24)
-            state_payload = {
-                "nonce": nonce,
-                "email": data["email"],
-                "site_url": site_url,
-                "return_to": data.get("return_to", ""),
-                "frontend_base": data.get("frontend_base", ""),
-            }
-            cache.set(f"wp_oauth_state:{nonce}", state_payload, timeout=15 * 60)
-            auth_url = "https://public-api.wordpress.com/oauth2/authorize?" + urlencode(
-                {
-                    "client_id": client_id,
-                    "redirect_uri": redirect_uri,
-                    "response_type": "code",
-                    "blog": site_url,
-                    "scope": "global",
-                    "state": _sign_state(state_payload),
-                }
-            )
-            return Response({"oauth_url": auth_url})
-
-        from .services.wordpress import validate_wordpress_connection
-
-        try:
-            wp_info = validate_wordpress_connection(
-                site_url, data.get("username", ""), data.get("app_password", "")
-            )
-        except ValueError as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-        integration, _ = Integration.objects.update_or_create(
-            organization=org,
-            provider=Integration.Provider.WORDPRESS,
-            defaults={"is_active": True},
         )
-        integration.set_access_token(data["app_password"])
-        integration.metadata = {
-            "site_url": wp_info["site_url"],
-            "site_name": wp_info["site_name"],
-            "username": data.get("username", ""),
-            "wp_version": wp_info.get("wp_version", ""),
-            "is_wpcom": False,
-        }
-        integration.save()
-
         return Response(
             {
-                "message": "WordPress connected successfully.",
-                "integration": IntegrationSerializer(integration).data,
+                "oauth_url": auth_url,
+                "message": "Redirect to WordPress.com to complete OAuth.",
             }
         )
 
     def post(self, request):
-        return self._connect(request.data)
+        return self._connect(request)
 
     def get(self, request):
-        # Fallback for accidental GET form submissions from client/UI.
-        return self._connect(request.query_params)
+        return self._connect(request)
 
 
 class WordPressCallbackView(APIView):
@@ -1135,6 +1154,15 @@ class WordPressCallbackView(APIView):
         return_to = cached.get("return_to", "")
         frontend_base = cached.get("frontend_base", "")
 
+        allowed, _ = integration_connect_allowed_for_email(email)
+        if not allowed:
+            return _redirect(
+                False,
+                "subscription_required",
+                return_to,
+                frontend_base,
+            )
+
         client_id = os.getenv("WPCOM_CLIENT_ID", "").strip()
         client_secret = os.getenv("WPCOM_CLIENT_SECRET", "").strip()
         redirect_uri = os.getenv("WPCOM_REDIRECT_URI", "").strip()
@@ -1160,6 +1188,29 @@ class WordPressCallbackView(APIView):
             if not access_token:
                 return _redirect(False, "missing_access_token", return_to, frontend_base)
 
+            blog_id = str(token_data.get("blog_id") or "").strip()
+            blog_url = (token_data.get("blog_url") or "").strip() or site_url
+
+            if not blog_id:
+                sites_resp = requests.get(
+                    "https://public-api.wordpress.com/rest/v1.1/me/sites",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params={"fields": "ID,URL,name"},
+                    timeout=20,
+                )
+                if sites_resp.status_code == 200:
+                    sites = sites_resp.json().get("sites", [])
+                    want = (blog_url or site_url).rstrip("/").lower()
+                    for s in sites:
+                        su = (s.get("URL") or "").rstrip("/").lower()
+                        if su and (su == want or want.endswith(su) or su.endswith(want)):
+                            blog_id = str(s.get("ID", ""))
+                            break
+                    if not blog_id and len(sites) == 1:
+                        blog_id = str(sites[0].get("ID", ""))
+                        if not blog_url:
+                            blog_url = (sites[0].get("URL") or "").strip() or site_url
+
             me_resp = requests.get(
                 "https://public-api.wordpress.com/rest/v1.1/me",
                 headers={"Authorization": f"Bearer {access_token}"},
@@ -1180,12 +1231,20 @@ class WordPressCallbackView(APIView):
             )
             integration.set_access_token(access_token)
             integration.metadata = {
-                "site_url": site_url,
-                "site_name": display_name or site_url,
+                "site_url": blog_url or site_url,
+                "site_name": display_name or blog_url or site_url,
                 "username": username,
                 "auth_type": "wpcom_oauth",
+                "is_wpcom": True,
+                "blog_id": blog_id,
             }
             integration.save()
+            _deactivate_other_store_integration(org, Integration.Provider.WORDPRESS)
+
+            canonical_site = (blog_url or site_url).strip()
+            if canonical_site and org.url != canonical_site:
+                org.url = canonical_site
+                org.save(update_fields=["url"])
         except Exception:
             logger.exception("WordPress OAuth callback failed")
             return _redirect(False, "callback_exception", return_to, frontend_base)
@@ -1258,79 +1317,6 @@ class WordPressSyncView(APIView):
 
         start_wordpress_sync(integration.id)
         return Response({"message": "Sync started."}, status=status.HTTP_202_ACCEPTED)
-
-
-class WordPressCallbackView(APIView):
-    """GET /api/integrations/wordpress/callback/"""
-    permission_classes = [AllowAny]
-
-    def get(self, request):
-        code = request.query_params.get("code")
-        state = request.query_params.get("state")
-
-        default_return_to = "/settings/integrations"
-
-        if not code:
-            logger.error("WordPress OAuth callback missing code")
-            return _redirect_with_status(False, "missing_code", return_to=default_return_to, provider="wordpress")
-
-        # Retrieve state data from cache
-        state_data = cache.get(f"wordpress_oauth_state:{state}") if state else None
-        if not state_data:
-            logger.error("WordPress OAuth state not found or expired")
-            return _redirect_with_status(False, "state_expired", return_to=default_return_to, provider="wordpress")
-
-        email = state_data.get("email")
-        return_to = state_data.get("return_to") or default_return_to
-
-        try:
-            org = Organization.objects.get(owner_email=email)
-        except Organization.DoesNotExist:
-            logger.error("Org not found for email: %s", email)
-            return _redirect_with_status(False, "org_not_found", return_to=return_to, provider="wordpress")
-
-        # Exchange code for access token
-        from .services.wordpress import exchange_wpcom_oauth_code, validate_wpcom_token
-
-        client_id = os.getenv("WORDPRESS_COM_CLIENT_ID", "")
-        client_secret = os.getenv("WORDPRESS_COM_CLIENT_SECRET", "")
-        redirect_uri = os.getenv("WORDPRESS_COM_REDIRECT_URI", "http://localhost:8000/api/integrations/wordpress/callback/")
-
-        try:
-            token_data = exchange_wpcom_oauth_code(client_id, client_secret, redirect_uri, code)
-            access_token = token_data.get("access_token")
-            blog_id = str(token_data.get("blog_id", ""))
-            blog_url = token_data.get("blog_url", "")
-
-            if not access_token:
-                return _redirect_with_status(False, "missing_token", return_to=return_to, provider="wordpress")
-
-            # Validate the token and get site info
-            site_info = validate_wpcom_token(access_token, blog_id)
-
-            integration, _ = Integration.objects.update_or_create(
-                organization=org,
-                provider=Integration.Provider.WORDPRESS,
-                defaults={"is_active": True},
-            )
-            integration.set_access_token(access_token)
-            integration.metadata = {
-                "site_url": blog_url,
-                "site_name": site_info.get("name", blog_url),
-                "username": site_info.get("username", email),
-                "blog_id": blog_id,
-                "is_wpcom": True,
-            }
-            integration.save()
-
-            cache.delete(f"wordpress_oauth_state:{state}")
-            logger.info("WordPress.com connected for org: %s", org.id)
-
-        except Exception as exc:
-            logger.error("WordPress.com callback failed: %s", exc)
-            return _redirect_with_status(False, "callback_failed", return_to=return_to, provider="wordpress")
-
-        return _redirect_with_status(True, return_to=return_to, provider="wordpress")
 
 
 class WordPressDataView(APIView):

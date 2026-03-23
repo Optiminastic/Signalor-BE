@@ -13,18 +13,25 @@ from .models import (
     BlogAutomationJob,
     PromptTrack,
     PromptResult,
+    ScheduledAnalysis,
     ACHIEVEMENTS_INFO,
     ACTION_TEMPLATES,
 )
 
 
 class RecommendationSerializer(serializers.ModelSerializer):
+    can_auto_fix = serializers.SerializerMethodField()
+
     class Meta:
         model = Recommendation
         fields = [
             "id", "pillar", "priority", "title", "description",
-            "action", "impact_estimate", "category",
+            "action", "impact_estimate", "category", "can_auto_fix",
         ]
+
+    def get_can_auto_fix(self, obj):
+        # Every recommendation is auto-fixable via AI
+        return True
 
 
 class AIVisibilityProbeSerializer(serializers.ModelSerializer):
@@ -319,4 +326,14 @@ class BlogAutomationJobSerializer(serializers.ModelSerializer):
             "error_message",
             "created_at",
             "updated_at",
+        ]
+
+
+class ScheduledAnalysisSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ScheduledAnalysis
+        fields = [
+            "id", "email", "url", "brand_name", "frequency",
+            "next_run_at", "last_run_at", "last_run_slug",
+            "is_active", "created_at",
         ]

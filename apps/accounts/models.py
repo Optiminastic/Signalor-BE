@@ -35,3 +35,28 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return self.username
+
+
+class Subscription(models.Model):
+    class Status(models.TextChoices):
+        ACTIVE = "active"
+        CANCELED = "canceled"
+        PAST_DUE = "past_due"
+        UNPAID = "unpaid"
+        TRIALING = "trialing"
+
+    email = models.EmailField(unique=True, db_index=True)
+    stripe_customer_id = models.CharField(max_length=255, blank=True, default="")
+    stripe_subscription_id = models.CharField(max_length=255, blank=True, default="")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.UNPAID)
+    current_period_end = models.DateTimeField(null=True, blank=True)
+    currency = models.CharField(max_length=3, default="usd")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.email} ({self.status})"
+
+    @property
+    def is_active(self):
+        return self.status in ("active", "trialing")

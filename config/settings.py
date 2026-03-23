@@ -23,7 +23,7 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 
 DEBUG = os.getenv('DEBUG', 'False') == 'True'
 
-ALLOWED_HOSTS = ['https://rankking-be.onrender.com','anking-fe-chi.vercel.app','api.signalor.ai','https://api.signalor.ai/'] 
+ALLOWED_HOSTS = ['rankking-be.onrender.com','ranking-fe-chi.vercel.app','signalorai-be.onrender.com','signalorai.vercel.app','api.signalor.ai','https://api.signalor.ai/'] 
 
 INSTALLED_APPS = [
     'django.contrib.admin',

@@ -137,6 +137,13 @@ def validate_shopify_connection(shop_domain: str, access_token: str) -> dict:
 
     if resp.status_code == 401:
         raise ValueError("Invalid access token. Check your Custom App credentials.")
+    if resp.status_code == 402:
+        # Common for dev stores: unpaid Shopify invoice → shop "frozen" → Admin API returns 402.
+        raise ValueError(
+            "SHOPIFY_SHOP_FROZEN: Shopify returned 402 Payment Required. "
+            "Log into that store's admin (Shopify) and clear any outstanding bill, "
+            "or use a different development store."
+        )
     if resp.status_code == 404:
         raise ValueError("Shop not found. Check the store domain.")
     if resp.status_code != 200:

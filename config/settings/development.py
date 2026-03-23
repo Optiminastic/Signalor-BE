@@ -12,6 +12,8 @@ _default_hosts = [
     "0.0.0.0",
     "rankking-be.onrender.com",
     "ranking-fe-chi.vercel.app",
+    "signalorai-be.onrender.com",
+    "signalorai.vercel.app",
     "api.signalor.ai",
 ]
 _env_hosts = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "").split(",") if h.strip()]
@@ -48,4 +50,11 @@ CACHES = {
     'default': {
         'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
     }
+}
+
+# Disable throttling in development
+REST_FRAMEWORK = {
+    **globals().get('REST_FRAMEWORK', {}),
+    'DEFAULT_THROTTLE_CLASSES': [],
+    'DEFAULT_THROTTLE_RATES': {},
 }

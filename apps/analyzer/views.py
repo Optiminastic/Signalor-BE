@@ -13,6 +13,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.accounts.subscription_utils import analysis_allowed_for_email
 from apps.integrations.models import Integration
 from apps.organizations.models import Organization
 
@@ -633,6 +634,10 @@ class StartAnalysisView(APIView):
         data = serializer.validated_data
         email = data.get("email", "")
         org_id = data.get("org_id")
+
+        allowed, sub_err = analysis_allowed_for_email(email)
+        if not allowed:
+            return Response({"error": sub_err}, status=status.HTTP_403_FORBIDDEN)
 
         # Block duplicate submissions: same URL still pending/running for the same org (or user)
         submitted_url = data["url"]
@@ -1872,102 +1877,258 @@ class CompetitorDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+# ── Score History ──────────────────────────────────────────────────────────
+
+class ScoreHistoryView(APIView):
+    """GET /api/analyzer/runs/history/?email=&org_id="""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        org_id = request.query_params.get("org_id")
+        email = request.query_params.get("email", "").lower().strip()
+
+        if org_id:
+            qs = AnalysisRun.objects.filter(organization_id=org_id, status="complete")
+        elif email:
+            qs = AnalysisRun.objects.filter(email=email, status="complete")
+        else:
+            return Response(
+                {"error": "Either email or org_id parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Order by when the run finished updating (score finalized); expose that as `date`
+        # so the chart shows distinct points per analysis, not just calendar day.
+        data = list(
+            qs.order_by("updated_at")
+            .values("id", "created_at", "updated_at", "composite_score", "slug")
+        )
+        result = []
+        prev_score = None
+        for row in data:
+            score = round(row["composite_score"] or 0, 1)
+            delta = None
+            pct = None
+            if prev_score is not None:
+                delta = round(score - prev_score, 1)
+                if prev_score != 0:
+                    pct = round((score - prev_score) / prev_score * 100, 1)
+            result.append(
+                {
+                    "id": row["id"],
+                    "date": row["updated_at"].isoformat(),
+                    "created_at": row["created_at"].isoformat(),
+                    "composite_score": score,
+                    "slug": row["slug"],
+                    "delta_from_previous": delta,
+                    "percent_change_from_previous": pct,
+                }
+            )
+            prev_score = score
+        return Response(result)
+
+
+# ── Scheduled Re-analysis ─────────────────────────────────────────────────
+
+class ScheduledAnalysisView(APIView):
+    """GET/POST /api/analyzer/schedule/"""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        email = request.query_params.get("email", "").lower().strip()
+        org_id = request.query_params.get("org_id")
+        if not email or not org_id:
+            return Response({"error": "email and org_id required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from .models import ScheduledAnalysis
+        try:
+            schedule = ScheduledAnalysis.objects.get(organization_id=org_id, email=email)
+            from .serializers import ScheduledAnalysisSerializer
+            return Response(ScheduledAnalysisSerializer(schedule).data)
+        except ScheduledAnalysis.DoesNotExist:
+            return Response(None, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        email = request.data.get("email", "").lower().strip()
+        org_id = request.data.get("org_id")
+        url = request.data.get("url", "").strip()
+        brand_name = request.data.get("brand_name", "").strip()
+        frequency = request.data.get("frequency", "weekly")
+        is_active = request.data.get("is_active", True)
+
+        if not email or not org_id or not url:
+            return Response({"error": "email, org_id, and url required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            org = Organization.objects.get(pk=org_id)
+        except Organization.DoesNotExist:
+            return Response({"error": "Organization not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        from .models import ScheduledAnalysis
+        delta = timedelta(days=7) if frequency == "weekly" else timedelta(days=30)
+
+        schedule, created = ScheduledAnalysis.objects.update_or_create(
+            organization=org,
+            email=email,
+            defaults={
+                "url": url,
+                "brand_name": brand_name,
+                "frequency": frequency,
+                "is_active": is_active,
+                "next_run_at": timezone.now() + delta,
+            },
+        )
+        from .serializers import ScheduledAnalysisSerializer
+        return Response(ScheduledAnalysisSerializer(schedule).data, status=status.HTTP_200_OK if not created else status.HTTP_201_CREATED)
+
+
+# ── Auto-Fix ──────────────────────────────────────────────────────────────
+
+class AutoFixView(APIView):
+    """GET/POST /api/analyzer/runs/s/<slug>/auto-fix/"""
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        """Return fix status for all recommendations in this run."""
+        from django.shortcuts import get_object_or_404
+        from .models import AutoFixJob
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        jobs = AutoFixJob.objects.filter(analysis_run=run).order_by("-created_at")
+
+        # Deduplicate: keep the latest job per recommendation
+        seen = {}
+        for job in jobs:
+            if job.recommendation_id not in seen:
+                seen[job.recommendation_id] = {
+                    "recommendation_id": job.recommendation_id,
+                    "status": job.status,
+                    "message": job.response_data.get("message", job.error_message or ""),
+                    "fix_type": job.fix_type,
+                }
+
+        return Response(list(seen.values()))
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .auto_fix import apply_fixes
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        recommendation_ids = request.data.get("recommendation_ids", [])
+        email = request.data.get("email", "").lower().strip()
+        org_id = request.data.get("org_id")
+
+        if not recommendation_ids or not email:
+            return Response({"error": "recommendation_ids and email are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Match Shopify vs WordPress to the analyzed URL (org may have both connected)
+        org = run.organization
+        if not org:
+            return Response({"error": "No organization linked to this run."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from .integration_resolve import resolve_store_integration_for_run
+
+        integration = resolve_store_integration_for_run(org, run.url or "")
+
+        if not integration:
+            return Response(
+                {"error": "No WordPress or Shopify integration connected. Connect one first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        recommendations = Recommendation.objects.filter(
+            id__in=recommendation_ids, analysis_run=run
+        )
+
+        results = apply_fixes(run, integration, list(recommendations))
+        return Response(results)
+
+
+# ── GEO improvements (fix plan + apply) ─────────────────────────────────────
+
 class GeoImprovementsView(APIView):
-    """GET /api/analyzer/runs/s/<slug>/geo-improvements/ — list auto-applied GEO fixes."""
+    """GET /api/analyzer/runs/s/<slug>/geo-improvements/"""
+
     permission_classes = [AllowAny]
 
     def get(self, request, slug):
         from django.shortcuts import get_object_or_404
+
         from .pipeline.geo_improvement import get_all_recommendations_fix_plan
+
         run = get_object_or_404(AnalysisRun, slug=slug)
-        improvements = GeoImprovement.objects.filter(analysis_run=run).order_by("-created_at")
-
-        applied = [i for i in improvements if i.status == GeoImprovement.Status.APPLIED]
-        failed = [i for i in improvements if i.status == GeoImprovement.Status.FAILED]
-
-        def _serialize(imp):
-            return {
-                "id": imp.id,
-                "improvement_type": imp.improvement_type,
-                "provider": imp.provider,
-                "status": imp.status,
-                "resource_type": imp.resource_type,
-                "resource_id": imp.resource_id,
-                "resource_title": imp.resource_title,
-                "field_name": imp.field_name,
-                "old_value": imp.old_value,
-                "new_value": imp.new_value,
-                "score_before": imp.score_before,
-                "score_after": imp.score_after,
-                "error_message": imp.error_message,
-                "applied_at": imp.applied_at.isoformat() if imp.applied_at else None,
-                "created_at": imp.created_at.isoformat(),
+        qs = GeoImprovement.objects.filter(analysis_run=run).order_by("-created_at")
+        improvements = []
+        for imp in qs:
+            improvements.append(
+                {
+                    "id": imp.id,
+                    "provider": imp.provider,
+                    "improvement_type": imp.improvement_type,
+                    "status": imp.status,
+                    "resource_type": imp.resource_type,
+                    "resource_id": imp.resource_id,
+                    "resource_title": imp.resource_title,
+                    "field_name": imp.field_name,
+                    "old_value": imp.old_value,
+                    "new_value": imp.new_value,
+                    "error_message": imp.error_message or "",
+                    "applied_at": imp.applied_at.isoformat() if imp.applied_at else None,
+                }
+            )
+        applied_count = sum(1 for i in improvements if i["status"] == "applied")
+        failed_count = sum(1 for i in improvements if i["status"] == "failed")
+        suggested_fixes = get_all_recommendations_fix_plan(run)
+        return Response(
+            {
+                "total": len(improvements),
+                "applied_count": applied_count,
+                "failed_count": failed_count,
+                "improvements": improvements,
+                "suggested_fixes": suggested_fixes,
             }
-
-        return Response({
-            "total": len(improvements),
-            "applied_count": len(applied),
-            "failed_count": len(failed),
-            "improvements": [_serialize(i) for i in improvements],
-            "suggested_fixes": get_all_recommendations_fix_plan(run),
-        })
+        )
 
 
 class ApplyGeoFixesAndReanalyzeView(APIView):
-    """
-    POST /api/analyzer/runs/s/<slug>/apply-geo-fixes/
-    Manually apply GEO improvements to connected platform.
-    Optionally start a fresh analysis run (controlled by request body `reanalyze`).
-    """
+    """POST /api/analyzer/runs/s/<slug>/apply-geo-fixes/"""
+
     permission_classes = [AllowAny]
 
     def post(self, request, slug):
         from django.shortcuts import get_object_or_404
-        from .pipeline.geo_improvement import get_geo_fix_plan, get_all_recommendations_fix_plan, run_geo_improvements
+
+        from .pipeline.geo_improvement import get_all_recommendations_fix_plan, run_geo_improvements
 
         run = get_object_or_404(AnalysisRun, slug=slug)
-        if run.status != AnalysisRun.Status.COMPLETE:
-            return Response(
-                {"error": "Analysis must be complete before applying fixes."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         reanalyze = bool(request.data.get("reanalyze", False))
-        applied_count = run_geo_improvements(run.id)
 
+        applied = run_geo_improvements(run.id)
+        plan_len = len(get_all_recommendations_fix_plan(run))
+
+        next_run_payload = None
         if reanalyze:
-            # Start a new run immediately so user can see score improvement
-            next_run = AnalysisRun.objects.create(
+            allowed, sub_err = analysis_allowed_for_email(run.email or "")
+            if not allowed:
+                return Response({"error": sub_err}, status=status.HTTP_403_FORBIDDEN)
+
+            new_run = AnalysisRun.objects.create(
                 organization=run.organization,
                 url=run.url,
-                brand_name=run.brand_name,
-                country=run.country,
-                email=run.email,
+                brand_name=run.brand_name or "",
+                country=run.country or "",
+                email=run.email or "",
                 run_type=run.run_type,
                 status=AnalysisRun.Status.PENDING,
             )
-            start_analysis_task(next_run.id)
-
-            return Response(
-                {
-                    "message": "GEO fixes applied and re-analysis started.",
-                    "applied_count": applied_count,
-                    "requested_fixes": len(get_all_recommendations_fix_plan(run)),
-                    "next_run": {
-                        "id": next_run.id,
-                        "slug": next_run.slug,
-                        "status": next_run.status,
-                    },
-                },
-                status=status.HTTP_202_ACCEPTED,
-            )
+            start_analysis_task(new_run.id)
+            next_run_payload = {"id": new_run.id, "slug": new_run.slug}
 
         return Response(
             {
                 "message": "GEO fixes applied.",
-                "applied_count": applied_count,
-                "requested_fixes": len(get_all_recommendations_fix_plan(run)),
-                "next_run": None,
-            },
-            status=status.HTTP_202_ACCEPTED,
+                "requested_fixes": plan_len,
+                "applied_count": applied,
+                "next_run": next_run_payload,
+            }
         )

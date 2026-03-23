@@ -953,16 +953,13 @@ def run_geo_improvements(run_id: int) -> int:
         logger.error("GeoImprovement: AnalysisRun %d not found", run_id)
         return 0
 
-    # Find integration — prefer Shopify, then WordPress, tied to the org
     if not run.organization_id:
         logger.info("GeoImprovement: run %d has no org, skipping", run_id)
         return 0
 
-    integration = Integration.objects.filter(
-        organization_id=run.organization_id,
-        provider__in=[Integration.Provider.SHOPIFY, Integration.Provider.WORDPRESS],
-        is_active=True,
-    ).first()
+    from apps.analyzer.integration_resolve import resolve_store_integration_for_run
+
+    integration = resolve_store_integration_for_run(run.organization, run.url or "")
 
     if not integration:
         logger.info("GeoImprovement: no Shopify/WP integration for run %d", run_id)
