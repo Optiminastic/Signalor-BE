@@ -1989,14 +1989,14 @@ class AutoFixView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, slug):
-        """Return fix status for all recommendations in this run."""
+        """Return fix status for all recommendations in this run, including cross-run fixes."""
         from django.shortcuts import get_object_or_404
         from .models import AutoFixJob
 
         run = get_object_or_404(AnalysisRun, slug=slug)
-        jobs = AutoFixJob.objects.filter(analysis_run=run).order_by("-created_at")
 
-        # Deduplicate: keep the latest job per recommendation
+        # 1. Fixes for this specific run
+        jobs = AutoFixJob.objects.filter(analysis_run=run).order_by("-created_at")
         seen = {}
         for job in jobs:
             if job.recommendation_id not in seen:
@@ -2006,6 +2006,30 @@ class AutoFixView(APIView):
                     "message": job.response_data.get("message", job.error_message or ""),
                     "fix_type": job.fix_type,
                 }
+
+        # 2. Check previous runs for the same org — match by recommendation title
+        if run.organization:
+            prev_fixes = (
+                AutoFixJob.objects
+                .filter(analysis_run__organization=run.organization, status="success")
+                .exclude(analysis_run=run)
+                .select_related("recommendation")
+            )
+            fixed_titles = set()
+            for job in prev_fixes:
+                if job.recommendation and job.recommendation.title:
+                    fixed_titles.add(job.recommendation.title.strip().lower())
+
+            # Match current run's recommendations by title
+            if fixed_titles:
+                for rec in run.recommendations.all():
+                    if rec.id not in seen and rec.title.strip().lower() in fixed_titles:
+                        seen[rec.id] = {
+                            "recommendation_id": rec.id,
+                            "status": "success",
+                            "message": "Previously fixed in an earlier analysis.",
+                            "fix_type": "content_enhance",
+                        }
 
         return Response(list(seen.values()))
 

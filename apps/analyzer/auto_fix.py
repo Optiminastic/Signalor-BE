@@ -16,6 +16,58 @@ logger = logging.getLogger("apps")
 # ALL categories are fixable
 FIXABLE_CATEGORIES = {"schema", "technical", "content", "eeat", "entity", "ai_visibility"}
 
+# LLM refusal phrases — if output starts with these, reject it
+_REFUSAL_PHRASES = [
+    "i cannot", "i can't", "not appropriate", "i notice", "i'm unable",
+    "as an ai", "i apologize", "unfortunately", "i'm sorry", "instead of",
+]
+
+
+def _sanitize_llm_output(text: str, purpose: str = "content") -> tuple[str, str | None]:
+    """Clean and validate LLM output. Returns (cleaned_text, error_or_none)."""
+    if not text or not text.strip():
+        return "", "AI returned empty content."
+
+    cleaned = text.strip()
+
+    # Strip markdown code block wrappers robustly
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        # Find first and last ``` lines
+        start = 0
+        end = len(lines)
+        for i, line in enumerate(lines):
+            if line.strip().startswith("```"):
+                start = i + 1
+                break
+        for i in range(len(lines) - 1, start - 1, -1):
+            if lines[i].strip().startswith("```"):
+                end = i
+                break
+        cleaned = "\n".join(lines[start:end]).strip()
+
+    if not cleaned:
+        return "", "AI output was empty after cleanup."
+
+    # Check for LLM refusals
+    lower = cleaned[:500].lower()
+    for phrase in _REFUSAL_PHRASES:
+        if lower.startswith(phrase):
+            return "", f"AI declined: {cleaned[:100]}..."
+
+    # For schema: validate JSON
+    if purpose == "schema":
+        import json as _json
+        import re as _re
+        json_match = _re.search(r'\{.*\}', cleaned, _re.DOTALL)
+        if json_match:
+            try:
+                _json.loads(json_match.group())
+            except _json.JSONDecodeError as e:
+                return "", f"Generated schema has invalid JSON: {e}"
+
+    return cleaned, None
+
 
 def _detect_fix_type(recommendation: Recommendation) -> str:
     """Every recommendation is fixable. Determine the approach."""
@@ -98,6 +150,17 @@ def _shopify_api(integration, path: str, method: str = "GET", payload: dict = No
     else:
         raise ValueError(f"Unsupported method: {method}")
     if not resp.ok:
+        if resp.status_code == 401:
+            raise ValueError("STORE_AUTH_EXPIRED: Shopify token expired. Reconnect your store in settings.")
+        if resp.status_code == 429:
+            raise ValueError("RATE_LIMITED: Shopify API rate limited. Try again in a minute.")
+        if resp.status_code == 422:
+            try:
+                errors = resp.json().get("errors", {})
+                msg = "; ".join(f"{k}: {v}" for k, v in errors.items()) if isinstance(errors, dict) else str(errors)
+                raise ValueError(f"Shopify validation error: {msg}")
+            except (ValueError, KeyError):
+                pass
         raise ValueError(f"Shopify API {resp.status_code}: {resp.text[:300]}")
     return resp.json()
 
@@ -121,34 +184,70 @@ def _fetch_page_content(integration, url: str) -> tuple[dict | None, str]:
 def _fetch_shopify_page(integration, url: str) -> tuple[dict | None, str]:
     from urllib.parse import urlparse
     parsed = urlparse(url)
-    handle = parsed.path.strip("/").split("/")[-1] if parsed.path.strip("/") else ""
+    path = parsed.path.strip("/")
+    handle = path.split("/")[-1] if path else ""
 
-    for resource in ["pages", "products"]:
-        try:
-            data = _shopify_api(integration, f"{resource}.json?handle={handle}&fields=id,handle,title,body_html")
-            items = data.get(resource, [])
-            if items:
-                return (
-                    {"type": resource, "id": items[0]["id"]},
-                    items[0].get("body_html", "") or "",
-                )
-        except Exception:
-            continue
+    # If URL has a specific path, try to find that page/product by handle
+    if handle:
+        for resource in ["pages", "products"]:
+            try:
+                data = _shopify_api(integration, f"{resource}.json?handle={handle}&fields=id,handle,title,body_html")
+                items = data.get(resource, [])
+                if items:
+                    return (
+                        {"type": resource, "id": items[0]["id"]},
+                        items[0].get("body_html", "") or "",
+                    )
+            except Exception:
+                continue
 
-    # Fallback: get first page
+    # Fallback: try to get any existing page
     try:
-        data = _shopify_api(integration, "pages.json?limit=1&fields=id,handle,title,body_html")
+        data = _shopify_api(integration, "pages.json?limit=5&fields=id,handle,title,body_html")
         pages = data.get("pages", [])
         if pages:
+            # Prefer a page with content
+            for p in pages:
+                if p.get("body_html", "").strip():
+                    return ({"type": "pages", "id": p["id"]}, p.get("body_html", ""))
             return ({"type": "pages", "id": pages[0]["id"]}, pages[0].get("body_html", "") or "")
     except Exception:
         pass
+
+    # Fallback: try first product
+    try:
+        data = _shopify_api(integration, "products.json?limit=1&fields=id,handle,title,body_html")
+        products = data.get("products", [])
+        if products:
+            return ({"type": "products", "id": products[0]["id"]}, products[0].get("body_html", "") or "")
+    except Exception:
+        pass
+
+    # Last resort: create a new page so we have something to work with
+    try:
+        data = _shopify_api(integration, "pages.json", method="POST", payload={
+            "page": {"title": "Home", "body_html": "", "published": True}
+        })
+        page = data.get("page", {})
+        if page.get("id"):
+            return ({"type": "pages", "id": page["id"]}, "")
+    except Exception:
+        pass
+
     return None, ""
 
 
+def _is_wpcom(integration) -> bool:
+    return bool(integration.metadata.get("is_wpcom", False))
+
+
 def _fetch_wp_page(integration, url: str) -> tuple[dict | None, str]:
-    from apps.integrations.services.wordpress import _normalize_site_url
     from urllib.parse import urlparse
+
+    if _is_wpcom(integration):
+        return _fetch_wpcom_page(integration, url)
+
+    from apps.integrations.services.wordpress import _normalize_site_url
     site_url = _normalize_site_url(integration.metadata.get("site_url", ""))
     headers = _wp_auth_headers(integration)
     parsed = urlparse(url)
@@ -166,26 +265,87 @@ def _fetch_wp_page(integration, url: str) -> tuple[dict | None, str]:
     return None, ""
 
 
+def _fetch_wpcom_page(integration, url: str) -> tuple[dict | None, str]:
+    """Fetch page from WordPress.com public API."""
+    blog_id = integration.metadata.get("blog_id", "")
+    token = integration.get_access_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Try posts first, then pages
+    for post_type in ["posts", "pages"]:
+        try:
+            api_url = f"https://public-api.wordpress.com/rest/v1.1/sites/{blog_id}/{post_type}/"
+            resp = requests.get(api_url, headers=headers, params={"number": 1}, timeout=15)
+            if resp.ok:
+                data = resp.json()
+                items = data.get(post_type, [])
+                if items:
+                    post = items[0]
+                    return (
+                        {"type": post_type, "id": post["ID"], "wpcom": True, "blog_id": blog_id},
+                        post.get("content", "") or "",
+                    )
+        except Exception:
+            continue
+
+    # Create a new post if none exists
+    try:
+        resp = requests.post(
+            f"https://public-api.wordpress.com/rest/v1.1/sites/{blog_id}/posts/new",
+            headers=headers,
+            json={"title": "Home", "content": "", "status": "publish"},
+            timeout=15,
+        )
+        if resp.ok:
+            post = resp.json()
+            return (
+                {"type": "posts", "id": post["ID"], "wpcom": True, "blog_id": blog_id},
+                "",
+            )
+    except Exception:
+        pass
+
+    return None, ""
+
+
 def _push_content(integration, page_info: dict, new_content: str) -> dict:
     """Push updated content back to the store."""
     provider = integration.provider
+
     if provider == "shopify":
         resource = page_info["type"]
         singular = resource.rstrip("s")
         _shopify_api(integration, f"{resource}/{page_info['id']}.json", method="PUT",
                      payload={singular: {"body_html": new_content}})
         return {"status": "success", "message": f"Content updated on Shopify {singular}."}
-    else:
-        from apps.integrations.services.wordpress import _normalize_site_url
-        site_url = _normalize_site_url(integration.metadata.get("site_url", ""))
-        headers = {**_wp_auth_headers(integration), "Content-Type": "application/json"}
+
+    # WordPress.com
+    if page_info.get("wpcom"):
+        blog_id = page_info["blog_id"]
+        post_id = page_info["id"]
+        token = integration.get_access_token()
+        headers = {"Authorization": f"Bearer {token}"}
         resp = requests.post(
-            f"{site_url}/wp-json/wp/v2/{page_info['type']}/{page_info['id']}",
-            headers=headers, json={"content": new_content}, timeout=15
+            f"https://public-api.wordpress.com/rest/v1.1/sites/{blog_id}/posts/{post_id}",
+            headers=headers,
+            json={"content": new_content},
+            timeout=15,
         )
         if resp.ok:
             return {"status": "success", "message": "Content updated on WordPress."}
-        raise ValueError(f"WordPress API error: {resp.status_code}")
+        raise ValueError(f"WordPress.com API error: {resp.status_code} {resp.text[:100]}")
+
+    # Self-hosted WordPress
+    from apps.integrations.services.wordpress import _normalize_site_url
+    site_url = _normalize_site_url(integration.metadata.get("site_url", ""))
+    headers = {**_wp_auth_headers(integration), "Content-Type": "application/json"}
+    resp = requests.post(
+        f"{site_url}/wp-json/wp/v2/{page_info['type']}/{page_info['id']}",
+        headers=headers, json={"content": new_content}, timeout=15
+    )
+    if resp.ok:
+        return {"status": "success", "message": "Content updated on WordPress."}
+    raise ValueError(f"WordPress API error: {resp.status_code}")
 
 
 # ── Fix Executors ─────────────────────────────────────────────────────────
@@ -222,14 +382,10 @@ IMPORTANT RULES:
 7. Do NOT wrap the output in markdown code blocks (no ```).
 8. Do NOT add explanations before or after — just the HTML."""
 
-    enhanced = _call_llm(prompt, f"enhance-{recommendation.category}")
-    if not enhanced.strip():
-        return {"status": "failed", "message": "AI failed to generate enhanced content."}
-
-    # Strip markdown wrappers if present
-    if enhanced.startswith("```"):
-        lines = enhanced.split("\n")
-        enhanced = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+    raw = _call_llm(prompt, f"enhance-{recommendation.category}")
+    enhanced, err = _sanitize_llm_output(raw, "content")
+    if err:
+        return {"status": "failed", "message": err}
 
     return _push_content(integration, page_info, enhanced)
 
@@ -257,13 +413,10 @@ Generate valid JSON-LD wrapped in <script type="application/ld+json"> tags. Incl
 
 Return ONLY the <script> tag(s). No markdown, no explanations."""
 
-    schema_html = _call_llm(prompt, "generate-schema")
-    if not schema_html.strip():
-        return {"status": "failed", "message": "AI failed to generate schema."}
-
-    if schema_html.startswith("```"):
-        lines = schema_html.split("\n")
-        schema_html = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+    raw = _call_llm(prompt, "generate-schema")
+    schema_html, err = _sanitize_llm_output(raw, "schema")
+    if err:
+        return {"status": "failed", "message": err}
 
     if "<script" not in schema_html:
         schema_html = f'<script type="application/ld+json">\n{schema_html}\n</script>'
@@ -308,13 +461,10 @@ Return ONLY the llms.txt content. No markdown code blocks."""
     else:
         return {"status": "failed", "message": f"Unknown file type in: {recommendation.title}"}
 
-    file_content = _call_llm(prompt, f"generate-{filename}")
-    if not file_content.strip():
-        return {"status": "failed", "message": f"AI failed to generate {filename}."}
-
-    if file_content.startswith("```"):
-        lines = file_content.split("\n")
-        file_content = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+    raw = _call_llm(prompt, f"generate-{filename}")
+    file_content, err = _sanitize_llm_output(raw, "file")
+    if err:
+        return {"status": "failed", "message": err}
 
     provider = integration.provider
     slug = filename.replace(".", "-")
@@ -345,7 +495,28 @@ Return ONLY the llms.txt content. No markdown code blocks."""
                 except Exception:
                     pass
             return {"status": "failed", "message": f"Failed to create {filename}: {e}"}
+    elif _is_wpcom(integration):
+        # WordPress.com — use public API
+        blog_id = integration.metadata.get("blog_id", "")
+        token = integration.get_access_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        site_url = integration.metadata.get("site_url", "")
+
+        try:
+            resp = requests.post(
+                f"https://public-api.wordpress.com/rest/v1.1/sites/{blog_id}/posts/new",
+                headers=headers,
+                json={"title": filename, "slug": slug, "content": f"<pre style='white-space:pre-wrap;'>{file_content}</pre>", "status": "publish"},
+                timeout=15,
+            )
+            if resp.ok:
+                post_url = resp.json().get("URL", f"{site_url}/{slug}")
+                return {"status": "success", "message": f"{filename} created at {post_url}"}
+            return {"status": "failed", "message": f"WordPress.com API error: {resp.status_code}"}
+        except Exception as e:
+            return {"status": "failed", "message": str(e)}
     else:
+        # Self-hosted WordPress
         from apps.integrations.services.wordpress import _normalize_site_url
         site_url = _normalize_site_url(integration.metadata.get("site_url", ""))
         headers = {**_wp_auth_headers(integration), "Content-Type": "application/json"}
@@ -403,14 +574,44 @@ def apply_fixes(run, integration, recommendations: list[Recommendation]) -> list
                 "fix_type": fix_type,
             })
         except Exception as e:
+            error_str = str(e)
             logger.exception(f"Auto-fix failed for rec {rec.id}")
+
+            # Rate limit backoff — wait and retry once
+            if "429" in error_str or "RATE_LIMITED" in error_str:
+                logger.warning("Rate limited — waiting 30s before retry")
+                time.sleep(30)
+                try:
+                    result = executor(integration, run, rec)
+                    job.status = result["status"]
+                    job.response_data = result
+                    job.save(update_fields=["status", "response_data"])
+                    results.append({
+                        "recommendation_id": rec.id,
+                        "status": result["status"],
+                        "message": result["message"],
+                        "fix_type": fix_type,
+                    })
+                    continue
+                except Exception as retry_e:
+                    error_str = str(retry_e)
+                    logger.warning("Retry also failed: %s", error_str)
+
+            # User-friendly error messages
+            if "STORE_AUTH_EXPIRED" in error_str:
+                msg = "Store authentication expired. Please reconnect in settings."
+            elif "RATE_LIMITED" in error_str:
+                msg = "Store API rate limited. Please try again later."
+            else:
+                msg = error_str
+
             job.status = "failed"
-            job.error_message = str(e)
+            job.error_message = msg
             job.save(update_fields=["status", "error_message"])
             results.append({
                 "recommendation_id": rec.id,
                 "status": "failed",
-                "message": str(e),
+                "message": msg,
                 "fix_type": fix_type,
             })
 

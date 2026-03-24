@@ -82,6 +82,15 @@ class SubscriptionStatusView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
+        # Skip payment check if disabled via env
+        if os.getenv("DISABLE_PAYMENT", "").lower() in ("true", "1", "yes"):
+            return Response({
+                "is_active": True,
+                "status": "active",
+                "current_period_end": None,
+                "currency": "usd",
+            })
+
         email = request.query_params.get("email", "").lower().strip()
         if not email:
             return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)

@@ -18,10 +18,13 @@ def _integration_subscription_required() -> bool:
     """
     Whether Shopify/WordPress OAuth must have an active Stripe subscription.
 
+    - DISABLE_PAYMENT=true → never enforce (local dev shortcut)
     - REQUIRE_SUBSCRIPTION_FOR_INTEGRATIONS=true  → always enforce
     - REQUIRE_SUBSCRIPTION_FOR_INTEGRATIONS=false → never enforce
     - unset → enforce only when DEBUG is False (production); allow on local DEBUG
     """
+    if os.environ.get("DISABLE_PAYMENT", "").strip().lower() in ("1", "true", "yes"):
+        return False
     raw = os.environ.get("REQUIRE_SUBSCRIPTION_FOR_INTEGRATIONS", "").strip().lower()
     if raw in ("0", "false", "no"):
         return False

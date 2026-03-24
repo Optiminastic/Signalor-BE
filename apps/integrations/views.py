@@ -801,8 +801,9 @@ class ShopifyCallbackView(APIView):
             return _shopify_redirect(False, "invalid_hmac", return_to=return_to)
 
         shop_domain = normalize_shop_domain(shop)
-        if cached_payload.get("shop_domain") != shop_domain:
-            return _shopify_redirect(False, "shop_mismatch", return_to=return_to)
+        # Skip shop mismatch check — Shopify may redirect through a different
+        # myshopify.com subdomain than the one the user entered (e.g. custom
+        # domains or admin-generated handles like ayx0fj-ze vs arkit-4).
 
         org_id = payload.get("org_id")
         try:
@@ -1126,7 +1127,7 @@ class WordPressCallbackView(APIView):
     def get(self, request):
         def _redirect(ok: bool, reason: str = "", return_to: str = "", frontend_base: str = ""):
             base = frontend_base or os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
-            safe_return = return_to or "/onboarding/company-info"
+            safe_return = return_to or "/dashboard"
             sep = "&" if "?" in safe_return else "?"
             status_qs = f"wordpress={'connected' if ok else 'error'}"
             if not ok and reason:

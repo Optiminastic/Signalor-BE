@@ -17,7 +17,7 @@ from .pipeline.aggregator import compute_composite, compute_static_composite, de
 from .pipeline.ai_visibility import score_ai_visibility
 from .pipeline.competitors import discover_competitors
 from .pipeline.content import score_content
-from .pipeline.crawler import crawl_page
+from .pipeline.crawler import crawl_page, CrawlResult
 from .pipeline.eeat import score_eeat
 from .pipeline.entity import score_entity
 from .pipeline.llm import start_log_collection, get_collected_logs
@@ -26,6 +26,58 @@ from .pipeline.schema import score_schema
 from .pipeline.technical import score_technical
 
 logger = logging.getLogger("apps")
+
+
+def _crawl_via_integration(run: AnalysisRun) -> CrawlResult | None:
+    """Fallback: fetch page content via Shopify/WordPress API when public crawl fails."""
+    from apps.integrations.models import Integration
+    from bs4 import BeautifulSoup
+    from .pipeline.utils import extract_text, extract_internal_links
+
+    if not run.organization:
+        return None
+
+    integration = Integration.objects.filter(
+        organization=run.organization,
+        is_active=True,
+        provider__in=["shopify", "wordpress"],
+    ).first()
+
+    if not integration:
+        return None
+
+    try:
+        from .auto_fix import _fetch_page_content
+        page_info, html_content = _fetch_page_content(integration, run.url)
+
+        if not page_info or not html_content:
+            return None
+
+        # Reject content too short to analyze meaningfully
+        if len(html_content.strip()) < 50:
+            logger.warning("Run %d: integration content too short (%d chars), skipping", run.id, len(html_content))
+            return None
+
+        # Build a CrawlResult from the API content
+        soup = BeautifulSoup(html_content, "html.parser")
+        text = extract_text(soup)
+        result = CrawlResult(
+            url=run.url,
+            status_code=200,
+            html=html_content,
+            soup=soup,
+            text=text,
+            internal_links=extract_internal_links(soup, run.url),
+            load_time=0.0,
+            error="",
+            is_https=run.url.startswith("https"),
+        )
+        logger.info("Run %d: crawled via %s integration (API fallback, %d chars, %d text chars)",
+                     run.id, integration.provider, len(html_content), len(text))
+        return result
+    except Exception as e:
+        logger.warning("Run %d: integration crawl fallback failed: %s", run.id, e)
+        return None
 
 
 def _save_probes_and_tracks(run: AnalysisRun, probes_data: list[dict], brand_name: str, brand_url: str):
@@ -236,13 +288,18 @@ def run_single_page_analysis(run_id: int):
     try:
         start_log_collection()
 
-        # Phase 1: Crawl
+        # Phase 1: Crawl (public URL first, then API fallback)
         _update_status(run, AnalysisRun.Status.CRAWLING, 5)
         crawl = crawl_page(run.url)
 
         if not crawl.ok:
-            _run_partial_analysis(run, crawl)
-            return
+            # Try fetching via connected integration (handles password-protected stores)
+            api_crawl = _crawl_via_integration(run)
+            if api_crawl and api_crawl.ok:
+                crawl = api_crawl
+            else:
+                _run_partial_analysis(run, crawl)
+                return
 
         _update_status(run, AnalysisRun.Status.ANALYZING, 15)
 
