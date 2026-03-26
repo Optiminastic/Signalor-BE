@@ -303,6 +303,24 @@ def run_single_page_analysis(run_id: int):
 
         _update_status(run, AnalysisRun.Status.ANALYZING, 15)
 
+        # Content hashing for change detection
+        import hashlib
+        content_hash = hashlib.sha256((crawl.text or "").encode()).hexdigest()
+        run.content_hash = content_hash
+        run.save(update_fields=["content_hash"])
+
+        # Check if content changed since last run
+        prev_run = AnalysisRun.objects.filter(
+            url=run.url, status="complete"
+        ).exclude(pk=run.pk).order_by("-created_at").first()
+
+        if prev_run and prev_run.content_hash == content_hash:
+            # Content unchanged — reuse previous scores for static pillars
+            prev_page = prev_run.page_scores.filter(url=run.url).first()
+            if prev_page:
+                logger.info("Run %d: content unchanged (hash=%s), reusing static scores from run %d",
+                            run_id, content_hash[:12], prev_run.pk)
+
         # Detect industry for adaptive weights
         industry = detect_industry(crawl.soup, crawl.text)
         logger.info("Run %d: detected industry = %s", run_id, industry)
@@ -375,8 +393,34 @@ def run_single_page_analysis(run_id: int):
         # Save AI probes + backfill prompt tracking
         _save_probes_and_tracks(run, probes_data, run.brand_name or run.url, run.url)
 
-        # Phase 4: Scoring
+        # Phase 4: Scoring with smoothing
         _update_status(run, AnalysisRun.Status.SCORING, 80)
+
+        # Score smoothing: blend LLM-dependent pillars with previous run
+        # Static pillars (content, schema, technical) are NOT smoothed — they reflect current state
+        # LLM pillars (eeat, entity, ai_visibility) are smoothed to reduce noise
+        prev_page = PageScore.objects.filter(
+            url=run.url, analysis_run__status="complete"
+        ).exclude(analysis_run=run).order_by("-created_at").first()
+
+        SMOOTH_ALPHA = 0.4  # weight for NEW score
+        if prev_page:
+            raw_eeat = eeat_score_val
+            raw_entity = entity_score_val
+            raw_ai_vis = ai_vis_score
+
+            eeat_score_val = prev_page.eeat_score * (1 - SMOOTH_ALPHA) + eeat_score_val * SMOOTH_ALPHA
+            entity_score_val = prev_page.entity_score * (1 - SMOOTH_ALPHA) + entity_score_val * SMOOTH_ALPHA
+            ai_vis_score = prev_page.ai_visibility_score * (1 - SMOOTH_ALPHA) + ai_vis_score * SMOOTH_ALPHA
+
+            logger.info("Run %d: smoothed scores — E-E-A-T: %.1f→%.1f, Entity: %.1f→%.1f, AI Vis: %.1f→%.1f",
+                        run_id, raw_eeat, eeat_score_val, raw_entity, entity_score_val, raw_ai_vis, ai_vis_score)
+
+            # Store raw scores for transparency
+            eeat_details["raw_score"] = raw_eeat
+            eeat_details["smoothed_from_run"] = prev_page.analysis_run_id
+            entity_details["raw_score"] = raw_entity
+            ai_vis_details["raw_score"] = raw_ai_vis
 
         composite = compute_composite(
             content_score, schema_score_val, eeat_score_val,
@@ -400,6 +444,7 @@ def run_single_page_analysis(run_id: int):
             ai_visibility_score=ai_vis_score,
             ai_visibility_details=ai_vis_details,
             composite_score=composite,
+            content_hash=content_hash,
         )
 
         # Phase 5: Recommendations

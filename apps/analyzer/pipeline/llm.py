@@ -140,7 +140,7 @@ def ask_llm(
     prompt: str,
     preferred_provider: str | None = None,
     max_tokens: int = 1024,
-    temperature: float = 0.3,
+    temperature: float = 0.0,
     purpose: str = "",
 ) -> str:
     """
@@ -269,7 +269,7 @@ def _call_gemini_direct(prompt: str, purpose: str = "") -> str:
 
         genai.configure(api_key=google_key)
         model = genai.GenerativeModel("gemini-2.0-flash")
-        response = model.generate_content(prompt)
+        response = model.generate_content(prompt, generation_config={"temperature": 0.0})
         text = response.text.strip()
         duration_ms = int((time.time() - t0) * 1000)
         response_preview = _log_preview(text, 200)

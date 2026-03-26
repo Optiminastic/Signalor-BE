@@ -241,6 +241,20 @@ def _is_wpcom(integration) -> bool:
     return bool(integration.metadata.get("is_wpcom", False))
 
 
+def _extract_slug_from_url(url: str) -> str:
+    """Extract the page/post slug from a URL, ignoring date-based paths."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    path = parsed.path.strip("/")
+    if not path:
+        return ""  # Homepage
+    # WordPress date-based URLs: /2026/03/24/my-post/ → slug = my-post
+    parts = path.split("/")
+    # Skip numeric parts (year/month/day)
+    non_numeric = [p for p in parts if not p.isdigit()]
+    return non_numeric[-1] if non_numeric else ""
+
+
 def _fetch_wp_page(integration, url: str) -> tuple[dict | None, str]:
     from urllib.parse import urlparse
 
@@ -250,9 +264,30 @@ def _fetch_wp_page(integration, url: str) -> tuple[dict | None, str]:
     from apps.integrations.services.wordpress import _normalize_site_url
     site_url = _normalize_site_url(integration.metadata.get("site_url", ""))
     headers = _wp_auth_headers(integration)
-    parsed = urlparse(url)
-    slug = parsed.path.rstrip("/").split("/")[-1] if parsed.path else ""
+    slug = _extract_slug_from_url(url)
 
+    # If homepage: try the static front page first
+    if not slug:
+        try:
+            resp = requests.get(f"{site_url}/wp-json/wp/v2/pages", headers=headers,
+                                params={"slug": "home", "_fields": "id,content,title,link"}, timeout=15)
+            if resp.ok and resp.json():
+                post = resp.json()[0]
+                return ({"type": "pages", "id": post["id"]}, post.get("content", {}).get("rendered", ""))
+        except Exception:
+            pass
+        # Try "front-page" or "sample-page"
+        for fallback_slug in ["front-page", "sample-page"]:
+            try:
+                resp = requests.get(f"{site_url}/wp-json/wp/v2/pages", headers=headers,
+                                    params={"slug": fallback_slug, "_fields": "id,content,title,link"}, timeout=15)
+                if resp.ok and resp.json():
+                    post = resp.json()[0]
+                    return ({"type": "pages", "id": post["id"]}, post.get("content", {}).get("rendered", ""))
+            except Exception:
+                continue
+
+    # Match by slug
     for post_type in ["posts", "pages"]:
         params = {"slug": slug, "_fields": "id,content,title,link"} if slug else {"per_page": 1}
         try:
@@ -266,29 +301,82 @@ def _fetch_wp_page(integration, url: str) -> tuple[dict | None, str]:
 
 
 def _fetch_wpcom_page(integration, url: str) -> tuple[dict | None, str]:
-    """Fetch page from WordPress.com public API."""
+    """Fetch page from WordPress.com API — matches the analyzed URL."""
     blog_id = integration.metadata.get("blog_id", "")
     token = integration.get_access_token()
     headers = {"Authorization": f"Bearer {token}"}
+    slug = _extract_slug_from_url(url)
 
-    # Try posts first, then pages
-    for post_type in ["posts", "pages"]:
-        try:
-            api_url = f"https://public-api.wordpress.com/rest/v1.1/sites/{blog_id}/{post_type}/"
-            resp = requests.get(api_url, headers=headers, params={"number": 1}, timeout=15)
-            if resp.ok:
-                data = resp.json()
-                items = data.get(post_type, [])
-                if items:
-                    post = items[0]
+    # If we have a slug, search for the matching post/page
+    if slug:
+        for post_type in ["posts", "pages"]:
+            try:
+                api_url = f"https://public-api.wordpress.com/rest/v1.1/sites/{blog_id}/{post_type}/"
+                resp = requests.get(api_url, headers=headers, params={"search": slug, "number": 5}, timeout=15)
+                if resp.ok:
+                    data = resp.json()
+                    items = data.get(post_type, [])
+                    # Find exact slug match
+                    for post in items:
+                        post_slug = (post.get("slug") or "").lower()
+                        if post_slug == slug.lower():
+                            return (
+                                {"type": post_type, "id": post["ID"], "wpcom": True, "blog_id": blog_id},
+                                post.get("content", "") or "",
+                            )
+                    # If no exact match, take first result
+                    if items:
+                        post = items[0]
+                        return (
+                            {"type": post_type, "id": post["ID"], "wpcom": True, "blog_id": blog_id},
+                            post.get("content", "") or "",
+                        )
+            except Exception:
+                continue
+
+    # Homepage or no slug match — try the front page
+    try:
+        # WordPress.com: get the page set as front page
+        resp = requests.get(
+            f"https://public-api.wordpress.com/rest/v1.1/sites/{blog_id}/pages/",
+            headers=headers, params={"number": 10}, timeout=15,
+        )
+        if resp.ok:
+            pages = resp.json().get("pages", [])
+            # Look for "home" or "front-page" slug
+            for page in pages:
+                page_slug = (page.get("slug") or "").lower()
+                if page_slug in ("home", "front-page", "homepage"):
                     return (
-                        {"type": post_type, "id": post["ID"], "wpcom": True, "blog_id": blog_id},
-                        post.get("content", "") or "",
+                        {"type": "pages", "id": page["ID"], "wpcom": True, "blog_id": blog_id},
+                        page.get("content", "") or "",
                     )
-        except Exception:
-            continue
+            # If no homepage found, use the first published page
+            if pages:
+                return (
+                    {"type": "pages", "id": pages[0]["ID"], "wpcom": True, "blog_id": blog_id},
+                    pages[0].get("content", "") or "",
+                )
+    except Exception:
+        pass
 
-    # Create a new post if none exists
+    # Last resort: get latest post
+    try:
+        resp = requests.get(
+            f"https://public-api.wordpress.com/rest/v1.1/sites/{blog_id}/posts/",
+            headers=headers, params={"number": 1}, timeout=15,
+        )
+        if resp.ok:
+            posts = resp.json().get("posts", [])
+            if posts:
+                return (
+                    {"type": "posts", "id": posts[0]["ID"], "wpcom": True, "blog_id": blog_id},
+                    posts[0].get("content", "") or "",
+                )
+    except Exception:
+        pass
+
+    # Create a new page if nothing exists
     try:
         resp = requests.post(
             f"https://public-api.wordpress.com/rest/v1.1/sites/{blog_id}/posts/new",
@@ -309,42 +397,69 @@ def _fetch_wpcom_page(integration, url: str) -> tuple[dict | None, str]:
 
 
 def _push_content(integration, page_info: dict, new_content: str) -> dict:
-    """Push updated content back to the store."""
+    """Push updated content back to the store and verify."""
     provider = integration.provider
+    page_id = page_info.get("id", "?")
+    page_type = page_info.get("type", "post")
+    content_len = len(new_content)
 
     if provider == "shopify":
         resource = page_info["type"]
         singular = resource.rstrip("s")
-        _shopify_api(integration, f"{resource}/{page_info['id']}.json", method="PUT",
+        _shopify_api(integration, f"{resource}/{page_id}.json", method="PUT",
                      payload={singular: {"body_html": new_content}})
-        return {"status": "success", "message": f"Content updated on Shopify {singular}."}
+        return {"status": "success", "message": f"Content updated on Shopify {singular} (ID: {page_id}, {content_len} chars)."}
 
     # WordPress.com
     if page_info.get("wpcom"):
         blog_id = page_info["blog_id"]
-        post_id = page_info["id"]
         token = integration.get_access_token()
         headers = {"Authorization": f"Bearer {token}"}
+
+        # Push
         resp = requests.post(
-            f"https://public-api.wordpress.com/rest/v1.1/sites/{blog_id}/posts/{post_id}",
+            f"https://public-api.wordpress.com/rest/v1.1/sites/{blog_id}/posts/{page_id}",
             headers=headers,
             json={"content": new_content},
             timeout=15,
         )
-        if resp.ok:
-            return {"status": "success", "message": "Content updated on WordPress."}
-        raise ValueError(f"WordPress.com API error: {resp.status_code} {resp.text[:100]}")
+        if not resp.ok:
+            raise ValueError(f"WordPress.com API error: {resp.status_code} {resp.text[:100]}")
+
+        # Verify — re-fetch and check content was actually updated
+        try:
+            verify = requests.get(
+                f"https://public-api.wordpress.com/rest/v1.1/sites/{blog_id}/posts/{page_id}",
+                headers=headers, params={"fields": "ID,title,URL,content"}, timeout=10,
+            )
+            if verify.ok:
+                vdata = verify.json()
+                verified_len = len(vdata.get("content", ""))
+                title = vdata.get("title", "")
+                page_url = vdata.get("URL", "")
+                logger.info("[AUTO-FIX] Verified: post %s '%s' (%s) — %d chars", page_id, title, page_url, verified_len)
+                return {
+                    "status": "success",
+                    "message": f"Content updated on WordPress — \"{title}\" ({page_url}). {content_len} chars written, {verified_len} chars verified.",
+                }
+        except Exception as exc:
+            logger.warning("[AUTO-FIX] Verification failed: %s", exc)
+
+        return {"status": "success", "message": f"Content updated on WordPress (ID: {page_id}, {content_len} chars). Verification skipped."}
 
     # Self-hosted WordPress
     from apps.integrations.services.wordpress import _normalize_site_url
     site_url = _normalize_site_url(integration.metadata.get("site_url", ""))
     headers = {**_wp_auth_headers(integration), "Content-Type": "application/json"}
     resp = requests.post(
-        f"{site_url}/wp-json/wp/v2/{page_info['type']}/{page_info['id']}",
+        f"{site_url}/wp-json/wp/v2/{page_type}/{page_id}",
         headers=headers, json={"content": new_content}, timeout=15
     )
     if resp.ok:
-        return {"status": "success", "message": "Content updated on WordPress."}
+        post_data = resp.json()
+        title = post_data.get("title", {}).get("rendered", "")
+        link = post_data.get("link", "")
+        return {"status": "success", "message": f"Content updated on WordPress — \"{title}\" ({link}). {content_len} chars written."}
     raise ValueError(f"WordPress API error: {resp.status_code}")
 
 

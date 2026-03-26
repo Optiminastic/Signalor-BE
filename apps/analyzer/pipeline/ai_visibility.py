@@ -673,28 +673,18 @@ def score_ai_visibility(crawl: CrawlResult, target_country: str | None = None) -
     score = 0.0
 
     # ── Part 1: LLM Probe Testing (60 pts) ──────────────────────────────
-    # Try LLM-generated probes first
-    probe_prompts = _generate_probes_llm(
-        brand_name,
-        site_context,
-        industry_desc,
-        target_country=(target_country or "").strip() or None,
-    )
-
-    if probe_prompts:
-        details["checks"]["probe_source"] = "gemini"
-    else:
-        # Fallback: use industry-specific templates with category keywords
-        templates = INDUSTRY_PROBES.get(category, INDUSTRY_PROBES["default"])
-        current_year = datetime.now().year
-        probe_prompts = [
-            _apply_country_context(
-                t.format(industry=industry_desc, year=current_year),
-                (target_country or "").strip() or None,
-            )
-            for t in templates
-        ]
-        details["checks"]["probe_source"] = "fallback"
+    # Always use deterministic industry-specific templates (not LLM-generated)
+    # This ensures probes are consistent across runs for fair comparison
+    templates = INDUSTRY_PROBES.get(category, INDUSTRY_PROBES["default"])
+    current_year = datetime.now().year
+    probe_prompts = [
+        _apply_country_context(
+            t.format(industry=industry_desc, year=current_year),
+            (target_country or "").strip() or None,
+        )
+        for t in templates
+    ]
+    details["checks"]["probe_source"] = "deterministic"
 
     details["checks"]["probes_generated"] = len(probe_prompts)
 
