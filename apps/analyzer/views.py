@@ -2007,7 +2007,6 @@ class AutoFixView(APIView):
                     "fix_type": job.fix_type,
                 }
 
-        # 2. Check previous runs for the same org — match by recommendation title
         if run.organization:
             prev_fixes = (
                 AutoFixJob.objects
