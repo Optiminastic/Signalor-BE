@@ -4,56 +4,54 @@ from .utils import safe_score
 
 logger = logging.getLogger("apps")
 
-# Default weights — content + schema = 20%, the rest = 80%
-# The 4 actionable pillars (eeat, technical, entity, ai_visibility)
-# carry the most weight because users can take direct action on them.
+# Weights: foundational pillars (content, eeat, technical) = 60%
+# Signal pillars (schema, entity, ai_visibility) = 40%
+# Entity + AI Vis combined ≤ 30% to prevent hallucination-driven scores
 DEFAULT_WEIGHTS = {
-    "content": 0.15,
+    "content": 0.20,
     "schema": 0.10,
-    "eeat": 0.20,
-    "technical": 0.12,
-    "entity": 0.20,
-    "ai_visibility": 0.23,
+    "eeat": 0.25,
+    "technical": 0.15,
+    "entity": 0.15,
+    "ai_visibility": 0.15,
 }
 
-# Industry-specific weight overrides
-# content + schema always sum to 0.20; actionable pillars get the 0.80
 INDUSTRY_WEIGHTS = {
     "health": {
-        "content": 0.15, "schema": 0.10, "eeat": 0.27,
-        "technical": 0.10, "entity": 0.15, "ai_visibility": 0.23,
+        "content": 0.18, "schema": 0.10, "eeat": 0.30,
+        "technical": 0.14, "entity": 0.13, "ai_visibility": 0.15,
     },
     "medical": {
-        "content": 0.15, "schema": 0.10, "eeat": 0.27,
-        "technical": 0.10, "entity": 0.15, "ai_visibility": 0.23,
+        "content": 0.18, "schema": 0.10, "eeat": 0.30,
+        "technical": 0.14, "entity": 0.13, "ai_visibility": 0.15,
     },
     "finance": {
-        "content": 0.15, "schema": 0.10, "eeat": 0.25,
-        "technical": 0.10, "entity": 0.20, "ai_visibility": 0.20,
+        "content": 0.18, "schema": 0.10, "eeat": 0.28,
+        "technical": 0.14, "entity": 0.15, "ai_visibility": 0.15,
     },
     "ecommerce": {
-        "content": 0.15, "schema": 0.10, "eeat": 0.15,
-        "technical": 0.12, "entity": 0.20, "ai_visibility": 0.28,
+        "content": 0.20, "schema": 0.10, "eeat": 0.20,
+        "technical": 0.15, "entity": 0.15, "ai_visibility": 0.20,
     },
     "saas": {
-        "content": 0.15, "schema": 0.10, "eeat": 0.17,
-        "technical": 0.12, "entity": 0.18, "ai_visibility": 0.28,
+        "content": 0.20, "schema": 0.10, "eeat": 0.22,
+        "technical": 0.13, "entity": 0.15, "ai_visibility": 0.20,
     },
     "legal": {
-        "content": 0.15, "schema": 0.10, "eeat": 0.27,
-        "technical": 0.10, "entity": 0.15, "ai_visibility": 0.23,
+        "content": 0.18, "schema": 0.10, "eeat": 0.30,
+        "technical": 0.14, "entity": 0.13, "ai_visibility": 0.15,
     },
     "education": {
-        "content": 0.15, "schema": 0.10, "eeat": 0.23,
-        "technical": 0.10, "entity": 0.18, "ai_visibility": 0.24,
+        "content": 0.18, "schema": 0.10, "eeat": 0.28,
+        "technical": 0.14, "entity": 0.15, "ai_visibility": 0.15,
     },
     "news": {
-        "content": 0.15, "schema": 0.10, "eeat": 0.22,
-        "technical": 0.10, "entity": 0.18, "ai_visibility": 0.25,
+        "content": 0.18, "schema": 0.10, "eeat": 0.25,
+        "technical": 0.14, "entity": 0.15, "ai_visibility": 0.18,
     },
     "local_business": {
-        "content": 0.15, "schema": 0.10, "eeat": 0.18,
-        "technical": 0.10, "entity": 0.25, "ai_visibility": 0.22,
+        "content": 0.18, "schema": 0.10, "eeat": 0.22,
+        "technical": 0.15, "entity": 0.20, "ai_visibility": 0.15,
     },
 }
 
@@ -133,6 +131,20 @@ def compute_composite(
         + entity * weights["entity"]
         + ai_visibility * weights["ai_visibility"]
     )
+
+    # Reality clamp: if ALL foundational signals are weak, cap score
+    # Only triggers when technical is also weak (protects new startups with good infra)
+    if content < 20 and eeat < 20 and entity < 10 and technical < 50:
+        composite = min(composite, 30.0)
+
+    # Technical floor: technically valid sites shouldn't score dead
+    if technical > 40 and content < 10:
+        composite = max(composite, 15.0)
+
+    # Content ceiling: empty sites with good tech shouldn't score high
+    if content < 10 and eeat < 10:
+        composite = min(composite, 40.0)
+
     return safe_score(composite)
 
 

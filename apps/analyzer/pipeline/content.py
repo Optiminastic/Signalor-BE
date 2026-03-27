@@ -463,6 +463,18 @@ def score_content(crawl: CrawlResult) -> tuple[float, dict]:
             details["findings"].append(val)
 
     total = structure_score + geo_score
+
+    # Word count gate — thin pages cannot score high on structure alone
+    word_count = geo_details.get("word_count", 0)
+    if word_count < 50:
+        total = min(total, 5.0)
+        details["findings"].append("extremely_thin_content")
+        details["checks"]["word_count_cap"] = 5
+    elif word_count < 100:
+        total = min(total, 10.0)
+        details["findings"].append("very_thin_content")
+        details["checks"]["word_count_cap"] = 10
+
     total = safe_score(total)
     details["score"] = total
     details["checks"]["structure_score"] = round(structure_score, 1)

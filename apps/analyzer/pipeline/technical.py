@@ -48,24 +48,23 @@ def score_technical(crawl: CrawlResult) -> tuple[float, dict]:
 
     # ── Checks that work WITHOUT page HTML ────────────────────────────
 
-    # llms.txt exists and has quality content (20 pts)
+    # llms.txt exists and has quality content (15 pts)
     llms_content = fetch_file_content(crawl.url, "llms.txt")
     has_llms_txt = bool(llms_content.strip())
     details["checks"]["llms_txt"] = has_llms_txt
     if has_llms_txt:
         llms_len = len(llms_content.strip())
         details["checks"]["llms_txt_length"] = llms_len
-        # Quality check: has real content (not just a blank/minimal file)
         has_urls = "http" in llms_content.lower() or "/" in llms_content
         has_descriptions = llms_len > 200
         if has_descriptions and has_urls:
-            score += 20  # Full score: exists + has URLs + substantial content
+            score += 15
             details["checks"]["llms_txt_quality"] = "good"
         elif llms_len > 50:
-            score += 15  # Exists with some content
+            score += 11
             details["checks"]["llms_txt_quality"] = "basic"
         else:
-            score += 8   # Exists but very minimal
+            score += 6
             details["checks"]["llms_txt_quality"] = "minimal"
             details["findings"].append("llms_txt_minimal_content")
     else:
@@ -95,10 +94,10 @@ def score_technical(crawl: CrawlResult) -> tuple[float, dict]:
     else:
         details["findings"].append("no_sitemap")
 
-    # HTTPS (2 pts — everyone has this now, not a differentiator)
+    # HTTPS (5 pts — critical infrastructure baseline)
     details["checks"]["is_https"] = crawl.is_https
     if crawl.is_https:
-        score += 2
+        score += 5
     else:
         details["findings"].append("no_https")
 
@@ -147,7 +146,7 @@ def score_technical(crawl: CrawlResult) -> tuple[float, dict]:
         else:
             details["findings"].append("no_canonical")
 
-        # OG / Twitter Card metadata (10 pts — requires actual content)
+        # OG / Twitter Card metadata (8 pts — requires actual content)
         og_title = soup.find("meta", property="og:title")
         og_desc = soup.find("meta", property="og:description")
         og_image = soup.find("meta", property="og:image")
@@ -165,9 +164,9 @@ def score_technical(crawl: CrawlResult) -> tuple[float, dict]:
         details["checks"]["has_og_title"] = bool(og_title and og_title.get("content"))
         details["checks"]["has_og_description"] = bool(og_desc and og_desc.get("content"))
         if og_score >= 6:
-            score += 10
+            score += 8
         elif og_score >= 3:
-            score += 5
+            score += 4
         elif og_score == 0:
             details["findings"].append("no_og_metadata")
         else:

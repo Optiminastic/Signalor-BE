@@ -316,6 +316,22 @@ def score_entity(crawl: CrawlResult, industry: str = "") -> tuple[float, dict]:
     if not community_links["medium"]:
         details["findings"].append("no_medium_presence")
 
+    # Entity collision confidence — reduce score if brand name collides with known entity
+    from .utils import check_entity_collision
+    collision, known = check_entity_collision(brand_name)
+    if collision:
+        # Apply confidence multiplier: 0.3 for ambiguous, 0.0 for confirmed collision
+        # LLM-dependent scores (wiki, knowledge panel, third-party) are most affected
+        confidence = 0.3  # Assume ambiguous unless we can confirm
+        raw_score = score
+        score = score * confidence
+        details["checks"]["entity_collision"] = True
+        details["checks"]["collision_entity"] = known["entity"]
+        details["checks"]["collision_confidence"] = confidence
+        details["checks"]["raw_entity_score"] = raw_score
+        logger.info("Entity collision: '%s' vs '%s' — score %.1f → %.1f (confidence=%.1f)",
+                     brand_name, known["entity"], raw_score, score, confidence)
+
     score = safe_score(score)
     details["score"] = score
     return score, details

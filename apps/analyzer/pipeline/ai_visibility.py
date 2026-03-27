@@ -456,6 +456,14 @@ def _fire_probe(prompt: str, brand_aliases: list[str]) -> tuple[str, bool, float
         # Check brand mention across all responses
         found, match_confidence, match_type = _match_brand(brand_aliases, all_text)
 
+        # Apply entity collision confidence filter
+        from .utils import compute_entity_confidence
+        if found:
+            collision_confidence = compute_entity_confidence(brand_aliases[0] if brand_aliases else "", all_text)
+            match_confidence *= collision_confidence
+            if collision_confidence < 0.3:
+                found = False  # Confirmed wrong entity — discard mention
+
         quality = {"position_score": 0, "sentiment": "neutral", "context": "none", "prominence": 0}
         if found:
             quality = _analyze_mention_quality(all_text, brand_aliases)
@@ -466,6 +474,11 @@ def _fire_probe(prompt: str, brand_aliases: list[str]) -> tuple[str, bool, float
         for provider, resp in responses.items():
             if resp:
                 pf_found, _, _ = _match_brand(brand_aliases, resp)
+                # Apply collision confidence to per-provider matches too
+                if pf_found:
+                    prov_confidence = compute_entity_confidence(brand_aliases[0] if brand_aliases else "", resp)
+                    if prov_confidence < 0.3:
+                        pf_found = False
                 if pf_found:
                     provider_mentions += 1
                     # Check if brand is ranked #1 in this provider's response
