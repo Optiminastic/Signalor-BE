@@ -347,10 +347,10 @@ def run_single_page_analysis(run_id: int):
             return score_eeat(crawl)
 
         def _run_entity():
-            return score_entity(crawl, industry=industry)
+            return score_entity(crawl, industry=industry, override_brand=brand_name)
 
         def _run_ai_vis():
-            return score_ai_visibility(crawl, target_country=(run.country or "").strip() or None)
+            return score_ai_visibility(crawl, target_country=(run.country or "").strip() or None, override_brand=brand_name)
 
         def _run_brand_vis():
             return run_brand_visibility(brand_name, run.url)
@@ -413,7 +413,7 @@ def run_single_page_analysis(run_id: int):
             entity_score_val = prev_page.entity_score * (1 - SMOOTH_ALPHA) + entity_score_val * SMOOTH_ALPHA
             ai_vis_score = prev_page.ai_visibility_score * (1 - SMOOTH_ALPHA) + ai_vis_score * SMOOTH_ALPHA
 
-            logger.info("Run %d: smoothed scores — E-E-A-T: %.1f→%.1f, Entity: %.1f→%.1f, AI Vis: %.1f→%.1f",
+            logger.info("Run %d: smoothed scores - E-E-A-T: %.1f->%.1f, Entity: %.1f->%.1f, AI Vis: %.1f->%.1f",
                         run_id, raw_eeat, eeat_score_val, raw_entity, entity_score_val, raw_ai_vis, ai_vis_score)
 
             # Store raw scores for transparency

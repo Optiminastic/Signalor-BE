@@ -191,7 +191,7 @@ def _static_entity_signals(soup, crawl_url: str) -> tuple[float, dict]:
     return score, details
 
 
-def score_entity(crawl: CrawlResult, industry: str = "") -> tuple[float, dict]:
+def score_entity(crawl: CrawlResult, industry: str = "", override_brand: str = "") -> tuple[float, dict]:
     if not crawl.ok:
         return 0.0, {"error": crawl.error}
 
@@ -199,7 +199,7 @@ def score_entity(crawl: CrawlResult, industry: str = "") -> tuple[float, dict]:
     details = {"checks": {}, "findings": []}
     score = 0.0
 
-    brand_name = extract_brand_name(soup, crawl.url)
+    brand_name = override_brand or extract_brand_name(soup, crawl.url)
     details["checks"]["brand_name"] = brand_name
 
     # Brand extraction (5 pts)

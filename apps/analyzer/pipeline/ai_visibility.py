@@ -147,13 +147,34 @@ def _extract_industry_description(soup, combined: str, keyword_hits: list[str]) 
     if keyword_hits:
         return " and ".join(keyword_hits[:3])
 
-    # Last resort: use meta keywords
+    # Try meta keywords
     meta_kw = soup.find("meta", attrs={"name": "keywords"})
     if meta_kw and meta_kw.get("content"):
         keywords = meta_kw["content"].strip()
         return keywords[:60]
 
-    return "this type of service"
+    # Try meta description
+    meta_desc = soup.find("meta", attrs={"name": "description"}) or soup.find("meta", property="og:description")
+    if meta_desc and meta_desc.get("content"):
+        desc = meta_desc["content"].strip()
+        if len(desc) > 10:
+            return desc[:80]
+
+    # Try title tag
+    title = soup.find("title")
+    if title and title.get_text(strip=True):
+        t = title.get_text(strip=True)
+        if len(t) > 3 and t.lower() not in ("home", "site title", "untitled"):
+            return t[:60]
+
+    # Absolute last resort — use first meaningful text from page
+    first_p = soup.find("p")
+    if first_p and first_p.get_text(strip=True):
+        p_text = first_p.get_text(strip=True)
+        if len(p_text) > 10:
+            return p_text[:80]
+
+    return "general website"
 
 
 def _build_site_context(soup, url: str, text: str) -> str:
@@ -658,13 +679,13 @@ def _check_brand_website_quality(crawl: CrawlResult) -> dict:
     return result
 
 
-def score_ai_visibility(crawl: CrawlResult, target_country: str | None = None) -> tuple[float, dict, list[dict]]:
+def score_ai_visibility(crawl: CrawlResult, target_country: str | None = None, override_brand: str = "") -> tuple[float, dict, list[dict]]:
     """Returns (score, details, probes_data)."""
     if not crawl.ok:
         return 0.0, {"error": crawl.error}, []
 
     soup = crawl.soup
-    brand_name = extract_brand_name(soup, crawl.url)
+    brand_name = override_brand or extract_brand_name(soup, crawl.url)
     brand_aliases = _build_brand_aliases(brand_name, crawl.url)
     domain = extract_domain(crawl.url)
 
