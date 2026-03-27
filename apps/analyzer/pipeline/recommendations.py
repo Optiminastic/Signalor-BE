@@ -856,23 +856,49 @@ IMPACT_SCORES = {
     "crawl_timeout": 96,        # Too slow for any crawler
 }
 
-MAX_RECOMMENDATIONS = None
+MAX_RECOMMENDATIONS = 12
+
+# Off-page findings that require external actions (Reddit, Medium, Wikipedia, etc.)
+# These are filtered out — we only show on-page + technical recommendations
+OFFPAGE_FINDINGS = {
+    "brand_not_in_ai",
+    "no_medium_ai_presence",
+    "no_medium_presence",
+    "no_reddit_ai_presence",
+    "no_reddit_presence",
+    "no_social_profiles",
+    "no_wikipedia_presence",
+    "not_in_google_ai",
+    "weak_brand_site",
+}
+
+# Off-page pillars — entire pillar is external action
+OFFPAGE_PILLARS = {"entity", "ai_visibility"}
 
 
 def generate_recommendations(pillar_details: dict[str, dict]) -> list[dict]:
     """
-    Generate top 5-7 highest-impact recommendations.
+    Generate top on-page + technical recommendations only.
 
-    Uses numeric impact scores based on Princeton GEO research effectiveness
-    data to rank and select only the most impactful improvements.
+    Filters out off-page/external actions (Reddit, Medium, Wikipedia, etc.)
+    Caps at MAX_RECOMMENDATIONS to avoid overwhelming users.
+    Sorts by impact score, then by priority.
     """
     candidates = []
 
     for _pillar_name, details in pillar_details.items():
         findings = details.get("findings", [])
         for finding in findings:
+            # Skip off-page findings
+            if finding in OFFPAGE_FINDINGS:
+                continue
+
             rule = RECOMMENDATION_RULES.get(finding)
             if rule:
+                # Skip off-page pillars
+                if rule.get("pillar") in OFFPAGE_PILLARS:
+                    continue
+
                 rec = dict(rule)
                 rec["impact_score"] = IMPACT_SCORES.get(finding, 10)
                 candidates.append(rec)
@@ -882,8 +908,8 @@ def generate_recommendations(pillar_details: dict[str, dict]) -> list[dict]:
         key=lambda r: (-r["impact_score"], PRIORITY_ORDER.get(r["priority"], 99))
     )
 
-    # Take all recommendations (no hard cap)
-    top = candidates if MAX_RECOMMENDATIONS is None else candidates[:MAX_RECOMMENDATIONS]
+    # Cap at max recommendations
+    top = candidates[:MAX_RECOMMENDATIONS]
 
     # Remove internal impact_score before returning
     for rec in top:
