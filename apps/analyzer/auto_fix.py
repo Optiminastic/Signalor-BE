@@ -864,16 +864,46 @@ def apply_approved_fix(run, integration, recommendation, content: str, fix_type:
             logger.warning("Plugin apply-fix error: %s", exc)
 
     # Fallback: direct API push (existing behavior)
-    page_info, _ = _fetch_page_content(integration, run.url)
+    if fix_type == "llms":
+        # llms.txt: create as a new page, don't fetch existing content
+        slug_name = "llms-txt"
+        if provider == "shopify":
+            try:
+                _shopify_api(integration, "pages.json", method="POST", payload={
+                    "page": {"title": "llms.txt", "handle": slug_name,
+                             "body_html": f"<pre style='white-space:pre-wrap;font-family:monospace;'>{content}</pre>",
+                             "published": True}
+                })
+                shop = integration.metadata.get("shop_domain", "")
+                return {"status": "success", "message": f"llms.txt created at https://{shop}/pages/{slug_name}"}
+            except ValueError:
+                return {"status": "failed", "message": "Failed to create llms.txt page on Shopify"}
+        elif provider == "wordpress":
+            # WordPress.com: create as post
+            blog_id = integration.metadata.get("blog_id", "")
+            if blog_id:
+                token = integration.get_access_token()
+                resp = requests.post(
+                    f"https://public-api.wordpress.com/rest/v1.1/sites/{blog_id}/posts/new",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"title": "llms.txt", "content": f"<pre>{content}</pre>", "status": "publish"},
+                    timeout=15,
+                )
+                if resp.ok:
+                    post = resp.json()
+                    return {"status": "success", "message": f"llms.txt created at {post.get('URL', '')}"}
+            return {"status": "failed", "message": "Failed to create llms.txt on WordPress"}
+        return {"status": "failed", "message": f"Cannot create llms.txt on {provider}"}
+
+    # Content/schema fixes: need page context
+    page_info, existing_content = _fetch_page_content(integration, run.url)
     if not page_info:
         return {"status": "failed", "message": f"Could not find page at {run.url}"}
 
     if fix_type in ("content", "faq", "content_enhance"):
         return _push_content(integration, page_info, content)
     elif fix_type == "schema":
-        new_content = _ + "\n" + content if _ else content
+        new_content = existing_content + "\n" + content if existing_content else content
         return _push_content(integration, page_info, new_content)
-    elif fix_type == "llms":
-        return _fix_create_file(integration, run, recommendation)
 
     return {"status": "failed", "message": f"Cannot apply fix type: {fix_type}"}
