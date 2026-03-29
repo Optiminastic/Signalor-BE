@@ -2,7 +2,7 @@
 Subscription checks for paid features (e.g. GEO analysis).
 
 Default: enforcement is OFF. Set SUBSCRIPTION_REQUIRED=true to require an active
-Stripe subscription before /api/analyzer/analyze/ (and related reanalyze paths).
+active subscription before /api/analyzer/analyze/ (and related reanalyze paths).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from .models import Subscription
 
 def _integration_subscription_required() -> bool:
     """
-    Whether Shopify/WordPress OAuth must have an active Stripe subscription.
+    Whether Shopify/WordPress OAuth must have an active active subscription.
 
     - DISABLE_PAYMENT=true → never enforce (local dev shortcut)
     - REQUIRE_SUBSCRIPTION_FOR_INTEGRATIONS=true  → always enforce
@@ -43,7 +43,7 @@ def is_subscription_enforcement_enabled() -> bool:
 
 def integration_connect_allowed_for_email(email: str | None) -> tuple[bool, str]:
     """
-    Gate Shopify / WordPress OAuth on an active Stripe subscription — same rule as
+    Gate Shopify / WordPress OAuth on an active active subscription — same rule as
     GET /api/payments/status/ and the dashboard (not tied to SUBSCRIPTION_REQUIRED).
 
     Local dev: with DEBUG=True and env unset, connection is allowed without Stripe.

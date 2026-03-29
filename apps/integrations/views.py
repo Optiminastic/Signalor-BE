@@ -839,10 +839,14 @@ class ShopifyCallbackView(APIView):
                 defaults={"is_active": True},
             )
             integration.set_access_token(access_token)
+            # Auto-link Shopify app — use shared app secret for HMAC auth
+            shopify_app_url = os.getenv("SIGNALOR_SHOPIFY_APP_URL", "").strip()
             integration.metadata = {
                 "shop_domain": shop_domain,
                 "shop_name": shop_info.get("name", shop_domain),
                 "scope": tokens.get("scope", ""),
+                "signalor_app_url": shopify_app_url,
+                "signalor_hmac_secret": os.getenv("SHOPIFY_CLIENT_SECRET", ""),
             }
             integration.save()
             _deactivate_other_store_integration(org, Integration.Provider.SHOPIFY)
@@ -1054,6 +1058,54 @@ class ShopifyDataView(APIView):
 
         serializer = ShopifyDataSnapshotSerializer(snapshot)
         return Response(serializer.data)
+
+
+class ShopifyLinkAppView(APIView):
+    """POST /api/integrations/shopify/link-app/ — Link the Signalor Shopify app to backend.
+
+    Called by the Shopify Remix app after install. Exchanges HMAC secret and stores
+    the app URL so the backend can send fix instructions to the app.
+
+    Body: { "shop_domain": "store.myshopify.com", "app_url": "https://...", "hmac_secret": "..." }
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        shop_domain = request.data.get("shop_domain", "").strip()
+        app_url = request.data.get("app_url", "").strip()
+        hmac_secret = request.data.get("hmac_secret", "").strip()
+
+        if not shop_domain or not app_url or not hmac_secret:
+            return Response(
+                {"error": "shop_domain, app_url, and hmac_secret are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Find the Shopify integration for this shop
+        try:
+            integration = Integration.objects.get(
+                metadata__shop_domain=shop_domain,
+                provider=Integration.Provider.SHOPIFY,
+                is_active=True,
+            )
+        except Integration.DoesNotExist:
+            return Response(
+                {"error": f"No active Shopify integration found for {shop_domain}."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Store the app URL and HMAC secret in metadata
+        meta = integration.metadata or {}
+        meta["signalor_app_url"] = app_url.rstrip("/")
+        meta["signalor_hmac_secret"] = hmac_secret
+        integration.metadata = meta
+        integration.save(update_fields=["metadata"])
+
+        return Response({
+            "status": "linked",
+            "shop_domain": shop_domain,
+            "message": "Shopify app linked. Fix instructions will now be routed through the app.",
+        })
 
 
 class WordPressConnectView(APIView):

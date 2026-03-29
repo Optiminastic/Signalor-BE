@@ -16,6 +16,7 @@ from .views import (
     ShopifyConnectView,
     ShopifyDataView,
     ShopifyDisconnectView,
+    ShopifyLinkAppView,
     ShopifySyncView,
     WooCommerceConnectView,
     WooCommerceDataView,
@@ -113,6 +114,11 @@ urlpatterns = [
         "shopify/data/",
         ShopifyDataView.as_view(),
         name="shopify-data",
+    ),
+    path(
+        "shopify/link-app/",
+        ShopifyLinkAppView.as_view(),
+        name="shopify-link-app",
     ),
     path(
         "wordpress/connect/",

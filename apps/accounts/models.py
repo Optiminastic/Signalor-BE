@@ -46,6 +46,9 @@ class Subscription(models.Model):
         TRIALING = "trialing"
 
     email = models.EmailField(unique=True, db_index=True)
+    payment_customer_id = models.CharField(max_length=255, blank=True, default="")
+    payment_subscription_id = models.CharField(max_length=255, blank=True, default="")
+    # Keep old Stripe fields for backwards compatibility during migration
     stripe_customer_id = models.CharField(max_length=255, blank=True, default="")
     stripe_subscription_id = models.CharField(max_length=255, blank=True, default="")
     deactivated_at = models.DateTimeField(null=True, blank=True)

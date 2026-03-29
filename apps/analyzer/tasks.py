@@ -298,6 +298,19 @@ def run_single_page_analysis(run_id: int):
             if api_crawl and api_crawl.ok:
                 crawl = api_crawl
             else:
+                # Check if this is a hard failure (no point in partial analysis)
+                err = crawl.error or ""
+                is_hard_fail = any(kw in err.lower() for kw in [
+                    "password-protected", "domain not found", "ssl certificate",
+                    "connection refused", "not found (404)", "permanently removed",
+                ])
+                if is_hard_fail:
+                    run.status = AnalysisRun.Status.FAILED
+                    run.error_message = crawl.error
+                    run.save(update_fields=["status", "error_message"])
+                    logger.warning("Run %d hard failed: %s", run.id, crawl.error)
+                    return
+                # Soft failure — run partial analysis
                 _run_partial_analysis(run, crawl)
                 return
 
@@ -461,6 +474,8 @@ def run_single_page_analysis(run_id: int):
             "schema": schema_score_val,
             "eeat": eeat_score_val,
             "technical": technical_score_val,
+            "entity": entity_score_val,
+            "ai_visibility": ai_vis_score,
         }
         recs = generate_recommendations(pillar_details, pillar_scores=pillar_scores)
         for rec in recs:

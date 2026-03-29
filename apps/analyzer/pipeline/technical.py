@@ -49,7 +49,10 @@ def score_technical(crawl: CrawlResult) -> tuple[float, dict]:
     # ── Checks that work WITHOUT page HTML ────────────────────────────
 
     # llms.txt exists and has quality content (15 pts)
+    # Check /llms.txt (WordPress/static + Shopify redirect), then app proxy path
     llms_content = fetch_file_content(crawl.url, "llms.txt")
+    if not llms_content.strip():
+        llms_content = fetch_file_content(crawl.url, "apps/signalor/llms.txt")
     has_llms_txt = bool(llms_content.strip())
     details["checks"]["llms_txt"] = has_llms_txt
     if has_llms_txt:

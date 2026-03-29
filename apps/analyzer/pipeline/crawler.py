@@ -75,6 +75,17 @@ def crawl_page(url: str) -> CrawlResult:
                     resp.encoding = resp.apparent_encoding or "utf-8"
                     html = resp.text or ""
 
+                # Detect Shopify password-protected stores (returns 200 with login form)
+                if ("shopify" in html.lower() and "password" in html.lower()
+                        and ('id="password"' in html or "storefront-password" in html)):
+                    result.error = "This Shopify store is password-protected. Remove the storefront password in Shopify Admin -> Online Store -> Preferences to analyze it."
+                    return result
+
+                # Detect WordPress maintenance mode
+                if "maintenance mode" in html.lower() and len(html) < 5000:
+                    result.error = "This site is in maintenance mode. Disable maintenance mode to analyze it."
+                    return result
+
                 result.html = html
                 result.soup = BeautifulSoup(html, "html.parser")
                 text_soup = BeautifulSoup(html, "html.parser")
@@ -90,8 +101,15 @@ def crawl_page(url: str) -> CrawlResult:
                 time.sleep(2 * (attempt + 1))  # Backoff: 2s, 4s
                 continue
 
-            # Non-retryable HTTP error (403, 404, etc.)
-            result.error = f"HTTP {resp.status_code}"
+            # Non-retryable HTTP error — set human-readable message
+            error_messages = {
+                401: "This site is password-protected. Remove the password or whitelist our crawler to analyze it.",
+                403: "Access forbidden (403). The site is blocking our crawler. Check firewall or security plugin settings.",
+                404: "Page not found (404). The URL may be incorrect or the page was deleted.",
+                410: "Page permanently removed (410). This URL no longer exists.",
+                451: "Page unavailable for legal reasons (451).",
+            }
+            result.error = error_messages.get(resp.status_code, f"HTTP {resp.status_code}")
             return result
 
         except requests.Timeout:
@@ -104,8 +122,18 @@ def crawl_page(url: str) -> CrawlResult:
             logger.info("Crawl attempt %d/%d connection error for %s", attempt + 1, MAX_RETRIES + 1, url)
             time.sleep(1)
             continue
+        except requests.exceptions.SSLError as exc:
+            last_error = f"SSL certificate error: The site's SSL certificate is invalid or expired. Fix your SSL certificate to analyze this site."
+            logger.warning("SSL error for %s: %s", url, exc)
+            break
         except requests.RequestException as exc:
-            last_error = str(exc)
+            err_str = str(exc).lower()
+            if "name resolution" in err_str or "nodename" in err_str or "getaddrinfo" in err_str:
+                last_error = "Domain not found. Check if the URL is correct and the domain exists."
+            elif "connection refused" in err_str:
+                last_error = "Connection refused. The server is not accepting connections."
+            else:
+                last_error = f"Could not reach the site: {exc}"
             logger.warning("Crawl error for %s: %s", url, exc)
             break
 

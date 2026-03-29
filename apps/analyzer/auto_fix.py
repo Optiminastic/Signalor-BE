@@ -70,16 +70,49 @@ def _sanitize_llm_output(text: str, purpose: str = "content") -> tuple[str, str 
 
 
 def _detect_fix_type(recommendation: Recommendation) -> str:
-    """Every recommendation is fixable. Determine the approach."""
+    """Determine the fix approach. Returns plugin-compatible fix_type values."""
     title_lower = (recommendation.title or "").lower()
     cat_lower = (recommendation.category or "").lower()
+    desc_lower = (recommendation.description or "").lower()
 
-    if "llms.txt" in title_lower or "robots.txt" in title_lower:
-        return "create_file"
+    # File creation
+    if "llms.txt" in title_lower:
+        return "llms"
+    if "robots.txt" in title_lower:
+        return "robots"
+
+    # Schema / structured data
     if cat_lower == "schema" or "json-ld" in title_lower or "structured data" in title_lower:
-        return "schema_markup"
-    # Everything else: enhance page content using AI
-    return "content_enhance"
+        return "schema"
+
+    # Meta tags (SEO title, meta description)
+    if any(kw in title_lower for kw in ("meta description", "seo title", "title tag", "meta title")):
+        return "meta"
+
+    # AI meta tags (AI crawler directives)
+    if any(kw in title_lower for kw in ("ai meta", "ai-meta", "ai crawler", "ai bot", "gptbot", "claudebot")):
+        return "ai_meta"
+    if cat_lower == "ai_visibility" and any(kw in desc_lower for kw in ("meta tag", "crawler", "bot")):
+        return "ai_meta"
+
+    # Canonical
+    if "canonical" in title_lower:
+        return "canonical"
+
+    # Viewport
+    if "viewport" in title_lower:
+        return "viewport"
+
+    # Noindex removal
+    if "noindex" in title_lower or "noindex" in desc_lower:
+        return "noindex"
+
+    # FAQ sections
+    if "faq" in title_lower:
+        return "faq"
+
+    # Everything else: enhance page content
+    return "content"
 
 
 # ── LLM ───────────────────────────────────────────────────────────────────
@@ -381,13 +414,13 @@ def _fetch_wpcom_page(integration, url: str) -> tuple[dict | None, str]:
         resp = requests.post(
             f"https://public-api.wordpress.com/rest/v1.1/sites/{blog_id}/posts/new",
             headers=headers,
-            json={"title": "Home", "content": "", "status": "publish"},
+            json={"title": "Home", "content": "", "status": "publish", "type": "page"},
             timeout=15,
         )
         if resp.ok:
             post = resp.json()
             return (
-                {"type": "posts", "id": post["ID"], "wpcom": True, "blog_id": blog_id},
+                {"type": "pages", "id": post["ID"], "wpcom": True, "blog_id": blog_id},
                 "",
             )
     except Exception:
@@ -653,9 +686,11 @@ Return ONLY the llms.txt content. No markdown code blocks."""
 # ── Orchestrator ──────────────────────────────────────────────────────────
 
 FIX_EXECUTORS = {
-    "content_enhance": _fix_content_enhance,
-    "schema_markup": _fix_schema_markup,
-    "create_file": _fix_create_file,
+    "content": _fix_content_enhance,
+    "faq": _fix_content_enhance,
+    "schema": _fix_schema_markup,
+    "llms": _fix_create_file,
+    "robots": _fix_create_file,
 }
 
 
@@ -675,7 +710,14 @@ def apply_fixes(run, integration, recommendations: list[Recommendation]) -> list
         )
 
         try:
-            executor = FIX_EXECUTORS[fix_type]
+            executor = FIX_EXECUTORS.get(fix_type)
+            if not executor:
+                result = {"status": "skipped", "message": f"Fix type '{fix_type}' requires the preview/approve flow."}
+                job.status = "skipped"
+                job.response_data = result
+                job.save(update_fields=["status", "response_data"])
+                results.append({"recommendation_id": rec.id, "status": "skipped", "message": result["message"], "fix_type": fix_type})
+                continue
             result = executor(integration, run, rec)
 
             job.status = result["status"]
@@ -746,7 +788,7 @@ def generate_fix_preview(run, integration, recommendation) -> dict:
         return {"status": "error", "message": f"Could not find the page at {run.url}"}
 
     # Generate fix via LLM
-    if fix_type == "content_enhance":
+    if fix_type in ("content", "faq"):
         prompt = f"""You are a GEO (Generative Engine Optimization) expert.
 
 TASK: Apply this recommendation to the page content below.
@@ -782,7 +824,7 @@ RULES:
             "target_type": page_info.get("type", "posts"),
         }
 
-    elif fix_type == "schema_markup":
+    elif fix_type == "schema":
         prompt = f"""Generate JSON-LD structured data for this website.
 BRAND: {brand_name}
 URL: {run.url}
@@ -807,10 +849,11 @@ Return ONLY valid JSON-LD wrapped in <script type="application/ld+json"> tags.""
             "original": "",
             "preview": schema_html[:5000],
             "full_content": schema_html,
+            "target_type": "schema",
         }
 
-    elif fix_type == "create_file":
-        filename = "llms.txt" if "llms" in recommendation.title.lower() else "robots.txt"
+    elif fix_type in ("llms", "robots"):
+        filename = "llms.txt" if fix_type == "llms" else "robots.txt"
         prompt = f"""Create a comprehensive {filename} file for:
 BRAND: {brand_name}
 URL: {run.url}
@@ -825,12 +868,74 @@ Include: About, Key Information, Products/Services, Contact sections with URLs."
 
         return {
             "status": "preview",
-            "fix_type": "llms",
+            "fix_type": fix_type,
             "recommendation_id": recommendation.id,
             "recommendation_title": recommendation.title,
             "original": "",
             "preview": file_content[:5000],
             "full_content": file_content,
+            "target_type": "file",
+        }
+
+    elif fix_type == "meta":
+        prompt = f"""Generate an SEO-optimized title and meta description for this page.
+
+BRAND: {brand_name}
+URL: {run.url}
+RECOMMENDATION: {recommendation.title}
+INSTRUCTIONS: {recommendation.action}
+CURRENT CONTENT (first 3000 chars): {current_content[:3000]}
+
+Return JSON with two fields: {{"seo_title": "...", "seo_description": "..."}}
+Title max 60 chars. Description max 160 chars. No markdown."""
+
+        raw = _call_llm(prompt, "preview-meta")
+        return {
+            "status": "preview",
+            "fix_type": "meta",
+            "recommendation_id": recommendation.id,
+            "recommendation_title": recommendation.title,
+            "original": "",
+            "preview": raw.strip()[:2000],
+            "full_content": raw.strip(),
+            "target_type": "meta",
+        }
+
+    elif fix_type == "ai_meta":
+        ai_bots = ["GPTBot", "Google-Extended", "anthropic-ai", "ClaudeBot", "PerplexityBot", "ChatGPT-User", "CCBot"]
+        preview_html = "\n".join(f'<meta name="{bot}" content="index, follow">' for bot in ai_bots)
+        return {
+            "status": "preview",
+            "fix_type": "ai_meta",
+            "recommendation_id": recommendation.id,
+            "recommendation_title": recommendation.title,
+            "original": "",
+            "preview": f"AI crawler meta tags will be added:\n\n{preview_html}",
+            "full_content": "enabled",
+            "target_type": "ai_meta",
+        }
+
+    elif fix_type in ("canonical", "viewport", "noindex"):
+        # These are simple config fixes — no LLM needed, just tell the plugin
+        messages = {
+            "canonical": f"Set canonical URL to {run.url}",
+            "viewport": "Set responsive viewport meta tag",
+            "noindex": "Remove noindex directive and force indexing",
+        }
+        content_map = {
+            "canonical": run.url,
+            "viewport": "width=device-width, initial-scale=1",
+            "noindex": "index, follow",
+        }
+        return {
+            "status": "preview",
+            "fix_type": fix_type,
+            "recommendation_id": recommendation.id,
+            "recommendation_title": recommendation.title,
+            "original": "",
+            "preview": messages[fix_type],
+            "full_content": content_map[fix_type],
+            "target_type": fix_type,
         }
 
     return {"status": "error", "message": f"Unknown fix type: {fix_type}"}
@@ -844,24 +949,104 @@ def apply_approved_fix(run, integration, recommendation, content: str, fix_type:
 
     # Try plugin first (WordPress with Signalor plugin installed)
     if provider == "wordpress" and api_key and site_url:
+        # Build payload matching plugin's expected fields
+        payload = {"fix_type": fix_type, "url": run.url}
+        if fix_type in ("content", "faq"):
+            payload["content"] = content
+        elif fix_type == "schema":
+            payload["schema"] = content
+        elif fix_type == "llms":
+            payload["llms_content"] = content
+        elif fix_type == "robots":
+            payload["content"] = content
+        elif fix_type == "meta":
+            # Meta content is JSON: {"seo_title": "...", "seo_description": "..."}
+            import json as _json
+            try:
+                meta = _json.loads(content)
+                payload["seo_title"] = meta.get("seo_title", "")
+                payload["seo_description"] = meta.get("seo_description", "")
+            except (ValueError, TypeError):
+                payload["seo_title"] = content
+        elif fix_type == "canonical":
+            payload["canonical_url"] = content
+        elif fix_type in ("viewport", "noindex"):
+            payload["content"] = content
+        else:
+            payload["content"] = content
+
         try:
             resp = requests.post(
                 f"{site_url}/wp-json/signalor/v1/apply-fix",
                 headers={"X-Signalor-Key": api_key, "Content-Type": "application/json"},
-                json={
-                    "fix_type": fix_type,
-                    "url": run.url,
-                    "content": content if fix_type in ("content", "faq") else None,
-                    "schema": content if fix_type == "schema" else None,
-                    "llms_content": content if fix_type == "llms" else None,
-                },
+                json=payload,
                 timeout=20,
             )
             if resp.ok:
                 return resp.json()
-            logger.warning("Plugin apply-fix failed: %d %s", resp.status_code, resp.text[:200])
+            logger.warning("Plugin apply-fix failed (%d): %s", resp.status_code, resp.text[:200])
         except Exception as exc:
             logger.warning("Plugin apply-fix error: %s", exc)
+        # Fall through to direct API only for non-plugin providers
+        logger.info("Plugin failed for %s, falling back to direct API", run.url)
+
+    # Try Shopify app (like WordPress plugin — thin executor on the store)
+    if provider == "shopify" and not integration.metadata.get("signalor_app_url"):
+        # App URL not configured — check if fixes require the app
+        if fix_type in ("schema", "meta", "ai_meta", "noindex"):
+            return {
+                "status": "failed",
+                "message": "Signalor Shopify app not installed. Install it from the Shopify App Store to apply this fix.",
+            }
+
+    if provider == "shopify" and integration.metadata.get("signalor_app_url"):
+        import json as _json
+        import hashlib as _hashlib
+        import hmac as _hmac
+
+        app_url = integration.metadata["signalor_app_url"].rstrip("/")
+        hmac_secret = integration.metadata.get("signalor_hmac_secret", "")
+        shop = integration.metadata.get("shop_domain", "")
+
+        payload = {"fix_type": fix_type, "url": run.url, "shop": shop}
+        if fix_type in ("content", "faq"):
+            payload["content"] = content
+        elif fix_type == "schema":
+            payload["schema"] = content
+        elif fix_type == "llms":
+            payload["llms_content"] = content
+        elif fix_type == "meta":
+            try:
+                meta = _json.loads(content)
+                payload["seo_title"] = meta.get("seo_title", "")
+                payload["seo_description"] = meta.get("seo_description", "")
+            except (ValueError, TypeError):
+                payload["seo_title"] = content
+        elif fix_type == "ai_meta":
+            payload["content"] = content
+        else:
+            payload["content"] = content
+
+        body = _json.dumps(payload).encode("utf-8")
+        signature = _hmac.new(hmac_secret.encode(), body, _hashlib.sha256).hexdigest()
+
+        try:
+            resp = requests.post(
+                f"{app_url}/api/apply-fix",
+                headers={
+                    "X-Signalor-Signature": signature,
+                    "X-Signalor-Shop": shop,
+                    "Content-Type": "application/json",
+                },
+                data=body,
+                timeout=25,
+            )
+            if resp.ok:
+                return resp.json()
+            logger.warning("Shopify app apply-fix failed (%d): %s", resp.status_code, resp.text[:200])
+        except Exception as exc:
+            logger.warning("Shopify app apply-fix error: %s", exc)
+        logger.info("Shopify app failed for %s, falling back to direct API", run.url)
 
     # Fallback: direct API push (existing behavior)
     if fix_type == "llms":
@@ -900,10 +1085,11 @@ def apply_approved_fix(run, integration, recommendation, content: str, fix_type:
     if not page_info:
         return {"status": "failed", "message": f"Could not find page at {run.url}"}
 
-    if fix_type in ("content", "faq", "content_enhance"):
+    if fix_type in ("content", "faq"):
         return _push_content(integration, page_info, content)
     elif fix_type == "schema":
         new_content = existing_content + "\n" + content if existing_content else content
         return _push_content(integration, page_info, new_content)
 
-    return {"status": "failed", "message": f"Cannot apply fix type: {fix_type}"}
+    # meta, canonical, viewport, noindex — plugin-only fixes, no direct API fallback
+    return {"status": "failed", "message": f"Fix type '{fix_type}' requires the Signalor plugin. Install it on your WordPress site."}

@@ -11,7 +11,13 @@ import requests
 logger = logging.getLogger("apps")
 
 API_VERSION = "2026-01"
-AUTH_SCOPES = ["read_products", "read_orders", "read_customers"]
+AUTH_SCOPES = [
+    "read_products", "write_products",
+    "read_orders", "read_customers",
+    "read_content", "write_content",
+    "read_metafields", "write_metafields",
+    "read_themes", "write_themes",
+]
 
 
 def normalize_shop_domain(shop_domain: str) -> str:
