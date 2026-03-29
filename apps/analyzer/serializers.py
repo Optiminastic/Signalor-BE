@@ -29,8 +29,20 @@ class RecommendationSerializer(serializers.ModelSerializer):
             "action", "impact_estimate", "category", "can_auto_fix", "why",
         ]
 
+    # Recommendations that require manual server/hosting changes — cannot auto-fix
+    MANUAL_ONLY = {"no_https", "slow_load_time", "crawl_failed", "crawl_blocked_403", "crawl_timeout", "no_sitemap"}
+
     def get_can_auto_fix(self, obj):
-        # Every recommendation is auto-fixable via AI
+        # Check if this recommendation maps to a manual-only finding
+        title_lower = (obj.title or "").lower()
+        if "https" in title_lower and "enable" in title_lower:
+            return False
+        if "load speed" in title_lower or "too slow" in title_lower:
+            return False
+        if "crawler blocked" in title_lower or "blocks automated" in title_lower:
+            return False
+        if "sitemap" in title_lower and "add" in title_lower:
+            return False
         return True
 
 
