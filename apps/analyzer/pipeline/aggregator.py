@@ -4,16 +4,15 @@ from .utils import safe_score
 
 logger = logging.getLogger("apps")
 
-# Weights: foundational pillars (content, eeat, technical) = 60%
-# Signal pillars (schema, entity, ai_visibility) = 40%
-# Entity + AI Vis combined ≤ 30% to prevent hallucination-driven scores
+# Weights v3: Content + E-E-A-T = 50% (trust pillars)
+# Technical = 15%, Schema = 10%, Entity = 15%, AI Visibility = 10%
 DEFAULT_WEIGHTS = {
-    "content": 0.20,
+    "content": 0.25,
     "schema": 0.10,
     "eeat": 0.25,
     "technical": 0.15,
     "entity": 0.15,
-    "ai_visibility": 0.15,
+    "ai_visibility": 0.10,
 }
 
 INDUSTRY_WEIGHTS = {
@@ -132,18 +131,23 @@ def compute_composite(
         + ai_visibility * weights["ai_visibility"]
     )
 
-    # Reality clamp: if ALL foundational signals are weak, cap score
-    # Only triggers when technical is also weak (protects new startups with good infra)
-    if content < 20 and eeat < 20 and entity < 10 and technical < 50:
-        composite = min(composite, 30.0)
+    # ── Smarter clamps v3 ──
 
-    # Technical floor: technically valid sites shouldn't score dead
-    if technical > 40 and content < 10:
-        composite = max(composite, 15.0)
+    # If AI doesn't see you, you don't exist
+    if ai_visibility < 20 and entity < 20:
+        composite = min(composite, 50.0)
 
-    # Content ceiling: empty sites with good tech shouldn't score high
-    if content < 10 and eeat < 10:
+    # Untrustworthy content can't score high
+    if content < 15 and eeat < 15:
+        composite = min(composite, 35.0)
+
+    # Bad infrastructure tanks everything
+    if technical < 30:
         composite = min(composite, 40.0)
+
+    # Technical floor: technically sound sites shouldn't score dead
+    if technical > 50 and content < 10:
+        composite = max(composite, 15.0)
 
     return safe_score(composite)
 

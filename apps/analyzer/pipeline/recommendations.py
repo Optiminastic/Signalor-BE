@@ -867,6 +867,16 @@ OFFPAGE_FINDINGS = {
 }
 OFFPAGE_PILLARS = {"entity", "ai_visibility"}
 
+# Findings that require manual action — cannot be auto-fixed by plugin/app
+MANUAL_FINDINGS = {
+    "no_sitemap", "no_https", "slow_load_time", "crawl_failed",
+    "crawl_blocked_403", "crawl_timeout",
+    "brand_not_in_ai", "no_wikipedia_presence", "no_social_profiles",
+    "no_reddit_presence", "no_medium_presence",
+    "not_in_google_ai", "no_reddit_ai_presence", "no_medium_ai_presence",
+    "weak_brand_site",
+}
+
 # Why each pillar matters for AI visibility
 PILLAR_WHY = {
     "content": "AI models extract and cite well-structured content with citations and data",
@@ -915,6 +925,7 @@ def generate_recommendations(
 
                 rec = dict(rule)
                 rec["impact_score"] = IMPACT_SCORES.get(finding, 10)
+                rec["fixable"] = finding not in MANUAL_FINDINGS
 
                 # Priority engine: combine pillar weakness + impact + severity
                 pillar_urgency = 100 - pillar_score  # lower score = higher urgency

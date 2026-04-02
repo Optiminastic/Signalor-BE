@@ -20,49 +20,202 @@ _ENGINE_MAP = {
 DEFAULT_RUNS = 3  # Fire each prompt N times to handle AI randomness
 
 
+def _search_google_serper(query: str, brand_name: str, brand_url: str) -> dict:
+    """
+    Search Google via Serper.dev and check if brand appears in results.
+    Free: 2,500 searches/month.
+
+    Returns a PromptResult-compatible dict with engine="google".
+    """
+    import os
+    import requests as _requests
+    from urllib.parse import urlparse
+
+    api_key = os.getenv("SERPER_API_KEY", "")
+    if not api_key:
+        return None
+
+    try:
+        resp = _requests.post(
+            "https://google.serper.dev/search",
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            json={"q": query, "num": 10},
+            timeout=10,
+        )
+        if not resp.ok:
+            logger.warning("Serper search failed: %d", resp.status_code)
+            return None
+
+        data = resp.json()
+    except Exception as exc:
+        logger.warning("Serper search error: %s", exc)
+        return None
+
+    # Check organic results for brand mentions
+    brand_lower = brand_name.lower()
+    domain = urlparse(brand_url).netloc.lower().replace("www.", "")
+    organic = data.get("organic", [])
+    answer_box = data.get("answerBox", {})
+    knowledge_graph = data.get("knowledgeGraph", {})
+
+    mentioned = False
+    rank_position = 0
+    response_parts = []
+
+    # Check answer box
+    ab_text = (answer_box.get("snippet", "") or answer_box.get("answer", "")).lower()
+    if brand_lower in ab_text or domain in ab_text:
+        mentioned = True
+        rank_position = 1
+        response_parts.append(f"[Answer Box] {answer_box.get('snippet', answer_box.get('answer', ''))}")
+
+    # Check knowledge graph
+    kg_title = (knowledge_graph.get("title", "")).lower()
+    kg_desc = (knowledge_graph.get("description", "")).lower()
+    if brand_lower in kg_title or brand_lower in kg_desc or domain in kg_title:
+        mentioned = True
+        if rank_position == 0:
+            rank_position = 1
+        response_parts.append(f"[Knowledge Graph] {knowledge_graph.get('title', '')}: {knowledge_graph.get('description', '')}")
+
+    # Check organic results
+    for i, result in enumerate(organic[:10], 1):
+        title = (result.get("title", "")).lower()
+        snippet = (result.get("snippet", "")).lower()
+        link = (result.get("link", "")).lower()
+        result_domain = urlparse(link).netloc.lower().replace("www.", "")
+
+        if brand_lower in title or brand_lower in snippet or domain == result_domain:
+            mentioned = True
+            if rank_position == 0:
+                rank_position = i
+            response_parts.append(f"[#{i}] {result.get('title', '')} — {result.get('snippet', '')}")
+        else:
+            response_parts.append(f"[#{i}] {result.get('title', '')}")
+
+    # Determine sentiment from snippets
+    sentiment = "neutral"
+    if mentioned:
+        all_snippets = " ".join(s.lower() for s in response_parts)
+        pos_words = ["best", "top", "leading", "recommend", "popular", "trusted", "great", "excellent"]
+        neg_words = ["worst", "avoid", "poor", "bad", "scam", "issue", "problem"]
+        pos_count = sum(1 for w in pos_words if w in all_snippets)
+        neg_count = sum(1 for w in neg_words if w in all_snippets)
+        if pos_count > neg_count:
+            sentiment = "positive"
+        elif neg_count > pos_count:
+            sentiment = "negative"
+
+    return {
+        "engine": "google",
+        "response_text": "\n".join(response_parts[:5])[:3000],
+        "brand_mentioned": mentioned,
+        "sentiment": sentiment,
+        "confidence": 1.0 if mentioned else 0.0,
+        "rank_position": rank_position,
+    }
+
+
 def generate_brand_prompts(
     brand_name: str,
     brand_url: str,
     industry: str = "",
     page_content: str = "",
+    meta_description: str = "",
+    products: list[str] | None = None,
+    location: str = "",
+    country: str = "",
     count: int = 10,
 ) -> list[str]:
     """
-    Use AI to generate brand-relevant prompts that real users would ask.
-
-    The prompts MUST NOT mention the brand name — they should be natural
-    questions a user would ask when looking for this type of product/service.
-    The AI will understand the brand from context and generate relevant prompts.
+    Use AI to deeply understand the brand — what it is (product, service, person,
+    local business, anything) — then generate prompts real users would ask AI.
     """
     from .llm import ask_llm as ask_single_llm
 
-    context_parts = [f"Brand: {brand_name}", f"URL: {brand_url}"]
+    # Build rich context
+    context_parts = [
+        f"Brand/Entity Name: {brand_name}",
+        f"Website: {brand_url}",
+    ]
     if industry:
-        context_parts.append(f"Industry: {industry}")
+        context_parts.append(f"Industry detected: {industry}")
+    if meta_description:
+        context_parts.append(f"Meta description: {meta_description}")
+    if location or country:
+        loc = ", ".join(filter(None, [location, country]))
+        context_parts.append(f"Location/Region: {loc}")
     if page_content:
-        context_parts.append(f"Page content (first 1500 chars): {page_content[:1500]}")
+        context_parts.append(f"Website content (first 2000 chars):\n{page_content[:2000]}")
+    if products:
+        context_parts.append(f"Pages/products found on site: {', '.join(products[:10])}")
 
-    prompt = f"""You are an AI visibility expert. Generate exactly {count} search prompts that real users would type into ChatGPT, Gemini, or Perplexity when looking for products/services like what this brand offers.
+    # Detect TLD for location hints
+    from urllib.parse import urlparse
+    try:
+        tld = urlparse(brand_url).netloc.split(".")[-1].lower()
+        tld_locations = {
+            "in": "India", "uk": "United Kingdom", "au": "Australia", "ca": "Canada",
+            "de": "Germany", "fr": "France", "jp": "Japan", "br": "Brazil",
+            "sg": "Singapore", "ae": "UAE", "sa": "Saudi Arabia", "ng": "Nigeria",
+        }
+        if tld in tld_locations and not country:
+            context_parts.append(f"TLD suggests location: {tld_locations[tld]}")
+    except Exception:
+        pass
 
+    prompt = f"""You are a GEO (Generative Engine Optimization) expert. Your job is to deeply understand this entity and generate {count} prompts that real people would type into ChatGPT, Gemini, Perplexity, or Claude.
+
+CONTEXT:
 {chr(10).join(context_parts)}
 
-RULES:
-1. Do NOT mention the brand name in any prompt
-2. Write natural conversational questions (how real users ask AI assistants)
-3. Cover different intents: comparison, recommendation, how-to, best-of, alternatives
-4. Include specific details relevant to this brand's niche
-5. Mix broad and specific prompts
-6. Use current year context where relevant
+STEP 1 — First, figure out WHAT this entity is:
+- Is it a SaaS product? Physical product? Service? Agency? Local business? Blog? Personal brand? Marketplace? Nonprofit? Something else?
+- What specific problem does it solve or what need does it serve?
+- Who is the target audience (age, role, industry, location)?
+- What are the key offerings (products, services, content)?
+- Who are the likely competitors or alternatives?
+- Is location relevant? (local business, regional service, global SaaS)
 
-Return ONLY a JSON array of {count} prompt strings. No explanations.
+STEP 2 — Generate {count} prompts that REAL users would ask AI assistants. Cover these categories:
 
-Example format: ["What are the best ...", "Compare the top ...", "Which ... do experts recommend?"]"""
+1. DISCOVERY (2 prompts): User searching for what this entity offers
+   - Be specific to the actual niche, not generic
+   - If location matters, include location context
+
+2. COMPARISON (2 prompts): User comparing options in this space
+   - Reference the actual category, not vague terms
+   - Include audience context (e.g., "for small businesses", "in India")
+
+3. SPECIFIC USE CASE (2 prompts): User has a specific need this entity serves
+   - Match real tasks/problems the entity solves
+
+4. EXPERT RECOMMENDATION (2 prompts): User wants trusted advice
+   - Include specifics about the niche
+
+5. LOCAL/REGIONAL (1 prompt): If location is relevant
+   - Include city, country, or region in the prompt
+   - If the entity is global, use a market-specific angle
+
+6. ALTERNATIVE/EVALUATION (1 prompt): User evaluating options
+   - "Is X worth it?", "What to look for in Y?"
+
+CRITICAL RULES:
+- NEVER mention "{brand_name}" in any prompt — these should be natural user queries
+- Be SPECIFIC to what this entity actually does (not generic "best tools" prompts)
+- If it's a local business → include location in at least 2 prompts
+- If it's a product → ask about specific features, pricing, alternatives
+- If it's a service → ask about hiring, evaluating, comparing providers
+- If it's a person/personal brand → ask about expertise, credentials, content
+- Write conversational, the way real people talk to AI assistants
+- Each prompt MUST be something a potential customer/user would actually ask
+
+Return ONLY a JSON array of {count} strings. No markdown, no explanations.
+Example: ["What are the best...", "How do I...", "Which ... in Mumbai?"]"""
 
     try:
-        raw = ask_single_llm(prompt, purpose="Generate Brand Prompts", max_tokens=1000)
-        # Parse JSON array from response
+        raw = ask_single_llm(prompt, purpose="Generate Brand Prompts", max_tokens=1200)
         raw = raw.strip()
-        # Handle markdown code blocks
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
         prompts = json.loads(raw)
@@ -71,13 +224,14 @@ Example format: ["What are the best ...", "Compare the top ...", "Which ... do e
     except Exception as exc:
         logger.warning("generate_brand_prompts failed: %s", exc)
 
-    # Fallback: generic prompts
+    # Fallback with whatever context we have
+    niche = industry or "services"
     return [
-        f"What are the best {industry or 'services'} available today?",
-        f"Compare the top {industry or 'tools'} for businesses",
-        f"Which {industry or 'solution'} do experts recommend?",
-        f"What should I look for when choosing a {industry or 'provider'}?",
-        f"What are the leading {industry or 'platforms'} in 2026?",
+        f"What are the best {niche} available today?",
+        f"Compare the top {niche} platforms for businesses",
+        f"Which {niche} do experts recommend in 2026?",
+        f"How do I choose the right {niche} provider?",
+        f"What should I look for in a {niche} platform?",
     ]
 
 
@@ -143,6 +297,11 @@ def fire_prompt_across_engines(
                 "confidence": round(confidence, 3),
                 "rank_position": rank_position,
             })
+
+    # Also search Google via Serper (once per prompt, not per run)
+    google_result = _search_google_serper(prompt_text, brand_name, brand_url)
+    if google_result:
+        all_results.append(google_result)
 
     return all_results
 

@@ -188,3 +188,217 @@ def fetch_file_content(base_url: str, path: str, session: requests.Session | Non
     except requests.RequestException:
         pass
     return ""
+
+
+# ── Multi-page site discovery ─────────────────────────────────────────────
+
+@dataclass
+class SiteMap:
+    """Discovered pages from a site, categorized by type."""
+    homepage: str = ""
+    products: list[str] = field(default_factory=list)
+    collections: list[str] = field(default_factory=list)
+    pages: list[str] = field(default_factory=list)       # static pages (about, contact, etc.)
+    blog_posts: list[str] = field(default_factory=list)
+    other: list[str] = field(default_factory=list)
+
+    @property
+    def all_urls(self) -> list[str]:
+        urls = []
+        if self.homepage:
+            urls.append(self.homepage)
+        urls.extend(self.products)
+        urls.extend(self.collections)
+        urls.extend(self.pages)
+        urls.extend(self.blog_posts)
+        urls.extend(self.other)
+        return urls
+
+    @property
+    def total(self) -> int:
+        return len(self.all_urls)
+
+
+def discover_site_pages(
+    base_url: str,
+    session: requests.Session | None = None,
+    max_products: int = 5,
+    max_collections: int = 3,
+    max_pages: int = 5,
+    max_blog: int = 3,
+) -> SiteMap:
+    """
+    Discover important pages on a site using sitemap + internal links.
+    No hardcoding — detects page types from URL patterns.
+
+    Strategy:
+    1. Fetch sitemap.xml → extract all URLs
+    2. Categorize URLs by pattern (products, collections, pages, blog)
+    3. Cap each category to avoid over-crawling
+    4. If no sitemap → discover from homepage internal links
+    """
+    parsed = urlparse(base_url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    site_map = SiteMap(homepage=base_url)
+    http = session or requests.Session()
+
+    all_discovered: set[str] = set()
+
+    # ── Try sitemap first ──
+    sitemap_urls = _parse_sitemap(origin, http)
+    if sitemap_urls:
+        all_discovered.update(sitemap_urls)
+        logger.info("Sitemap discovery: %d URLs found", len(sitemap_urls))
+    else:
+        # Fallback: discover from homepage internal links
+        homepage_links = _discover_from_page(base_url, http)
+        all_discovered.update(homepage_links)
+        logger.info("Link discovery (no sitemap): %d URLs found", len(homepage_links))
+
+    # ── Categorize URLs ──
+    for url in all_discovered:
+        path = urlparse(url).path.lower().strip("/")
+
+        if not path or path == "":
+            continue  # Skip homepage (already added)
+
+        if "/products/" in path or path.startswith("products/"):
+            site_map.products.append(url)
+        elif "/collections/" in path or path.startswith("collections/"):
+            site_map.collections.append(url)
+        elif "/blogs/" in path or "/blog/" in path or path.startswith("blog/"):
+            site_map.blog_posts.append(url)
+        elif "/pages/" in path or path.startswith("pages/"):
+            site_map.pages.append(url)
+        elif any(kw in path for kw in ["about", "contact", "shipping", "faq", "privacy", "terms", "policy", "team", "story"]):
+            site_map.pages.append(url)
+        elif any(kw in path for kw in ["category", "categories", "shop", "store"]):
+            site_map.collections.append(url)
+        elif path.count("/") == 0:
+            # Top-level pages (e.g., /pricing, /features)
+            site_map.pages.append(url)
+        else:
+            site_map.other.append(url)
+
+    # ── Cap each category ──
+    site_map.products = site_map.products[:max_products]
+    site_map.collections = site_map.collections[:max_collections]
+    site_map.pages = site_map.pages[:max_pages]
+    site_map.blog_posts = site_map.blog_posts[:max_blog]
+    site_map.other = site_map.other[:3]
+
+    logger.info(
+        "Site discovery complete: %d products, %d collections, %d pages, %d blog, %d other",
+        len(site_map.products), len(site_map.collections),
+        len(site_map.pages), len(site_map.blog_posts), len(site_map.other),
+    )
+
+    return site_map
+
+
+def _parse_sitemap(origin: str, http: requests.Session) -> list[str]:
+    """Parse sitemap.xml (handles sitemap index + nested sitemaps)."""
+    import xml.etree.ElementTree as ET
+
+    urls: list[str] = []
+
+    def _fetch_and_parse(url: str, depth: int = 0):
+        if depth > 2:  # Max nesting depth
+            return
+        try:
+            resp = http.get(url, headers={"User-Agent": USER_AGENTS[0]}, timeout=10)
+            if resp.status_code != 200:
+                return
+            text = resp.text
+            # Guard against password pages
+            if "storefront-password" in text or "password protected" in text.lower():
+                return
+
+            root = ET.fromstring(text)
+            ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+
+            # Check if it's a sitemap index (contains <sitemap> entries)
+            for sitemap in root.findall(".//sm:sitemap/sm:loc", ns):
+                if sitemap.text:
+                    _fetch_and_parse(sitemap.text.strip(), depth + 1)
+
+            # Extract page URLs
+            for loc in root.findall(".//sm:url/sm:loc", ns):
+                if loc.text:
+                    page_url = loc.text.strip()
+                    if page_url.startswith("http"):
+                        urls.append(page_url)
+        except Exception as exc:
+            logger.debug("Sitemap parse error for %s: %s", url, exc)
+
+    _fetch_and_parse(f"{origin}/sitemap.xml")
+    return urls
+
+
+def _discover_from_page(url: str, http: requests.Session) -> list[str]:
+    """Fallback: discover internal links from a page's HTML."""
+    try:
+        resp = http.get(url, headers={"User-Agent": USER_AGENTS[0]}, timeout=15)
+        if resp.status_code != 200:
+            return []
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        parsed = urlparse(url)
+        base_domain = parsed.netloc
+
+        discovered = set()
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if href.startswith("/") and not href.startswith("//"):
+                full = f"{parsed.scheme}://{parsed.netloc}{href.split('?')[0].split('#')[0]}"
+                discovered.add(full)
+            elif base_domain in href:
+                clean = href.split("?")[0].split("#")[0]
+                discovered.add(clean)
+
+        return list(discovered)
+    except Exception:
+        return []
+
+
+def crawl_site(
+    base_url: str,
+    storefront_password: str = "",
+    max_pages: int = 15,
+) -> tuple[CrawlResult, SiteMap, list[CrawlResult]]:
+    """
+    Crawl a full site: homepage + discovered pages.
+
+    Returns:
+    - homepage CrawlResult (primary, used for scoring)
+    - SiteMap (discovered pages)
+    - list of CrawlResult for additional pages
+    """
+    # Crawl homepage first
+    homepage_result = crawl_page(base_url, storefront_password)
+
+    # Discover site pages
+    site_map = discover_site_pages(
+        base_url,
+        session=homepage_result.session,
+        max_products=5,
+        max_collections=3,
+        max_pages=5,
+        max_blog=3,
+    )
+
+    # Crawl additional pages (skip homepage, already crawled)
+    additional: list[CrawlResult] = []
+    urls_to_crawl = [u for u in site_map.all_urls if u != base_url][:max_pages]
+
+    for url in urls_to_crawl:
+        try:
+            result = crawl_page(url, storefront_password="")  # Session already authenticated
+            result.session = homepage_result.session  # Share the session
+            additional.append(result)
+        except Exception as exc:
+            logger.warning("Failed to crawl %s: %s", url, exc)
+
+    logger.info("Site crawl complete: homepage + %d additional pages", len(additional))
+
+    return homepage_result, site_map, additional

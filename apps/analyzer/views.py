@@ -1683,10 +1683,26 @@ class GeneratePromptsView(APIView):
 
         from .pipeline.prompt_tracker import generate_brand_prompts
 
+        # Try to fetch page content for better context
+        page_content = ""
+        meta_desc = ""
+        try:
+            from .pipeline.crawler import crawl_page
+            if brand_url:
+                quick_crawl = crawl_page(brand_url)
+                if quick_crawl.ok:
+                    page_content = quick_crawl.text[:2000]
+                    md = quick_crawl.soup.find("meta", attrs={"name": "description"})
+                    meta_desc = (md["content"].strip() if md and md.get("content") else "")
+        except Exception:
+            pass
+
         try:
             prompts = generate_brand_prompts(
                 brand_name=brand_name,
                 brand_url=brand_url,
+                page_content=page_content,
+                meta_description=meta_desc,
                 count=10,
             )
             return Response({"prompts": prompts})
@@ -2194,6 +2210,168 @@ class AutoFixApproveView(APIView):
             )
 
         return Response(result)
+
+
+# ── AI Chat (GEO Assistant with analysis context) ────────────────────────────
+
+class AiChatView(APIView):
+    """POST /api/analyzer/runs/s/<slug>/chat/ — AI chat with full analysis context."""
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        message = request.data.get("message", "").strip()
+        history = request.data.get("history", [])
+
+        if not message:
+            return Response({"error": "message required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Build context from THIS run's stored data only — no re-crawling
+        page_score = run.page_scores.filter(url=run.url).first()
+        all_page_scores = list(run.page_scores.all().values("url", "content_score", "schema_score", "eeat_score", "technical_score"))
+        recs = list(run.recommendations.values_list("title", "priority", "pillar", "description")[:15])
+
+        # Extract brand info from stored analysis details
+        meta_desc = ""
+        page_title = ""
+        word_count = 0
+        site_discovery = {}
+
+        if page_score and page_score.content_details:
+            checks = page_score.content_details.get("checks", {})
+            intent = checks.get("intent_clarity", {})
+            coverage = checks.get("coverage_depth", {})
+            word_count = checks.get("word_count", coverage.get("word_count", 0))
+            site_discovery = checks.get("site_discovery", {})
+            meta_desc = intent.get("has_meta_description", "")
+
+        if page_score and page_score.technical_details:
+            tech_checks = page_score.technical_details.get("checks", {})
+            infra = tech_checks.get("infrastructure", {})
+            ai_read = tech_checks.get("ai_readability", {})
+
+        # Build context
+        brand = run.brand_name or run.url
+        context_parts = [
+            f"Brand: {brand}",
+            f"URL: {run.url}",
+            f"Word count on homepage: {word_count}",
+        ]
+
+        if site_discovery:
+            context_parts.append(f"Site structure: {site_discovery.get('products', 0)} products, "
+                                 f"{site_discovery.get('collections', 0)} collections, "
+                                 f"{site_discovery.get('pages', 0)} pages, "
+                                 f"{site_discovery.get('blog_posts', 0)} blog posts")
+
+        context_parts.append(f"\n--- EXACT SCORES (from this analysis) ---")
+        context_parts.append(f"Overall GEO Score: {round(run.composite_score, 1)}/100")
+
+        if page_score:
+            context_parts.extend([
+                f"Technical: {round(page_score.technical_score, 1)}/100",
+                f"Schema: {round(page_score.schema_score, 1)}/100",
+                f"Content: {round(page_score.content_score, 1)}/100",
+                f"E-E-A-T: {round(page_score.eeat_score, 1)}/100",
+                f"Entity: {round(page_score.entity_score, 1)}/100",
+                f"AI Visibility: {round(page_score.ai_visibility_score, 1)}/100",
+            ])
+
+            # Add detail breakdowns if available
+            if page_score.content_details and page_score.content_details.get("checks"):
+                cc = page_score.content_details["checks"]
+                context_parts.append(f"\nContent breakdown: intent={cc.get('intent_score', '?')}, "
+                                     f"coverage={cc.get('coverage_score', '?')}, "
+                                     f"density={cc.get('density_score', '?')}, "
+                                     f"structure={cc.get('structure_score', '?')}")
+
+            if page_score.eeat_details and page_score.eeat_details.get("checks"):
+                ec = page_score.eeat_details["checks"]
+                context_parts.append(f"E-E-A-T breakdown: identity={ec.get('identity_score', '?')}, "
+                                     f"evidence={ec.get('evidence_score', '?')}, "
+                                     f"experience={ec.get('experience_score', '?')}, "
+                                     f"trust={ec.get('trust_score', '?')}")
+
+            if page_score.technical_details and page_score.technical_details.get("checks"):
+                tc = page_score.technical_details["checks"]
+                context_parts.append(f"Technical breakdown: infra={tc.get('infra_score', '?')}, "
+                                     f"perf={tc.get('perf_score', '?')}, "
+                                     f"crawl={tc.get('crawl_score', '?')}, "
+                                     f"ai_read={tc.get('ai_read_score', '?')}, "
+                                     f"struct={tc.get('struct_score', '?')}")
+
+        if len(all_page_scores) > 1:
+            context_parts.append(f"\nPages analyzed: {len(all_page_scores)}")
+            for ps in all_page_scores[:5]:
+                context_parts.append(f"  - {ps['url']}: content={round(ps['content_score'],1)}, "
+                                     f"schema={round(ps['schema_score'],1)}, eeat={round(ps['eeat_score'],1)}")
+
+        if recs:
+            context_parts.append("\nRecommendations:")
+            for title, priority, pillar, desc in recs:
+                context_parts.append(f"- [{priority}] {pillar}: {title} — {desc[:120]}")
+
+        # Include findings (specific issues detected)
+        if page_score and page_score.content_details:
+            findings = page_score.content_details.get("findings", [])
+            if findings:
+                context_parts.append(f"\nContent issues found: {', '.join(findings)}")
+        if page_score and page_score.eeat_details:
+            findings = page_score.eeat_details.get("findings", [])
+            if findings:
+                context_parts.append(f"E-E-A-T issues found: {', '.join(findings)}")
+        if page_score and page_score.technical_details:
+            findings = page_score.technical_details.get("findings", [])
+            if findings:
+                context_parts.append(f"Technical issues found: {', '.join(findings)}")
+
+        context = "\n".join(context_parts)
+
+        # Build system prompt
+        system_prompt = f"""You are Signalor's GEO assistant. You have the EXACT analysis data for {brand}.
+
+{context}
+
+CRITICAL RULES:
+- ONLY use the EXACT scores shown above. Never guess or approximate.
+- When user asks about scores, quote the exact numbers from above.
+- Explain WHY each score is what it is using the breakdown and findings.
+- Suggest specific, practical fixes based on the recommendations listed.
+- Be concise — 2-3 short paragraphs max per response.
+- Be friendly and encouraging.
+- If you don't know something specific about the brand's products/services, say so — don't make it up."""
+
+        messages = [{"role": "system", "content": system_prompt}]
+        for h in history[-8:]:
+            if h.get("role") in ("user", "assistant") and h.get("content"):
+                messages.append({"role": h["role"], "content": h["content"]})
+        messages.append({"role": "user", "content": message})
+
+        # Call Gemini via the LLM pipeline
+        try:
+            from .pipeline.llm import ask_llm
+            # Build a single prompt with conversation context
+            conv = ""
+            for m in messages:
+                if m["role"] == "system":
+                    conv += f"System: {m['content']}\n\n"
+                elif m["role"] == "user":
+                    conv += f"User: {m['content']}\n"
+                elif m["role"] == "assistant":
+                    conv += f"Assistant: {m['content']}\n"
+            conv += "Assistant:"
+
+            reply = ask_llm(conv, preferred_provider="gemini", max_tokens=800, purpose="GEO Chat")
+
+            if not reply:
+                reply = "I'm having trouble connecting right now. Please try again in a moment."
+
+            return Response({"reply": reply.strip()})
+        except Exception as exc:
+            logger.warning("AI Chat failed: %s", exc)
+            return Response({"reply": "Sorry, I couldn't process that right now. Please try again."})
 
 
 # ── GEO improvements (fix plan + apply) ─────────────────────────────────────

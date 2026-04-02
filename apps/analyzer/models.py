@@ -614,6 +614,7 @@ class PromptResult(models.Model):
         CLAUDE = "claude", "Claude"
         GEMINI = "gemini", "Gemini"
         PERPLEXITY = "perplexity", "Perplexity"
+        GOOGLE = "google", "Google"
 
     class Sentiment(models.TextChoices):
         POSITIVE = "positive", "Positive"

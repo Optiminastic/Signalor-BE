@@ -47,10 +47,10 @@ def _crawl_via_integration(run: AnalysisRun) -> CrawlResult | None:
         return None
 
     try:
-        from .auto_fix import _fetch_page_content
-        page_info, html_content = _fetch_page_content(integration, run.url)
+        from .auto_fix import _read_page_content
+        html_content = _read_page_content(integration, run.url)
 
-        if not page_info or not html_content:
+        if not html_content:
             return None
 
         # Reject content too short to analyze meaningfully
@@ -80,7 +80,11 @@ def _crawl_via_integration(run: AnalysisRun) -> CrawlResult | None:
         return None
 
 
-def _save_probes_and_tracks(run: AnalysisRun, probes_data: list[dict], brand_name: str, brand_url: str):
+def _save_probes_and_tracks(
+    run: AnalysisRun, probes_data: list[dict], brand_name: str, brand_url: str,
+    crawl_text: str = "", meta_description: str = "", site_pages: list[str] | None = None,
+    industry: str = "", country: str = "",
+):
     """Save AIVisibilityProbe rows and generate AI-powered brand-specific prompt tracks."""
     from .pipeline.prompt_tracker import generate_brand_prompts, fire_prompt_across_engines, compute_prompt_score
 
@@ -88,33 +92,17 @@ def _save_probes_and_tracks(run: AnalysisRun, probes_data: list[dict], brand_nam
     for probe in probes_data:
         AIVisibilityProbe.objects.create(analysis_run=run, **probe)
 
-    # Generate 10 brand-relevant prompts using AI
-    # Get industry context from the probes
-    industry = ""
-    if probes_data:
-        prompt_used = probes_data[0].get("prompt_used", "")
-        # Extract industry from probe context
-        for probe in probes_data:
-            if probe.get("prompt_used"):
-                industry = probe["prompt_used"].split("?")[0].split("best")[-1].strip() if "best" in probe["prompt_used"] else ""
-                break
-
-    page_content = ""
-    if run.organization:
-        # Try to get page content from latest crawl
-        try:
-            from .pipeline.crawler import crawl_page
-            # Don't re-crawl — just use what we have
-            pass
-        except Exception:
-            pass
-
+    # Generate 10 brand-relevant prompts using AI with FULL context
     try:
         brand_prompts = generate_brand_prompts(
             brand_name=brand_name,
             brand_url=brand_url,
             industry=industry,
-            page_content="",
+            page_content=crawl_text,
+            meta_description=meta_description,
+            products=site_pages,
+            location="",
+            country=country,
             count=10,
         )
     except Exception as exc:
@@ -258,7 +246,10 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
 
     _update_status(run, AnalysisRun.Status.ANALYZING, 80)
 
-    _save_probes_and_tracks(run, probes_data, run.brand_name or run.url, run.url)
+    _save_probes_and_tracks(
+        run, probes_data, run.brand_name or run.url, run.url,
+        crawl_text=crawl.text[:2000] if crawl.text else "",
+    )
 
     _update_status(run, AnalysisRun.Status.SCORING, 85)
 
@@ -347,7 +338,12 @@ def run_single_page_analysis(run_id: int):
             except Exception:
                 pass
 
-        crawl = crawl_page(run.url, storefront_password=storefront_password)
+        from .pipeline.crawler import crawl_site, SiteMap
+
+        homepage_crawl, site_map, additional_crawls = crawl_site(
+            run.url, storefront_password=storefront_password, max_pages=12,
+        )
+        crawl = homepage_crawl  # Primary crawl for backward compatibility
 
         if not crawl.ok:
             # Try fetching via connected integration (handles password-protected stores)
@@ -395,10 +391,59 @@ def run_single_page_analysis(run_id: int):
         industry = detect_industry(crawl.soup, crawl.text)
         logger.info("Run %d: detected industry = %s", run_id, industry)
 
-        # Phase 2: Run static pillars (fast, no LLM)
+        # Phase 2: Run static pillars across ALL crawled pages
+        # Score homepage first
         content_score, content_details = score_content(crawl)
         schema_score_val, schema_details = score_schema(crawl)
         technical_score_val, technical_details = score_technical(crawl)
+
+        # Score additional pages and aggregate
+        all_content_scores = [content_score]
+        all_schema_scores = [schema_score_val]
+        all_eeat_scores_static = []
+        page_scores_data = []
+
+        for extra_crawl in additional_crawls:
+            if not extra_crawl.ok:
+                continue
+            try:
+                c_score, c_details = score_content(extra_crawl)
+                s_score, s_details = score_schema(extra_crawl)
+                all_content_scores.append(c_score)
+                all_schema_scores.append(s_score)
+                page_scores_data.append({
+                    "url": extra_crawl.url,
+                    "content_score": c_score,
+                    "schema_score": s_score,
+                    "content_details": c_details,
+                    "schema_details": s_details,
+                })
+            except Exception as exc:
+                logger.warning("Scoring failed for %s: %s", extra_crawl.url, exc)
+
+        # Aggregate: use weighted average (homepage 40%, rest split 60%)
+        if len(all_content_scores) > 1:
+            other_content_avg = sum(all_content_scores[1:]) / len(all_content_scores[1:])
+            content_score = all_content_scores[0] * 0.4 + other_content_avg * 0.6
+            content_details["site_pages_scored"] = len(all_content_scores)
+            content_details["homepage_score"] = all_content_scores[0]
+            content_details["pages_avg_score"] = round(other_content_avg, 1)
+
+        if len(all_schema_scores) > 1:
+            other_schema_avg = sum(all_schema_scores[1:]) / len(all_schema_scores[1:])
+            schema_score_val = all_schema_scores[0] * 0.4 + other_schema_avg * 0.6
+            schema_details["site_pages_scored"] = len(all_schema_scores)
+
+        # Store discovery info
+        content_details["site_discovery"] = {
+            "products": len(site_map.products),
+            "collections": len(site_map.collections),
+            "pages": len(site_map.pages),
+            "blog_posts": len(site_map.blog_posts),
+            "total_discovered": site_map.total,
+            "pages_crawled": 1 + len(additional_crawls),
+        }
+
         _update_status(run, AnalysisRun.Status.ANALYZING, 30)
 
         # Derive brand name
@@ -414,7 +459,22 @@ def run_single_page_analysis(run_id: int):
         brand_vis_result = None
 
         def _run_eeat():
-            return score_eeat(crawl)
+            # Score E-E-A-T on homepage + aggregate with additional pages
+            main_score, main_details = score_eeat(crawl)
+            if additional_crawls:
+                extra_scores = []
+                for ec in additional_crawls:
+                    if ec.ok:
+                        try:
+                            es, _ = score_eeat(ec, skip_gemini=True)
+                            extra_scores.append(es)
+                        except Exception:
+                            pass
+                if extra_scores:
+                    extra_avg = sum(extra_scores) / len(extra_scores)
+                    main_score = main_score * 0.4 + extra_avg * 0.6
+                    main_details["site_pages_scored"] = 1 + len(extra_scores)
+            return main_score, main_details
 
         def _run_entity():
             return score_entity(crawl, industry=industry, override_brand=brand_name)
@@ -460,8 +520,29 @@ def run_single_page_analysis(run_id: int):
 
         _update_status(run, AnalysisRun.Status.ANALYZING, 75)
 
-        # Save AI probes + backfill prompt tracking
-        _save_probes_and_tracks(run, probes_data, run.brand_name or run.url, run.url)
+        # Save AI probes + backfill prompt tracking with full brand context
+        # Extract meta description for prompt generation
+        _meta_desc = ""
+        if crawl.soup:
+            _md = crawl.soup.find("meta", attrs={"name": "description"})
+            _meta_desc = (_md["content"].strip() if _md and _md.get("content") else "")
+
+        # Get page titles from discovered site pages
+        _site_page_titles = []
+        for ec in additional_crawls:
+            if ec.ok and ec.soup:
+                t = ec.soup.find("title")
+                if t and t.get_text(strip=True):
+                    _site_page_titles.append(t.get_text(strip=True))
+
+        _save_probes_and_tracks(
+            run, probes_data, run.brand_name or run.url, run.url,
+            crawl_text=crawl.text[:2000],
+            meta_description=_meta_desc,
+            site_pages=_site_page_titles or None,
+            industry=industry,
+            country=(run.country or "").strip(),
+        )
 
         # Phase 4: Scoring with smoothing
         _update_status(run, AnalysisRun.Status.SCORING, 80)
@@ -516,6 +597,25 @@ def run_single_page_analysis(run_id: int):
             composite_score=composite,
             content_hash=content_hash,
         )
+
+        # Save per-page scores for additional crawled pages
+        for pd in page_scores_data:
+            try:
+                PageScore.objects.create(
+                    analysis_run=run,
+                    url=pd["url"],
+                    content_score=pd["content_score"],
+                    content_details=pd["content_details"],
+                    schema_score=pd["schema_score"],
+                    schema_details=pd["schema_details"],
+                    eeat_score=0, eeat_details={},
+                    technical_score=0, technical_details={},
+                    entity_score=0, entity_details={},
+                    ai_visibility_score=0, ai_visibility_details={},
+                    composite_score=0,
+                )
+            except Exception:
+                pass
 
         # Phase 5: Recommendations
         pillar_details = {

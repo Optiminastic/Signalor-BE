@@ -591,30 +591,76 @@ def _check_reddit_presence(brand_name: str, brand_aliases: list[str]) -> dict:
     return result
 
 
-def _check_medium_presence(brand_name: str, brand_aliases: list[str]) -> dict:
-    """Check if the brand is mentioned on Medium."""
-    result = {"found": False, "articles": 0}
+def _check_platform_presence(brand_name: str, brand_aliases: list[str], site: str, label: str) -> dict:
+    """Check brand mentions on a specific platform via Serper.dev Google site search."""
+    import os
+    result = {"found": False, "mentions": 0, "top_urls": [], "platform": label}
+
+    api_key = os.getenv("SERPER_API_KEY", "")
+    if not api_key:
+        # Fallback: try direct site search for Reddit (has public JSON API)
+        if site == "reddit.com":
+            return _check_reddit_presence(brand_name, brand_aliases)
+        return result
+
     try:
-        # Medium doesn't have a public API, so check via Google site search
-        from .llm import is_available, ask_llm
-        if not is_available():
+        resp = requests.post(
+            "https://google.serper.dev/search",
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            json={"q": f"site:{site} {brand_name}", "num": 10},
+            timeout=10,
+        )
+        if not resp.ok:
             return result
 
-        prompt = (
-            f"Are there any articles about '{brand_name}' on Medium.com? "
-            f"Has this brand been mentioned or reviewed on Medium? "
-            f"Reply JSON: {{\"found\": true/false, \"estimated_articles\": 0, \"confidence\": 0.0-1.0}}"
-        )
-        text = ask_llm(prompt, preferred_provider="gemini", max_tokens=256, purpose="Medium Presence Check")
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            data = json.loads(match.group())
-            result["found"] = data.get("found", False)
-            result["articles"] = data.get("estimated_articles", 0)
-            result["confidence"] = data.get("confidence", 0.0)
+        data = resp.json()
+        organic = data.get("organic", [])
+
+        mention_count = 0
+        urls = []
+        brand_lower = brand_name.lower()
+
+        for item in organic[:10]:
+            title = (item.get("title", "")).lower()
+            snippet = (item.get("snippet", "")).lower()
+            link = item.get("link", "")
+
+            # Check if brand is mentioned in title or snippet
+            mentioned_here = any(a in title or a in snippet for a in [brand_lower] + [a.lower() for a in brand_aliases])
+            if mentioned_here:
+                mention_count += 1
+                urls.append(link)
+
+        # Even if brand not in snippet, appearing on the site counts
+        if len(organic) > 0 and mention_count == 0:
+            mention_count = len(organic)
+            urls = [item.get("link", "") for item in organic[:5]]
+
+        result["found"] = mention_count > 0
+        result["mentions"] = mention_count
+        result["top_urls"] = urls[:5]
+
     except Exception as exc:
-        logger.warning("Medium presence check failed: %s", exc)
+        logger.warning("%s presence check failed: %s", label, exc)
+
     return result
+
+
+# Platform configs for web presence checks
+PRESENCE_PLATFORMS = [
+    {"site": "reddit.com", "label": "Reddit"},
+    {"site": "quora.com", "label": "Quora"},
+    {"site": "en.wikipedia.org", "label": "Wikipedia"},
+    {"site": "hubspot.com", "label": "HubSpot"},
+    {"site": "dev.to", "label": "Dev.to"},
+    {"site": "producthunt.com", "label": "Product Hunt"},
+    {"site": "g2.com", "label": "G2"},
+    {"site": "trustpilot.com", "label": "Trustpilot"},
+    {"site": "stackexchange.com OR site:stackoverflow.com", "label": "Stack Overflow"},
+    {"site": "linkedin.com", "label": "LinkedIn"},
+    {"site": "youtube.com", "label": "YouTube"},
+    {"site": "twitter.com OR site:x.com", "label": "X (Twitter)"},
+]
 
 
 def _check_brand_website_quality(crawl: CrawlResult) -> dict:
@@ -788,26 +834,35 @@ def score_ai_visibility(crawl: CrawlResult, target_country: str | None = None, o
     # ── Part 2: Web Presence Checks (40 pts) ─────────────────────────────
     # Google (10 pts) + Reddit (10 pts) + Medium (10 pts) + Brand Site (10 pts)
 
-    # Run web presence checks in parallel
-    web_results = {}
+    # ── Part 2: Web Presence Checks (40 pts) ─────────────────────────
+    # Check brand mentions across multiple platforms in parallel
+    platform_results = {}
 
     def _run_checks():
-        nonlocal web_results
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        nonlocal platform_results
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            # Google presence
             future_google = executor.submit(_check_google_presence, brand_name, domain)
-            future_reddit = executor.submit(_check_reddit_presence, brand_name, brand_aliases)
-            future_medium = executor.submit(_check_medium_presence, brand_name, brand_aliases)
+            # Brand website quality
             future_site = executor.submit(_check_brand_website_quality, crawl)
+            # Platform presence checks (Reddit, Quora, Wikipedia, etc.)
+            platform_futures = {}
+            for plat in PRESENCE_PLATFORMS:
+                f = executor.submit(_check_platform_presence, brand_name, brand_aliases, plat["site"], plat["label"])
+                platform_futures[plat["label"]] = f
 
-            web_results["google"] = future_google.result()
-            web_results["reddit"] = future_reddit.result()
-            web_results["medium"] = future_medium.result()
-            web_results["brand_site"] = future_site.result()
+            platform_results["google"] = future_google.result()
+            platform_results["brand_site"] = future_site.result()
+            for label, f in platform_futures.items():
+                try:
+                    platform_results[label] = f.result()
+                except Exception:
+                    platform_results[label] = {"found": False, "mentions": 0, "platform": label}
 
     _run_checks()
 
     # Google presence (10 pts)
-    google_data = web_results.get("google", {})
+    google_data = platform_results.get("google", {})
     details["checks"]["google_presence"] = google_data
     google_pts = 0.0
     if google_data.get("found"):
@@ -818,40 +873,41 @@ def score_ai_visibility(crawl: CrawlResult, target_country: str | None = None, o
         details["findings"].append("not_in_google_ai")
     score += google_pts
 
-    # Reddit presence (10 pts)
-    reddit_data = web_results.get("reddit", {})
-    details["checks"]["reddit_presence"] = reddit_data
-    reddit_pts = 0.0
-    if reddit_data.get("found"):
-        reddit_mentions = reddit_data.get("mentions", 0)
-        if reddit_mentions >= 5:
-            reddit_pts = 10.0
-        elif reddit_mentions >= 3:
-            reddit_pts = 7.0
-        elif reddit_mentions >= 1:
-            reddit_pts = 4.0
-    if reddit_pts == 0:
-        details["findings"].append("no_reddit_ai_presence")
-    score += reddit_pts
+    # Platform presence scoring (20 pts total — spread across all platforms)
+    # Each platform where brand is found earns points, capped at 20
+    platform_score = 0.0
+    platforms_found = []
+    platforms_not_found = []
+    all_platform_data = {}
 
-    # Medium presence (10 pts)
-    medium_data = web_results.get("medium", {})
-    details["checks"]["medium_presence"] = medium_data
-    medium_pts = 0.0
-    if medium_data.get("found"):
-        articles = medium_data.get("articles", 0)
-        if articles >= 5:
-            medium_pts = 10.0
-        elif articles >= 2:
-            medium_pts = 7.0
-        elif articles >= 1:
-            medium_pts = 4.0
-    if medium_pts == 0:
-        details["findings"].append("no_medium_ai_presence")
-    score += medium_pts
+    for plat in PRESENCE_PLATFORMS:
+        label = plat["label"]
+        pdata = platform_results.get(label, {})
+        all_platform_data[label] = pdata
+        if pdata.get("found"):
+            platforms_found.append(label)
+            mentions = pdata.get("mentions", 0)
+            if mentions >= 5:
+                platform_score += 3.0
+            elif mentions >= 2:
+                platform_score += 2.0
+            else:
+                platform_score += 1.0
+        else:
+            platforms_not_found.append(label)
+
+    platform_score = min(20.0, platform_score)
+    details["checks"]["platform_presence"] = all_platform_data
+    details["checks"]["platforms_found"] = platforms_found
+    details["checks"]["platforms_not_found"] = platforms_not_found
+    details["checks"]["platform_score"] = platform_score
+
+    if len(platforms_found) == 0:
+        details["findings"].append("no_reddit_ai_presence")
+    score += platform_score
 
     # Brand website quality (10 pts)
-    site_data = web_results.get("brand_site", {})
+    site_data = platform_results.get("brand_site", {})
     details["checks"]["brand_site_quality"] = site_data
     site_pts = min(10.0, site_data.get("score", 0))
     if site_pts < 6:
