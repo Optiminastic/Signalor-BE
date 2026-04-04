@@ -234,6 +234,7 @@ def _send_to_wp_plugin(integration, run, fix_type: str, content: str) -> dict:
 
 
 def _send_to_shopify_app(integration, run, fix_type: str, content: str) -> dict:
+    logger.info(f"Integration obj for Shopify: {json.dumps(vars(integration), default=str)}")
     """Send fix to Shopify Remix app endpoint."""
     app_url = integration.metadata.get("signalor_app_url", "")
     hmac_secret = integration.metadata.get("signalor_hmac_secret", "")

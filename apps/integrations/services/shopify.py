@@ -1,5 +1,7 @@
 """Shopify REST Admin API integration service (OAuth + data sync)."""
+import json
 import logging
+import os
 from datetime import date, timedelta
 from decimal import Decimal
 import hashlib
@@ -9,6 +11,81 @@ from urllib.parse import parse_qsl, urlencode
 import requests
 
 logger = logging.getLogger("apps")
+
+
+def signalor_shopify_app_hmac_secret() -> str:
+    """Secret for Django → Signalor Shopify Remix (`/api/sync-session`, stored metadata default).
+
+    Use ``SIGNALOR_SHOPIFY_APP_HMAC_SECRET`` so it matches the Remix verifier; do not rely on
+    ``SHOPIFY_CLIENT_SECRET`` unless the Remix app is explicitly configured to use the same value.
+    """
+    return (
+        os.getenv("SIGNALOR_SHOPIFY_APP_HMAC_SECRET", "").strip()
+        or os.getenv("SHOPIFY_CLIENT_SECRET", "").strip()
+    )
+
+
+def resolve_signalor_shopify_hmac_for_signing(metadata: dict | None) -> str:
+    """HMAC key for ``/api/apply-fix`` (and any similar backend → Remix signed calls).
+
+    Precedence: ``SIGNALOR_SHOPIFY_APP_HMAC_SECRET`` env (same on Remix), then
+    ``metadata['signalor_hmac_secret']`` (set by OAuth or ``link-app``), then
+    ``SHOPIFY_CLIENT_SECRET`` as last resort.
+    """
+    env = os.getenv("SIGNALOR_SHOPIFY_APP_HMAC_SECRET", "").strip()
+    if env:
+        return env
+    raw = (metadata or {}).get("signalor_hmac_secret", "")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return os.getenv("SHOPIFY_CLIENT_SECRET", "").strip()
+
+
+def push_signalor_shopify_app_session(integration) -> tuple[bool, str]:
+    """Send the offline access token to the Remix app ``/api/sync-session``.
+
+    The hosted app keeps its own session store; if it is empty (redeploy, restart),
+    ``/api/apply-fix`` returns 401 until we push the token again from Django.
+    """
+    meta = integration.metadata or {}
+    app_url = (meta.get("signalor_app_url") or os.getenv("SIGNALOR_SHOPIFY_APP_URL", "")).strip().rstrip(
+        "/"
+    )
+    shop = (meta.get("shop_domain") or "").strip()
+    if not app_url or not shop:
+        return False, "signalor_app_url or shop_domain missing"
+    access_token = integration.get_access_token()
+    if not access_token:
+        return False, "Shopify access token missing; reconnect Shopify in Signalor."
+
+    secret = resolve_signalor_shopify_hmac_for_signing(meta)
+    if not secret:
+        return False, "HMAC secret missing"
+
+    sync_payload = {
+        "shop": shop,
+        "accessToken": access_token,
+        "scope": meta.get("scope", ""),
+    }
+    sync_body = json.dumps(sync_payload).encode("utf-8")
+    sig = hmac.new(secret.encode(), sync_body, hashlib.sha256).hexdigest()
+    try:
+        r = requests.post(
+            f"{app_url}/api/sync-session",
+            headers={
+                "X-Signalor-Signature": sig,
+                "X-Signalor-Shop": shop,
+                "Content-Type": "application/json",
+            },
+            data=sync_body,
+            timeout=15,
+        )
+        if r.ok:
+            return True, ""
+        return False, f"sync-session HTTP {r.status_code}: {r.text[:300]}"
+    except OSError as exc:
+        return False, str(exc)
+
 
 API_VERSION = "2026-01"
 AUTH_SCOPES = [

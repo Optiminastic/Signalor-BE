@@ -42,6 +42,49 @@ from .serializers import (
 
 logger = logging.getLogger("apps")
 
+# Must match path("shopify/callback/", ...) under api/integrations/.
+_SHOPIFY_OAUTH_CALLBACK_PATH = "/api/integrations/shopify/callback/"
+
+
+def _resolve_shopify_redirect_uri(request) -> str:
+    """
+    OAuth redirect_uri must exactly match a URL in the Shopify app allowlist.
+
+    Resolution order for non-local requests:
+    1. SHOPIFY_REDIRECT_URI_PUBLIC — canonical HTTPS callback when Host/build_absolute_uri
+       is wrong behind some proxies or internal hostnames.
+    2. SHOPIFY_REDIRECT_URI — if set and not localhost-only while request is public,
+       use request.build_absolute_uri (so allowlist gets the real public URL).
+    3. If SHOPIFY_REDIRECT_URI is localhost-only but the request is not local,
+       use build_absolute_uri (avoids sending localhost redirect from prod).
+
+    Local requests: SHOPIFY_REDIRECT_URI if set, else build_absolute_uri.
+    """
+    built = request.build_absolute_uri(_SHOPIFY_OAUTH_CALLBACK_PATH)
+    explicit = os.getenv("SHOPIFY_REDIRECT_URI", "").strip()
+    public = os.getenv("SHOPIFY_REDIRECT_URI_PUBLIC", "").strip()
+    host = (request.get_host() or "").lower().split(":")[0]
+    is_local_req = host in ("localhost", "127.0.0.1")
+    explicit_mentions_local = bool(
+        explicit and ("localhost" in explicit or "127.0.0.1" in explicit)
+    )
+
+    def _with_slash(u: str) -> str:
+        u = u.strip()
+        return u if u.endswith("/") else f"{u}/"
+
+    if not is_local_req and public:
+        return _with_slash(public)
+
+    if not explicit:
+        return built
+
+    if explicit_mentions_local and not is_local_req:
+        return built
+
+    return _with_slash(explicit)
+
+
 GA_SCOPES = [
     "https://www.googleapis.com/auth/analytics.readonly",
 ]
@@ -731,10 +774,10 @@ class ShopifyAuthURLView(APIView):
         state = _sign_state(payload)
 
         client_id = os.getenv("SHOPIFY_CLIENT_ID", "").strip()
-        redirect_uri = os.getenv("SHOPIFY_REDIRECT_URI", "").strip()
+        redirect_uri = _resolve_shopify_redirect_uri(request)
         scopes = os.getenv("SHOPIFY_SCOPES", "read_products,read_orders,read_customers")
 
-        if not client_id or not redirect_uri:
+        if not client_id:
             return Response(
                 {"error": "Shopify OAuth env is not configured."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -747,7 +790,17 @@ class ShopifyAuthURLView(APIView):
             state=state,
             scopes=[s.strip() for s in scopes.split(",") if s.strip()],
         )
-        return Response({"auth_url": auth_url})
+        logger.info(
+            "Shopify OAuth auth-url: shop=%s redirect_uri=%s",
+            shop_domain,
+            redirect_uri,
+        )
+        return Response(
+            {
+                "auth_url": auth_url,
+                "oauth_redirect_uri": redirect_uri,
+            }
+        )
 
 
 class ShopifyCallbackView(APIView):
