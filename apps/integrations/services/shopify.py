@@ -138,6 +138,34 @@ def build_shopify_oauth_url(
     return f"https://{domain}/admin/oauth/authorize?{query}"
 
 
+def build_shopify_admin_install_custom_app_url(
+    client_id: str,
+    redirect_uri: str,
+    state: str,
+    scopes: list[str] | None = None,
+) -> str:
+    """
+    OAuth entry via admin.shopify.com (custom / dev apps).
+
+    Use when ``{shop}.myshopify.com/admin/oauth/authorize`` sends merchants through
+    ``/store/.../app/grant`` and you want the ``/oauth/install_custom_app`` path instead.
+
+    If Shopify rejects this (some setups require Admin-signed ``signature``), set
+    ``SHOPIFY_CUSTOM_APP_INSTALL_URL`` to the full install link from Shopify Admin.
+    """
+    scope_str = ",".join(scopes or AUTH_SCOPES)
+    query = urlencode(
+        {
+            "client_id": client_id,
+            "no_redirect": "true",
+            "redirect_uri": redirect_uri,
+            "scope": scope_str,
+            "state": state,
+        }
+    )
+    return f"https://admin.shopify.com/oauth/install_custom_app?{query}"
+
+
 def verify_shopify_oauth_hmac(raw_query_string: str, shared_secret: str) -> bool:
     pairs = parse_qsl(raw_query_string, keep_blank_values=True)
     signed = [(k, v) for k, v in pairs if k not in {"hmac", "signature"}]

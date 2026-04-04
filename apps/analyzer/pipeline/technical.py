@@ -80,10 +80,17 @@ def _score_infrastructure(crawl: CrawlResult) -> tuple[float, dict]:
     else:
         details["_finding_sitemap"] = "no_sitemap"
 
-    # llms.txt (8 pts)
+    # llms.txt (8 pts) — try common public paths (Shopify theme assets are NOT at /llms.txt;
+    # use App Proxy /apps/signalor/llms.txt or .well-known — see geo_improvement.py)
     llms_content = fetch_file_content(crawl.url, "llms.txt", session=crawl.session)
     if not llms_content.strip():
-        llms_content = fetch_file_content(crawl.url, "apps/signalor/llms.txt", session=crawl.session)
+        llms_content = fetch_file_content(
+            crawl.url, ".well-known/llms.txt", session=crawl.session
+        )
+    if not llms_content.strip():
+        llms_content = fetch_file_content(
+            crawl.url, "apps/signalor/llms.txt", session=crawl.session
+        )
     has_llms = bool(llms_content.strip())
     details["has_llms_txt"] = has_llms
 

@@ -18,6 +18,34 @@ logger = logging.getLogger("apps")
 
 FIXABLE_CATEGORIES = {"schema", "technical", "content", "eeat", "entity", "ai_visibility"}
 
+# Plugin/app may return "applied" or "ok"; dashboard expects "success".
+_PLUGIN_OK = frozenset({"success", "applied", "ok", "done", "complete", "completed"})
+
+
+def _normalize_plugin_status(raw: str | None) -> str:
+    if not raw:
+        return "failed"
+    r = str(raw).lower().strip()
+    if r in _PLUGIN_OK:
+        return "success"
+    if r in ("manual", "skipped"):
+        return "manual"
+    if r == "partial":
+        return "partial"
+    return "failed"
+
+
+def _append_shopify_llms_hint(message: str | None, run_url: str) -> str:
+    """Shopify storefronts do not serve theme/root llms.txt at /llms.txt by default."""
+    base = (message or "").strip()
+    hint = (
+        "On Shopify, https://…/llms.txt often 404s until your Signalor app serves it via App Proxy "
+        "(e.g. /apps/signalor/llms.txt). Copy the full file from Preview, or configure that route in the app."
+    )
+    if base:
+        return f"{base} {hint}"
+    return hint
+
 _REFUSAL_PHRASES = [
     "i cannot", "i can't", "not appropriate", "i notice", "i'm unable",
     "as an ai", "i apologize", "unfortunately", "i'm sorry", "instead of",
@@ -497,7 +525,7 @@ def apply_fixes(run, integration, recommendations: list[Recommendation]) -> list
                 "status": "manual",
                 "message": "This requires manual action (server config, external profiles). Follow the step-by-step instructions.",
             }
-            job.status = "skipped"
+            job.status = AutoFixJob.Status.MANUAL
             job.response_data = result
             job.save(update_fields=["status", "response_data"])
             results.append({"recommendation_id": rec.id, "status": "manual", "message": result["message"], "fix_type": fix_type})
@@ -514,15 +542,24 @@ def apply_fixes(run, integration, recommendations: list[Recommendation]) -> list
                 continue
 
             # Step 2: Send to plugin/app to apply
-            result = _send_to_plugin(integration, run, fix_type, content)
+            raw_result = _send_to_plugin(integration, run, fix_type, content)
+            result = dict(raw_result)
+            norm = _normalize_plugin_status(result.get("status"))
+            result["status"] = norm
+            if (
+                fix_type == "llms"
+                and integration.provider == "shopify"
+                and norm == "success"
+            ):
+                result["message"] = _append_shopify_llms_hint(result.get("message"), run.url or "")
 
-            job.status = result.get("status", "failed")
+            job.status = norm
             job.response_data = result
             job.save(update_fields=["status", "response_data"])
 
             results.append({
                 "recommendation_id": rec.id,
-                "status": result.get("status", "failed"),
+                "status": norm,
                 "message": result.get("message", ""),
                 "fix_type": fix_type,
             })
@@ -604,4 +641,13 @@ def generate_fix_preview(run, integration, recommendation) -> dict:
 
 def apply_approved_fix(run, integration, recommendation, content: str, fix_type: str) -> dict:
     """Apply a user-approved fix — routes through plugin/app only."""
-    return _send_to_plugin(integration, run, fix_type, content)
+    result = dict(_send_to_plugin(integration, run, fix_type, content))
+    norm = _normalize_plugin_status(result.get("status"))
+    result["status"] = norm
+    if (
+        fix_type == "llms"
+        and integration.provider == "shopify"
+        and norm == "success"
+    ):
+        result["message"] = _append_shopify_llms_hint(result.get("message"), run.url or "")
+    return result

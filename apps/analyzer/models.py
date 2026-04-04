@@ -871,6 +871,8 @@ class AutoFixJob(models.Model):
         SUCCESS = "success"
         PARTIAL = "partial"
         FAILED = "failed"
+        MANUAL = "manual"
+        SKIPPED = "skipped"
 
     class FixType(models.TextChoices):
         SCHEMA_MARKUP = "schema_markup"

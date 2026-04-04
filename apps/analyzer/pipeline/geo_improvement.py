@@ -553,6 +553,12 @@ Keep it under 200 words, focus on benefits and geographic availability. Plain te
                     logger.warning("Schema injection failed for Shopify page %s: %s", page_id, exc)
 
     # 5. Publish technical crawl files (llms.txt, robots.txt, sitemap.xml)
+    #
+    # Shopify limitation: uploading these as theme assets does NOT make them available at
+    # https://{shop}.myshopify.com/llms.txt — the storefront router does not map theme files
+    # to the site root. Crawlers succeed only if you also expose the file via App Proxy
+    # (e.g. /apps/signalor/llms.txt — see technical.py fallbacks) or another edge route.
+    # Filename must be llms.txt (two m's), not llm.txt.
     def _generate_llms_txt(brand_name: str, site_url: str) -> str:
         prompt = f"""You are writing llms.txt for AI crawl guidance.
 

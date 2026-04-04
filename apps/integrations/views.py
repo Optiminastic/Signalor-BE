@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import secrets
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import requests
 
 from django.conf import settings
@@ -103,11 +103,29 @@ def _get_org_or_400(email):
     return org, None
 
 
+def _append_query_params(url: str, extra: dict[str, str]) -> str:
+    """Add query keys only if not already present (preserve Shopify install signatures)."""
+    parts = urlparse(url)
+    pairs = parse_qsl(parts.query, keep_blank_values=True)
+    existing_keys = {k for k, _ in pairs}
+    for key, value in extra.items():
+        if key not in existing_keys:
+            pairs.append((key, value))
+    new_query = urlencode(pairs)
+    return urlunparse((parts.scheme, parts.netloc, parts.path, parts.params, new_query, parts.fragment))
+
+
 def _resolve_org(email: str, org_id: int | None = None):
     """Resolve org by id (preferred) or fall back to email lookup (auto-creates)."""
+    email_norm = email.lower().strip()
     if org_id:
         try:
             org = Organization.objects.get(pk=org_id)
+            if (org.owner_email or "").lower().strip() != email_norm:
+                return None, Response(
+                    {"error": "Organization does not belong to this account."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             return org, None
         except Organization.DoesNotExist:
             pass  # fall through to email lookup
@@ -757,7 +775,11 @@ class ShopifyAuthURLView(APIView):
         else:
             resolved_frontend_base = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000").rstrip("/")
 
-        from .services.shopify import build_shopify_oauth_url, normalize_shop_domain
+        from .services.shopify import (
+            build_shopify_admin_install_custom_app_url,
+            build_shopify_oauth_url,
+            normalize_shop_domain,
+        )
 
         shop_domain = normalize_shop_domain(shop)
         nonce = secrets.token_urlsafe(24)
@@ -783,12 +805,36 @@ class ShopifyAuthURLView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+        # Custom apps: Shopify Admin gives a one-off install URL
+        # (admin.shopify.com/oauth/install_custom_app?...&signature=...).
+        # Signatures expire and are tied to the store — paste a fresh URL from
+        # Shopify → Settings → Apps → Develop apps → your app → Install.
+        # We append `state` so /api/integrations/shopify/callback/ can still
+        # validate (Shopify forwards it on redirect when supported).
+        custom_install = os.getenv("SHOPIFY_CUSTOM_APP_INSTALL_URL", "").strip()
+        if custom_install:
+            auth_url = _append_query_params(custom_install, {"state": state})
+            return Response({"auth_url": auth_url})
+
+        scope_list = [s.strip() for s in scopes.split(",") if s.strip()]
+        use_install_custom = os.getenv(
+            "SHOPIFY_OAUTH_USE_INSTALL_CUSTOM_APP", ""
+        ).strip().lower() in ("1", "true", "yes", "on")
+        if use_install_custom:
+            auth_url = build_shopify_admin_install_custom_app_url(
+                client_id=client_id,
+                redirect_uri=redirect_uri,
+                state=state,
+                scopes=scope_list,
+            )
+            return Response({"auth_url": auth_url})
+
         auth_url = build_shopify_oauth_url(
             shop_domain=shop_domain,
             client_id=client_id,
             redirect_uri=redirect_uri,
             state=state,
-            scopes=[s.strip() for s in scopes.split(",") if s.strip()],
+            scopes=scope_list,
         )
         logger.info(
             "Shopify OAuth auth-url: shop=%s redirect_uri=%s",
