@@ -39,8 +39,8 @@ def _append_shopify_llms_hint(message: str | None, run_url: str) -> str:
     """Shopify storefronts do not serve theme/root llms.txt at /llms.txt by default."""
     base = (message or "").strip()
     hint = (
-        "On Shopify, https://…/llms.txt often 404s until your Signalor app serves it via App Proxy "
-        "(e.g. /apps/signalor/llms.txt). Copy the full file from Preview, or configure that route in the app."
+        "Note: Shopify does not allow root-level /llms.txt. "
+        "Your llms.txt is served at /apps/signalor/llms.txt via App Proxy."
     )
     if base:
         return f"{base} {hint}"
