@@ -2212,6 +2212,44 @@ class AutoFixApproveView(APIView):
         return Response(result)
 
 
+class AutoFixVerifyView(APIView):
+    """POST /api/analyzer/runs/s/<slug>/auto-fix/verify/ — mark a recommendation as manually verified."""
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .models import AutoFixJob
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        rec_id = request.data.get("recommendation_id")
+
+        if not rec_id:
+            return Response({"error": "recommendation_id required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            rec = Recommendation.objects.get(id=rec_id, analysis_run=run)
+        except Recommendation.DoesNotExist:
+            return Response({"error": "Recommendation not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Create a verified audit record (no integration needed for manual verify)
+        try:
+            AutoFixJob.objects.create(
+                analysis_run=run,
+                recommendation=rec,
+                fix_type="manual",
+                status="verified",
+                response_data={"message": "Manually verified by user."},
+            )
+        except Exception:
+            logger.exception("Failed to create verify record (run=%s rec=%s)", run.id, rec.id)
+
+        return Response({
+            "recommendation_id": rec.id,
+            "status": "verified",
+            "message": "Marked as verified.",
+        })
+
+
 # ── AI Chat (GEO Assistant with analysis context) ────────────────────────────
 
 class AiChatView(APIView):

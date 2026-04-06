@@ -873,6 +873,7 @@ class AutoFixJob(models.Model):
         FAILED = "failed"
         MANUAL = "manual"
         SKIPPED = "skipped"
+        VERIFIED = "verified"
 
     class FixType(models.TextChoices):
         SCHEMA_MARKUP = "schema_markup"
@@ -886,9 +887,10 @@ class AutoFixJob(models.Model):
         Recommendation, on_delete=models.CASCADE, related_name="auto_fix_jobs"
     )
     integration = models.ForeignKey(
-        "integrations.Integration", on_delete=models.CASCADE, related_name="auto_fix_jobs"
+        "integrations.Integration", on_delete=models.CASCADE, related_name="auto_fix_jobs",
+        null=True, blank=True,
     )
-    fix_type = models.CharField(max_length=30, choices=FixType.choices)
+    fix_type = models.CharField(max_length=30)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     payload_sent = models.JSONField(default=dict, blank=True)
     response_data = models.JSONField(default=dict, blank=True)
