@@ -20,6 +20,28 @@ _ENGINE_MAP = {
 DEFAULT_RUNS = 3  # Fire each prompt N times to handle AI randomness
 
 
+def _providers_and_google_from_plan_engines(allowed_engines: list[str] | None) -> tuple[list[str], bool]:
+    """
+    Map PLAN_LIMITS engine ids to OpenRouter provider keys and whether to run Serper.
+
+    If allowed_engines is None, use full stack (gpt, claude, gemini + Google).
+    """
+    if allowed_engines is None:
+        return (["gpt", "claude", "gemini"], True)
+    s = {e.strip().lower() for e in allowed_engines if e}
+    provs: list[str] = []
+    if "chatgpt" in s:
+        provs.append("gpt")
+    if "gemini" in s:
+        provs.append("gemini")
+    if "claude" in s:
+        provs.append("claude")
+    if not provs:
+        provs = ["gpt"]
+    include_google = "google" in s
+    return (provs, include_google)
+
+
 def _search_google_serper(query: str, brand_name: str, brand_url: str) -> dict:
     """
     Search Google via Serper.dev and check if brand appears in results.
@@ -240,15 +262,19 @@ def fire_prompt_across_engines(
     brand_name: str,
     brand_url: str,
     runs: int = DEFAULT_RUNS,
+    allowed_engines: list[str] | None = None,
 ) -> list[dict]:
     """
     Fire prompt_text to GPT/Claude/Gemini multiple times to handle randomness.
 
     With runs=3 and 3 engines → 9 total results.
+    allowed_engines: PLAN_LIMITS["engines"] list; None = all configured LLMs + Google.
     Returns list of dicts: engine, response_text, brand_mentioned, sentiment, confidence, rank_position
     """
     from .llm import ask_multiple_llms
     from .ai_visibility import _build_brand_aliases, _match_brand, _analyze_mention_quality, _check_ranking_position
+
+    provider_keys, include_google = _providers_and_google_from_plan_engines(allowed_engines)
 
     brand_aliases = _build_brand_aliases(brand_name, brand_url)
     all_results = []
@@ -257,7 +283,7 @@ def fire_prompt_across_engines(
         try:
             responses = ask_multiple_llms(
                 prompt_text,
-                providers=["gpt", "claude", "gemini"],
+                providers=provider_keys,
                 purpose=f"Prompt Track (run {run_idx + 1}/{runs})",
                 max_tokens=512,
             )
@@ -298,10 +324,11 @@ def fire_prompt_across_engines(
                 "rank_position": rank_position,
             })
 
-    # Also search Google via Serper (once per prompt, not per run)
-    google_result = _search_google_serper(prompt_text, brand_name, brand_url)
-    if google_result:
-        all_results.append(google_result)
+    # Also search Google via Serper (once per prompt, not per run) when plan includes google
+    if include_google:
+        google_result = _search_google_serper(prompt_text, brand_name, brand_url)
+        if google_result:
+            all_results.append(google_result)
 
     return all_results
 
@@ -381,9 +408,18 @@ def recheck_track(track, brand_name: str, brand_url: str) -> int:
     """
     from django.db import close_old_connections
     from apps.analyzer.models import PromptResult
+    from apps.accounts.subscription_utils import get_plan_limits, is_plan_limits_enforcement_enabled
 
     close_old_connections()
-    engine_results = fire_prompt_across_engines(track.prompt_text, brand_name, brand_url)
+    email = (track.analysis_run.email or "").strip()
+    allowed = (
+        get_plan_limits(email)["engines"]
+        if is_plan_limits_enforcement_enabled() and email
+        else None
+    )
+    engine_results = fire_prompt_across_engines(
+        track.prompt_text, brand_name, brand_url, allowed_engines=allowed
+    )
     created = 0
     for r in engine_results:
         PromptResult.objects.create(prompt_track=track, **r)

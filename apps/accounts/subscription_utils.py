@@ -1,8 +1,12 @@
 """
 Subscription checks for paid features (e.g. GEO analysis).
 
-Default: enforcement is OFF. Set SUBSCRIPTION_REQUIRED=true to require an active
-active subscription before /api/analyzer/analyze/ (and related reanalyze paths).
+- SUBSCRIPTION_REQUIRED=true → require an active subscription before starting
+  analysis (see analysis_allowed_for_email).
+
+- Plan caps (projects, tracked prompts, engines) use is_plan_limits_enforcement_enabled():
+  off when DISABLE_PAYMENT=true, or ENFORCE_PLAN_LIMITS=false; on when
+  ENFORCE_PLAN_LIMITS=true; otherwise on in production (DEBUG=False).
 """
 
 from __future__ import annotations
@@ -51,6 +55,43 @@ def is_subscription_enforcement_enabled() -> bool:
         "true",
         "yes",
     )
+
+
+def is_plan_limits_enforcement_enabled() -> bool:
+    """
+    Plan caps (projects, prompts, engines) — separate from SUBSCRIPTION_REQUIRED.
+
+    - DISABLE_PAYMENT=true → off (local dev)
+    - ENFORCE_PLAN_LIMITS=false → off
+    - ENFORCE_PLAN_LIMITS=true → on
+    - unset → on when DEBUG is False (production default)
+    """
+    if os.environ.get("DISABLE_PAYMENT", "").strip().lower() in ("1", "true", "yes"):
+        return False
+    raw = os.environ.get("ENFORCE_PLAN_LIMITS", "").strip().lower()
+    if raw in ("0", "false", "no"):
+        return False
+    if raw in ("1", "true", "yes"):
+        return True
+    return not getattr(settings, "DEBUG", False)
+
+
+def _upgrade_hint_for_plan(plan_key: str) -> str:
+    """Next-step upgrade copy for projects, prompts, and engine limits."""
+    if plan_key == "starter":
+        return " Upgrade to Pro for a higher limit."
+    if plan_key == "pro":
+        return " Upgrade to Max for a higher limit."
+    return " You are on the highest plan; contact support if you need more capacity."
+
+
+def plan_limit_error_response_dict(message: str) -> dict:
+    """Consistent API shape for 403 plan / quota responses."""
+    return {
+        "error": message,
+        "code": "plan_limit_exceeded",
+        "upgrade_required": True,
+    }
 
 
 def integration_connect_allowed_for_email(email: str | None) -> tuple[bool, str]:
@@ -127,6 +168,15 @@ def _get_sub(email: str | None) -> Subscription | None:
         return None
 
 
+def _effective_plan_key(email: str | None) -> str:
+    if is_internal_email(email):
+        return "business"
+    sub = _get_sub(email)
+    if sub and sub.is_active:
+        return sub.plan
+    return "starter"
+
+
 def get_plan_limits(email: str | None) -> dict:
     """Return the plan limits dict for a user (defaults to starter).
     Internal emails get unlimited (business) limits."""
@@ -142,18 +192,24 @@ def project_limit_reached(email: str | None) -> tuple[bool, str]:
     """Check if user has reached their project (organization) limit."""
     if is_internal_email(email):
         return False, ""
-    if not is_subscription_enforcement_enabled():
+    if not is_plan_limits_enforcement_enabled():
         return False, ""
 
-    sub = _get_sub(email)
-    if not sub or not sub.is_active:
-        return True, "Active subscription required."
+    em = (email or "").strip().lower()
+    if not em:
+        return True, "Email is required."
 
+    limits = get_plan_limits(email)
     from apps.organizations.models import Organization
-    count = Organization.objects.filter(owner_email=sub.email).count()
-    max_projects = sub.limits["max_projects"]
+
+    count = Organization.objects.filter(owner_email=em).count()
+    max_projects = limits["max_projects"]
     if count >= max_projects:
-        return True, f"Your {sub.limits['label']} plan allows {max_projects} project(s). Upgrade to add more."
+        pk = _effective_plan_key(email)
+        return True, (
+            f"Your {limits['label']} plan allows {max_projects} project(s)."
+            f"{_upgrade_hint_for_plan(pk)}"
+        )
     return False, ""
 
 
@@ -161,33 +217,70 @@ def prompt_limit_reached(email: str | None, run_id: int | None = None) -> tuple[
     """Check if user has reached their prompt tracking limit."""
     if is_internal_email(email):
         return False, ""
-    if not is_subscription_enforcement_enabled():
+    if not is_plan_limits_enforcement_enabled():
         return False, ""
 
-    sub = _get_sub(email)
-    if not sub or not sub.is_active:
-        return True, "Active subscription required."
+    em = (email or "").strip().lower()
+    if not em:
+        return True, "Email is required."
 
+    limits = get_plan_limits(email)
     from apps.analyzer.models import PromptTrack
-    count = PromptTrack.objects.filter(analysis_run__email=sub.email).count()
-    max_prompts = sub.limits["max_prompts"]
+
+    count = PromptTrack.objects.filter(analysis_run__email=em).count()
+    max_prompts = limits["max_prompts"]
     if count >= max_prompts:
-        return True, f"Your {sub.limits['label']} plan allows {max_prompts} prompts. Upgrade to add more."
+        pk = _effective_plan_key(email)
+        return True, (
+            f"Your {limits['label']} plan allows {max_prompts} tracked prompts."
+            f"{_upgrade_hint_for_plan(pk)}"
+        )
+    return False, ""
+
+
+def prompt_batch_would_exceed(email: str | None, additional: int) -> tuple[bool, str]:
+    """True if adding `additional` prompt rows would exceed the plan cap."""
+    if is_internal_email(email):
+        return False, ""
+    if not is_plan_limits_enforcement_enabled():
+        return False, ""
+
+    em = (email or "").strip().lower()
+    if not em:
+        return True, "Email is required."
+
+    limits = get_plan_limits(email)
+    from apps.analyzer.models import PromptTrack
+
+    count = PromptTrack.objects.filter(analysis_run__email=em).count()
+    max_prompts = limits["max_prompts"]
+    if count + additional > max_prompts:
+        pk = _effective_plan_key(email)
+        return True, (
+            f"This run would exceed your {limits['label']} plan limit of {max_prompts} tracked prompts "
+            f"(you have {count}, adding {additional})."
+            f"{_upgrade_hint_for_plan(pk)}"
+        )
     return False, ""
 
 
 def engine_allowed(email: str | None, engine: str) -> tuple[bool, str]:
-    """Check if the user's plan allows a specific AI engine."""
+    """Check if the user's plan allows a specific AI engine (prompt / visibility)."""
     if is_internal_email(email):
         return True, ""
-    if not is_subscription_enforcement_enabled():
+    if not is_plan_limits_enforcement_enabled():
         return True, ""
 
-    sub = _get_sub(email)
-    if not sub or not sub.is_active:
-        return False, "Active subscription required."
+    eng = (engine or "").strip().lower()
+    if not eng:
+        return False, "Engine is required."
 
-    allowed = sub.limits["engines"]
-    if engine not in allowed:
-        return False, f"The {engine} engine is not available on your {sub.limits['label']} plan. Upgrade to access it."
+    limits = get_plan_limits(email)
+    allowed = [e.lower() for e in limits["engines"]]
+    if eng not in allowed:
+        pk = _effective_plan_key(email)
+        return False, (
+            f"The {eng} engine is not included on your {limits['label']} plan."
+            f"{_upgrade_hint_for_plan(pk)}"
+        )
     return True, ""

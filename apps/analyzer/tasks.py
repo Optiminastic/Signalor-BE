@@ -86,28 +86,43 @@ def _save_probes_and_tracks(
     industry: str = "", country: str = "",
 ):
     """Save AIVisibilityProbe rows and generate AI-powered brand-specific prompt tracks."""
+    from apps.accounts.subscription_utils import get_plan_limits, is_plan_limits_enforcement_enabled
+
     from .pipeline.prompt_tracker import generate_brand_prompts, fire_prompt_across_engines, compute_prompt_score
 
     # Save visibility probes
     for probe in probes_data:
         AIVisibilityProbe.objects.create(analysis_run=run, **probe)
 
-    # Generate 10 brand-relevant prompts using AI with FULL context
-    try:
-        brand_prompts = generate_brand_prompts(
-            brand_name=brand_name,
-            brand_url=brand_url,
-            industry=industry,
-            page_content=crawl_text,
-            meta_description=meta_description,
-            products=site_pages,
-            location="",
-            country=country,
-            count=10,
-        )
-    except Exception as exc:
-        logger.warning("AI prompt generation failed for run %d: %s", run.id, exc)
+    em = (run.email or "").strip().lower()
+    limits = get_plan_limits(run.email)
+    allowed_engines = limits["engines"] if is_plan_limits_enforcement_enabled() and em else None
+    if is_plan_limits_enforcement_enabled() and em:
+        cur = PromptTrack.objects.filter(analysis_run__email=em).count()
+        slots = max(0, limits["max_prompts"] - cur)
+        gen_count = min(10, slots)
+    else:
+        gen_count = 10
+
+    if gen_count == 0:
         brand_prompts = []
+    else:
+        try:
+            brand_prompts = generate_brand_prompts(
+                brand_name=brand_name,
+                brand_url=brand_url,
+                industry=industry,
+                page_content=crawl_text,
+                meta_description=meta_description,
+                products=site_pages,
+                location="",
+                country=country,
+                count=gen_count,
+            )
+        except Exception as exc:
+            logger.warning("AI prompt generation failed for run %d: %s", run.id, exc)
+            brand_prompts = []
+        brand_prompts = brand_prompts[:gen_count]
 
     # Fire each AI-generated prompt and save results
     for prompt_text in brand_prompts:
@@ -117,7 +132,9 @@ def _save_probes_and_tracks(
                 prompt_text=prompt_text,
                 is_custom=False,
             )
-            engine_results = fire_prompt_across_engines(prompt_text, brand_name, brand_url, runs=1)
+            engine_results = fire_prompt_across_engines(
+                prompt_text, brand_name, brand_url, runs=1, allowed_engines=allowed_engines
+            )
             for r in engine_results:
                 PromptResult.objects.create(prompt_track=track, **r)
 

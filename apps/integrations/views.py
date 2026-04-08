@@ -18,7 +18,11 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.accounts.subscription_utils import integration_connect_allowed_for_email
+from apps.accounts.subscription_utils import (
+    integration_connect_allowed_for_email,
+    plan_limit_error_response_dict,
+    project_limit_reached,
+)
 from apps.organizations.models import Organization
 
 from .models import (
@@ -51,12 +55,19 @@ GA_SCOPES = [
 def _get_org_or_400(email):
     """Return the org for this email, auto-creating a default one if needed."""
     org = Organization.objects.filter(owner_email=email).first()
-    if not org:
-        org = Organization.objects.create(
-            name=email.split("@")[0],
-            url="",
-            owner_email=email,
+    if org:
+        return org, None
+    reached, msg = project_limit_reached(email)
+    if reached:
+        return None, Response(
+            plan_limit_error_response_dict(msg),
+            status=status.HTTP_403_FORBIDDEN,
         )
+    org = Organization.objects.create(
+        name=email.split("@")[0],
+        url="",
+        owner_email=email,
+    )
     return org, None
 
 

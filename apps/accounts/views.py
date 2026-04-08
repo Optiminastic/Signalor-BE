@@ -17,6 +17,7 @@ from datetime import timedelta
 
 from .models import Subscription, PLAN_LIMITS
 from .subscription_utils import is_internal_email
+from .dodo_invoice import extract_payment_id_from_webhook, fetch_payment_invoice_pdf
 
 logger = logging.getLogger("apps")
 
@@ -112,8 +113,9 @@ class SubscriptionStatusView(APIView):
                 "current_period_end": None,
                 "currency": "gbp",
                 "plan": "business",
-                "plan_label": "Business (Internal)",
+                "plan_label": "Max (Internal)",
                 "limits": business,
+                "invoice_available": False,
             })
 
         try:
@@ -126,6 +128,7 @@ class SubscriptionStatusView(APIView):
                 "plan": sub.plan,
                 "plan_label": sub.limits["label"],
                 "limits": sub.limits,
+                "invoice_available": bool(sub.last_invoice_payment_id),
             })
         except Subscription.DoesNotExist:
             return Response({
@@ -136,7 +139,48 @@ class SubscriptionStatusView(APIView):
                 "plan": "starter",
                 "plan_label": starter["label"],
                 "limits": starter,
+                "invoice_available": False,
             })
+
+
+class DownloadInvoiceView(APIView):
+    """GET /api/payments/invoice/?email= — PDF for latest stored Dodo payment."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        email = request.query_params.get("email", "").lower().strip()
+        if not email:
+            return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if is_internal_email(email):
+            return Response({"error": "No invoice for internal accounts."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            sub = Subscription.objects.get(email=email)
+        except Subscription.DoesNotExist:
+            return Response({"error": "No subscription found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not sub.last_invoice_payment_id:
+            return Response(
+                {"error": "No invoice yet. It appears after your first successful charge."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        pdf, err = fetch_payment_invoice_pdf(sub.last_invoice_payment_id)
+        if not pdf:
+            logger.warning("Invoice download failed for %s: %s", email, err)
+            return Response(
+                {"error": "Could not retrieve invoice from payment provider."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        safe_name = sub.last_invoice_payment_id.replace("/", "_")[:80]
+        response = HttpResponse(pdf, content_type="application/pdf")
+        response["Content-Disposition"] = (
+            f'attachment; filename="signalor-invoice-{safe_name}.pdf"'
+        )
+        return response
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -232,6 +276,7 @@ class DodoWebhookView(APIView):
                 pass
 
         sub.save(update_fields=["payment_subscription_id", "payment_customer_id", "status", "current_period_end", "plan"])
+        self._store_latest_payment_id(data, sub)
         logger.info("Subscription activated for %s (plan=%s)", email, sub.plan)
 
     def _handle_subscription_renewed(self, data):
@@ -250,6 +295,7 @@ class DodoWebhookView(APIView):
                 pass
 
         sub.save(update_fields=["status", "current_period_end"])
+        self._store_latest_payment_id(data, sub)
         logger.info("Subscription renewed for %s", sub.email)
 
     def _handle_subscription_on_hold(self, data):
@@ -294,6 +340,9 @@ class DodoWebhookView(APIView):
         except Subscription.DoesNotExist:
             pass
 
+        if sub:
+            self._store_latest_payment_id(data, sub)
+
         if sub and sub.status != "active":
             sub.status = "active"
             sub.save(update_fields=["status"])
@@ -334,6 +383,18 @@ class DodoWebhookView(APIView):
                 pass
 
         return None
+
+    def _store_latest_payment_id(self, data, sub):
+        """Remember latest Dodo payment id for invoice PDF download."""
+        if not sub:
+            return
+        pid = extract_payment_id_from_webhook(data)
+        if not pid:
+            return
+        if sub.last_invoice_payment_id == pid:
+            return
+        sub.last_invoice_payment_id = pid
+        sub.save(update_fields=["last_invoice_payment_id"])
 
 
 class PlanListView(APIView):

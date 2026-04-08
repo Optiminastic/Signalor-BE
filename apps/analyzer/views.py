@@ -13,7 +13,14 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.accounts.subscription_utils import analysis_allowed_for_email
+from apps.accounts.subscription_utils import (
+    analysis_allowed_for_email,
+    get_plan_limits,
+    is_plan_limits_enforcement_enabled,
+    plan_limit_error_response_dict,
+    prompt_batch_would_exceed,
+    prompt_limit_reached,
+)
 from apps.integrations.models import Integration
 from apps.organizations.models import Organization
 
@@ -638,6 +645,14 @@ class StartAnalysisView(APIView):
         allowed, sub_err = analysis_allowed_for_email(email)
         if not allowed:
             return Response({"error": sub_err}, status=status.HTTP_403_FORBIDDEN)
+
+        # Plan cap: each completed analysis adds up to 10 prompt tracks
+        batch_exceeds, batch_msg = prompt_batch_would_exceed(email, 10)
+        if batch_exceeds:
+            return Response(
+                plan_limit_error_response_dict(batch_msg),
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         # Block duplicate submissions: same URL still pending/running for the same org (or user)
         submitted_url = data["url"]
@@ -1726,7 +1741,15 @@ def _fire_and_save_prompt(track: PromptTrack, brand_name: str, brand_url: str):
 
     close_old_connections()
     try:
-        engine_results = fire_prompt_across_engines(track.prompt_text, brand_name, brand_url)
+        em = (track.analysis_run.email or "").strip()
+        allowed = (
+            get_plan_limits(em)["engines"]
+            if is_plan_limits_enforcement_enabled() and em
+            else None
+        )
+        engine_results = fire_prompt_across_engines(
+            track.prompt_text, brand_name, brand_url, allowed_engines=allowed
+        )
         for r in engine_results:
             PromptResult.objects.create(prompt_track=track, **r)
         logger.info("PromptTrack #%d: %d engine results saved", track.pk, len(engine_results))
@@ -1751,6 +1774,14 @@ class PromptListCreateView(APIView):
         ser = AddPromptSerializer(data=request.data)
         if not ser.is_valid():
             return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        email = (run.email or "").strip().lower()
+        reached, pl_msg = prompt_limit_reached(email)
+        if reached:
+            return Response(
+                plan_limit_error_response_dict(pl_msg),
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         track = PromptTrack.objects.create(
             analysis_run=run,
@@ -2479,6 +2510,13 @@ class ApplyGeoFixesAndReanalyzeView(APIView):
             allowed, sub_err = analysis_allowed_for_email(run.email or "")
             if not allowed:
                 return Response({"error": sub_err}, status=status.HTTP_403_FORBIDDEN)
+
+            batch_exceeds, batch_msg = prompt_batch_would_exceed(run.email or "", 10)
+            if batch_exceeds:
+                return Response(
+                    plan_limit_error_response_dict(batch_msg),
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
             new_run = AnalysisRun.objects.create(
                 organization=run.organization,
