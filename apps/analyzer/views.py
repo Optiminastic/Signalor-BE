@@ -2251,12 +2251,13 @@ class AutoFixApproveView(APIView):
 
 
 class AutoFixVerifyView(APIView):
-    """POST /api/analyzer/runs/s/<slug>/auto-fix/verify/ — mark a recommendation as manually verified."""
+    """POST /api/analyzer/runs/s/<slug>/auto-fix/verify/ — re-fetch the page and verify the fix heuristically."""
     permission_classes = [AllowAny]
 
     def post(self, request, slug):
         from django.shortcuts import get_object_or_404
         from .models import AutoFixJob
+        from .recommendation_verify import verify_recommendation_fix
 
         run = get_object_or_404(AnalysisRun, slug=slug)
         rec_id = request.data.get("recommendation_id")
@@ -2269,23 +2270,37 @@ class AutoFixVerifyView(APIView):
         except Recommendation.DoesNotExist:
             return Response({"error": "Recommendation not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Create a verified audit record (no integration needed for manual verify)
+        result = verify_recommendation_fix(run, rec)
+        st = result.get("status")
+        if st == "verified":
+            job_status = AutoFixJob.Status.VERIFIED
+        elif st == "manual":
+            job_status = AutoFixJob.Status.MANUAL
+        else:
+            job_status = AutoFixJob.Status.FAILED
         try:
             AutoFixJob.objects.create(
                 analysis_run=run,
                 recommendation=rec,
-                fix_type="manual",
-                status="verified",
-                response_data={"message": "Manually verified by user."},
+                integration=None,
+                fix_type=result.get("fix_type") or "verification",
+                status=job_status,
+                response_data=result,
+                error_message=""
+                if st == "verified"
+                else (result.get("message") or "")[:500],
             )
         except Exception:
             logger.exception("Failed to create verify record (run=%s rec=%s)", run.id, rec.id)
 
-        return Response({
-            "recommendation_id": rec.id,
-            "status": "verified",
-            "message": "Marked as verified.",
-        })
+        return Response(
+            {
+                "recommendation_id": rec.id,
+                "status": result.get("status", "failed"),
+                "message": result.get("message", ""),
+                "fix_type": result.get("fix_type", "verification"),
+            }
+        )
 
 
 # ── AI Chat (GEO Assistant with analysis context) ────────────────────────────

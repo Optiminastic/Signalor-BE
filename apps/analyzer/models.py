@@ -153,6 +153,8 @@ class Recommendation(models.Model):
     action = models.TextField()
     impact_estimate = models.CharField(max_length=100, blank=True, default="")
     category = models.CharField(max_length=30)
+    # Stable pipeline key (e.g. no_citations) for verify routing; blank for legacy rows.
+    finding_code = models.CharField(max_length=80, blank=True, default="")
     why = models.CharField(max_length=200, blank=True, default="")
     # Structured step-by-step guide + gamification metadata
     steps = models.JSONField(default=list, blank=True)

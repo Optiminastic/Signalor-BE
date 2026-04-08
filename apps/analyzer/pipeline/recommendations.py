@@ -1459,6 +1459,7 @@ def generate_recommendations(
                     continue
 
                 rec = dict(rule)
+                rec["finding_code"] = finding
                 rec["impact_score"] = IMPACT_SCORES.get(finding, 10)
                 rec["fixable"] = finding not in MANUAL_FINDINGS
 
