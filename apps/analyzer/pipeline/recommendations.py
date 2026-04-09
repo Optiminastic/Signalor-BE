@@ -891,7 +891,8 @@ SUPPRESS_THRESHOLD = 95
 
 # ── Gamified Steps & Metadata ─────────────────────────────────────────────
 # Each finding maps to structured steps, XP, difficulty, and time estimate.
-# Steps are rendered as a gamified checklist on the frontend.
+# Steps have optional `shopify` / `wordpress` sub-objects with platform-specific
+# instructions (detail + code). The frontend renders these as tabs.
 
 STEP_META = {
     # ── Content ──
@@ -899,8 +900,19 @@ STEP_META = {
         "xp_reward": 30, "difficulty": "easy", "estimated_minutes": 2,
         "steps": [
             {"n": 1, "title": "Find your page title", "detail": "Identify the main topic of the page — this becomes your H1.", "xp": 5},
-            {"n": 2, "title": "Add the H1 tag", "detail": "Wrap your title in <h1>Your Page Title</h1>. Place it as the first heading on the page.", "code": "<h1>Your Page Title Here</h1>", "xp": 15},
-            {"n": 3, "title": "Verify only one H1 exists", "detail": "Search your page source for '<h1' — there should be exactly one.", "xp": 10},
+            {
+                "n": 2, "title": "Add the H1 tag", "xp": 15,
+                "detail": "Wrap your title in <h1>Your Page Title</h1>. Place it as the first heading on the page.",
+                "code": "<h1>Your Page Title Here</h1>",
+                "shopify": {
+                    "detail": "Go to Online Store → Themes → Customize → select the page. Click on the title section and ensure it uses an H1 tag. If using code: Online Store → Themes → Edit code → find the template (e.g., page.liquid or main-page.liquid) and add:",
+                    "code": "<h1>{{ page.title }}</h1>",
+                },
+                "wordpress": {
+                    "detail": "Open the page in the Block Editor (Gutenberg). Click the title at the top — WordPress automatically renders it as H1. If using Classic Editor, make sure the title field is filled and your theme wraps it in <h1>.",
+                },
+            },
+            {"n": 3, "title": "Verify only one H1 exists", "detail": "Visit your page, right-click → View Page Source, press Ctrl+F and search '<h1'. There should be exactly one match.", "xp": 10},
         ],
     },
     "multiple_h1": {
@@ -924,8 +936,28 @@ STEP_META = {
         "steps": [
             {"n": 1, "title": "Brainstorm 5-8 questions", "detail": "Think about what your customers ask most. Check Google's 'People Also Ask' for your topic.", "xp": 10},
             {"n": 2, "title": "Write concise answers", "detail": "Each answer should be 2-4 sentences. Start with a direct answer, then elaborate.", "xp": 15},
-            {"n": 3, "title": "Add the FAQ HTML", "detail": "Add an FAQ section with <h2>Frequently Asked Questions</h2> followed by Q&A pairs.", "code": "<h2>Frequently Asked Questions</h2>\n<h3>What is [your topic]?</h3>\n<p>[Direct answer in 2-3 sentences]</p>", "xp": 15},
-            {"n": 4, "title": "Add FAQPage schema", "detail": "Add JSON-LD FAQPage markup so AI engines can parse your Q&As directly.", "code": '<script type="application/ld+json">\n{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Your question?","acceptedAnswer":{"@type":"Answer","text":"Your answer."}}]}\n</script>', "xp": 20},
+            {
+                "n": 3, "title": "Add the FAQ section to your page", "xp": 15,
+                "detail": "Add an FAQ section with question/answer pairs.",
+                "code": "<h2>Frequently Asked Questions</h2>\n<h3>What is [your topic]?</h3>\n<p>[Direct answer in 2-3 sentences]</p>",
+                "shopify": {
+                    "detail": "Go to Online Store → Pages → select the page → in the rich text editor, add an FAQ section at the bottom. If using Liquid: edit the page template and add the FAQ HTML directly.",
+                },
+                "wordpress": {
+                    "detail": "Open the page in the Block Editor. Add a 'Heading' block (H2) with 'Frequently Asked Questions'. Then add alternating H3 headings (questions) and Paragraph blocks (answers). Or install the 'Yoast FAQ' block for structured FAQ.",
+                },
+            },
+            {
+                "n": 4, "title": "Add FAQPage schema markup", "xp": 20,
+                "detail": "Add JSON-LD FAQPage markup so AI engines can parse your Q&As directly.",
+                "code": '<script type="application/ld+json">\n{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Your question?","acceptedAnswer":{"@type":"Answer","text":"Your answer."}}]}\n</script>',
+                "shopify": {
+                    "detail": "Go to Online Store → Themes → Edit code → Snippets → create 'faq-schema.liquid'. Paste the JSON-LD. Then include it in your page template with {% render 'faq-schema' %}. Or use the Signalor theme extension if installed.",
+                },
+                "wordpress": {
+                    "detail": "If using Yoast SEO, the FAQ block auto-generates schema. Otherwise, install 'WPCode' plugin → Add Snippet → paste the JSON-LD → set it to run on the specific page.",
+                },
+            },
         ],
     },
     "no_lists": {
@@ -1042,9 +1074,22 @@ STEP_META = {
         "xp_reward": 75, "difficulty": "medium", "estimated_minutes": 15,
         "steps": [
             {"n": 1, "title": "Choose your schema type", "detail": "Organization for homepage, Article for blog posts, Product for product pages.", "xp": 10},
-            {"n": 2, "title": "Generate the JSON-LD", "detail": "Use the template below and fill in your details.", "code": '<script type="application/ld+json">\n{\n  "@context": "https://schema.org",\n  "@type": "Organization",\n  "name": "Your Company",\n  "url": "https://yoursite.com",\n  "logo": "https://yoursite.com/logo.png",\n  "description": "What your company does",\n  "sameAs": ["https://linkedin.com/company/you", "https://twitter.com/you"]\n}\n</script>', "xp": 30},
-            {"n": 3, "title": "Add to your page <head>", "detail": "Paste the script tag inside your <head> section, before </head>.", "xp": 20},
-            {"n": 4, "title": "Validate with Google", "detail": "Test at search.google.com/test/rich-results — fix any errors shown.", "xp": 15},
+            {
+                "n": 2, "title": "Generate the JSON-LD", "xp": 30,
+                "detail": "Use the template below and fill in your details.",
+                "code": '<script type="application/ld+json">\n{\n  "@context": "https://schema.org",\n  "@type": "Organization",\n  "name": "Your Company",\n  "url": "https://yoursite.com",\n  "logo": "https://yoursite.com/logo.png",\n  "description": "What your company does",\n  "sameAs": ["https://linkedin.com/company/you", "https://twitter.com/you"]\n}\n</script>',
+            },
+            {
+                "n": 3, "title": "Add the schema to your site", "xp": 20,
+                "detail": "Paste the script tag inside your <head> section.",
+                "shopify": {
+                    "detail": "Go to Online Store → Themes → Edit code → Layout → theme.liquid. Find the </head> tag and paste the JSON-LD script just before it. Save.\n\nIf using Signalor app with Theme Extension: the extension auto-injects schema from metafields — go to Apps → Signalor to configure.",
+                },
+                "wordpress": {
+                    "detail": "Install WPCode plugin (free). Go to Code Snippets → Add Snippet → choose 'Add Your Custom Code' → paste the JSON-LD → set Location to 'Site Wide Header' → Activate.\n\nOr: if using Yoast/Rank Math, both add Organization schema automatically. Check SEO → Search Appearance → Organization.\n\nIf using Signalor GEO plugin: the plugin injects schema automatically based on your settings.",
+                },
+            },
+            {"n": 4, "title": "Validate with Google", "detail": "Go to search.google.com/test/rich-results → paste your page URL → Run Test. Fix any errors shown in the results.", "xp": 15},
         ],
     },
     "no_faqpage_schema": {
@@ -1140,10 +1185,34 @@ STEP_META = {
     "no_author": {
         "xp_reward": 60, "difficulty": "easy", "estimated_minutes": 5,
         "steps": [
-            {"n": 1, "title": "Add visible author byline", "detail": "Add your name and title below the page title.", "code": '<p class="author">By <strong>Your Name</strong>, Your Title at Your Brand</p>', "xp": 15},
-            {"n": 2, "title": "Add author meta tag", "detail": "Add to your page <head> section.", "code": '<meta name="author" content="Your Name">', "xp": 15},
-            {"n": 3, "title": "Add to Article schema", "detail": "If you have Article/BlogPosting schema, add the author property.", "code": '"author": {"@type": "Person", "name": "Your Name", "jobTitle": "Your Title", "url": "https://yoursite.com/about"}', "xp": 20},
-            {"n": 4, "title": "Use your real identity", "detail": "AI cross-references author names across the web. Use your real name for maximum E-E-A-T.", "xp": 10},
+            {
+                "n": 1, "title": "Add a visible author byline", "xp": 20,
+                "detail": "Show the author's name and title on the page, near the title or at the bottom.",
+                "code": '<p class="author">By <strong>Your Name</strong>, Your Title at Your Brand</p>',
+                "shopify": {
+                    "detail": "Go to Online Store → Themes → Customize → select the page/blog post. If your theme supports author display, enable it in theme settings. Otherwise, edit the template: Themes → Edit code → Sections → find main-article.liquid or page.liquid → add the author HTML after the title.",
+                },
+                "wordpress": {
+                    "detail": "Most WordPress themes show the author automatically on posts. To enable: go to Appearance → Customize → Blog/Post settings → enable 'Show author'. For pages: use the Block Editor, add a 'Paragraph' block below the title with the author byline. For full control, install the 'Simple Author Box' plugin.",
+                },
+            },
+            {
+                "n": 2, "title": "Add author meta tag", "xp": 15,
+                "detail": "Add to your page <head> so crawlers can read it.",
+                "code": '<meta name="author" content="Your Name">',
+                "shopify": {
+                    "detail": "Go to Online Store → Themes → Edit code → Layout → theme.liquid → find </head> → paste the meta tag just before it.",
+                },
+                "wordpress": {
+                    "detail": "Install WPCode → Add Snippet → paste the meta tag → Location: 'Site Wide Header'. Or if using Yoast: it adds author meta automatically when you assign an author to posts.",
+                },
+            },
+            {
+                "n": 3, "title": "Add author to Article schema", "xp": 15,
+                "detail": "If you have Article/BlogPosting schema, add the author property.",
+                "code": '"author": {"@type": "Person", "name": "Your Name", "jobTitle": "Your Title", "url": "https://yoursite.com/about"}',
+            },
+            {"n": 4, "title": "Use your real identity", "detail": "AI cross-references author names across the web. Use your real name and link to your LinkedIn profile for maximum E-E-A-T.", "xp": 10},
         ],
     },
     "no_author_bio": {
@@ -1239,19 +1308,60 @@ STEP_META = {
     "no_llms_txt": {
         "xp_reward": 75, "difficulty": "easy", "estimated_minutes": 5,
         "steps": [
-            {"n": 1, "title": "Create the file", "detail": "Create a file called llms.txt at your website root.", "xp": 10},
-            {"n": 2, "title": "Add your content", "detail": "Use this template — customize with your brand info.", "code": "# Your Brand Name\n\n## About\nOne paragraph about what your company does.\n\n## Key Pages\n- Homepage: https://yoursite.com/\n- About: https://yoursite.com/about\n- Products: https://yoursite.com/products\n- Blog: https://yoursite.com/blog\n\n## Contact\n- Email: hello@yoursite.com\n- Twitter: @yourbrand", "xp": 30},
-            {"n": 3, "title": "Upload to your server", "detail": "Upload so it's accessible at https://yoursite.com/llms.txt", "xp": 20},
-            {"n": 4, "title": "Verify it's live", "detail": "Open https://yoursite.com/llms.txt in your browser — it should show as plain text.", "xp": 15},
+            {
+                "n": 1, "title": "Prepare your llms.txt content", "xp": 15,
+                "detail": "Copy this template and customize it with your brand info.",
+                "code": "# Your Brand Name\n\n## About\nOne paragraph about what your company does.\n\n## Key Pages\n- Homepage: https://yoursite.com/\n- About: https://yoursite.com/about\n- Products: https://yoursite.com/products\n- Blog: https://yoursite.com/blog\n\n## Contact\n- Email: hello@yoursite.com\n- Twitter: @yourbrand",
+            },
+            {
+                "n": 2, "title": "Upload llms.txt to your site", "xp": 35,
+                "detail": "Make it accessible at https://yoursite.com/llms.txt",
+                "shopify": {
+                    "detail": "Shopify doesn't let you upload files to the root. Use our Signalor app: if installed, go to Apps → Signalor → the app serves llms.txt at /apps/signalor/llms.txt automatically.\n\nAlternatively, create a page with URL handle 'llms-txt': Online Store → Pages → Add page → title: 'llms.txt' → set URL handle to 'llms-txt' → paste your content in the body. This creates /pages/llms-txt (not ideal but crawlable).\n\nBest option: use a Cloudflare Worker or reverse proxy to serve the file at /llms.txt.",
+                },
+                "wordpress": {
+                    "detail": "If you have the Signalor GEO plugin installed, go to Settings → Signalor GEO → paste your llms.txt content in the 'llms.txt Content' field → Save. The plugin serves it at /llms.txt automatically.\n\nWithout the plugin: connect to your server via FTP/SFTP and upload the file to your WordPress root directory (same folder as wp-config.php).",
+                },
+            },
+            {
+                "n": 3, "title": "Verify it's live", "xp": 25,
+                "detail": "Open your browser and go to your llms.txt URL. It should show as plain text.",
+                "shopify": {
+                    "detail": "Visit https://your-store.myshopify.com/apps/signalor/llms.txt (if using Signalor app) or https://your-store.myshopify.com/pages/llms-txt (if using the page method).",
+                },
+                "wordpress": {
+                    "detail": "Visit https://yoursite.com/llms.txt — it should display your content as plain text. If you get a 404, check that the plugin is active or that the file was uploaded to the correct directory.",
+                },
+            },
         ],
     },
     "ai_bots_blocked": {
         "xp_reward": 80, "difficulty": "easy", "estimated_minutes": 5,
         "steps": [
-            {"n": 1, "title": "Open robots.txt", "detail": "Go to https://yoursite.com/robots.txt and review the contents.", "xp": 5},
-            {"n": 2, "title": "Add AI crawler rules", "detail": "Add allow rules for all major AI crawlers.", "code": "User-agent: GPTBot\nAllow: /\n\nUser-agent: Google-Extended\nAllow: /\n\nUser-agent: anthropic-ai\nAllow: /\n\nUser-agent: ClaudeBot\nAllow: /\n\nUser-agent: PerplexityBot\nAllow: /", "xp": 35},
-            {"n": 3, "title": "Remove blocking rules", "detail": "Find and remove any Disallow rules targeting these bot names.", "xp": 20},
-            {"n": 4, "title": "Check your CDN/WAF", "detail": "If using Cloudflare, check Security > Bots to ensure AI bots aren't blocked at the WAF level.", "xp": 20},
+            {
+                "n": 1, "title": "Check your current robots.txt", "xp": 5,
+                "detail": "Open https://yoursite.com/robots.txt in your browser. Look for lines that block AI bots (GPTBot, Google-Extended, anthropic-ai, ClaudeBot, PerplexityBot).",
+            },
+            {
+                "n": 2, "title": "Add AI crawler allow rules", "xp": 35,
+                "detail": "Add these lines to your robots.txt to allow all major AI crawlers.",
+                "code": "User-agent: GPTBot\nAllow: /\n\nUser-agent: Google-Extended\nAllow: /\n\nUser-agent: anthropic-ai\nAllow: /\n\nUser-agent: ClaudeBot\nAllow: /\n\nUser-agent: PerplexityBot\nAllow: /",
+                "shopify": {
+                    "detail": "Go to Online Store → Themes → Edit code → find 'robots.txt.liquid' in the Templates folder. Add the allow rules above. If the file doesn't exist, Shopify auto-generates robots.txt — create the template to override it.\n\nIf using Signalor app, the app can serve a custom robots.txt via the App Proxy.",
+                    "code": "{% comment %} Allow AI crawlers {% endcomment %}\nUser-agent: GPTBot\nAllow: /\n\nUser-agent: Google-Extended\nAllow: /\n\nUser-agent: anthropic-ai\nAllow: /\n\nUser-agent: ClaudeBot\nAllow: /\n\nUser-agent: PerplexityBot\nAllow: /",
+                },
+                "wordpress": {
+                    "detail": "If using Signalor GEO plugin: go to Settings → Signalor GEO → paste your robots.txt content → Save.\n\nIf using Yoast SEO: go to Yoast → Tools → File editor → robots.txt → add the allow rules.\n\nIf using Rank Math: go to Rank Math → General Settings → Edit robots.txt.\n\nManually: edit the robots.txt file in your WordPress root directory via FTP.",
+                },
+            },
+            {
+                "n": 3, "title": "Remove any Disallow rules for AI bots", "xp": 20,
+                "detail": "Search your robots.txt for 'Disallow' lines that target GPTBot, ClaudeBot, etc. Delete those lines.",
+            },
+            {
+                "n": 4, "title": "Check your CDN/WAF settings", "xp": 20,
+                "detail": "If using Cloudflare: go to Security → Bots → Bot Fight Mode. Make sure 'Definitely automated' isn't blocking known AI bots. Add firewall rules to allow GPTBot, ClaudeBot, PerplexityBot user agents.",
+            },
         ],
     },
     "no_sitemap": {
@@ -1459,6 +1569,7 @@ def generate_recommendations(
                     continue
 
                 rec = dict(rule)
+                rec["finding_key"] = finding
                 rec["impact_score"] = IMPACT_SCORES.get(finding, 10)
                 rec["fixable"] = finding not in MANUAL_FINDINGS
 

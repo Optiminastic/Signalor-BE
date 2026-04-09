@@ -157,6 +157,8 @@ class Recommendation(models.Model):
     xp_reward = models.IntegerField(default=0)
     difficulty = models.CharField(max_length=20, blank=True, default="")  # easy, medium, hard
     estimated_minutes = models.IntegerField(default=0)
+    # The finding key that triggered this recommendation (e.g. "no_h1", "no_citations")
+    finding_key = models.CharField(max_length=80, blank=True, default="")
 
     class Meta:
         ordering = ["priority", "pillar"]

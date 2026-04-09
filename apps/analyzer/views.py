@@ -2244,12 +2244,13 @@ class AutoFixApproveView(APIView):
 
 
 class AutoFixVerifyView(APIView):
-    """POST /api/analyzer/runs/s/<slug>/auto-fix/verify/ — mark a recommendation as manually verified."""
+    """POST /api/analyzer/runs/s/<slug>/auto-fix/verify/ — re-crawl and verify a fix was implemented."""
     permission_classes = [AllowAny]
 
     def post(self, request, slug):
         from django.shortcuts import get_object_or_404
         from .models import AutoFixJob
+        from .pipeline.verify import verify_finding
 
         run = get_object_or_404(AnalysisRun, slug=slug)
         rec_id = request.data.get("recommendation_id")
@@ -2262,22 +2263,31 @@ class AutoFixVerifyView(APIView):
         except Recommendation.DoesNotExist:
             return Response({"error": "Recommendation not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Create a verified audit record (no integration needed for manual verify)
+        # Re-crawl the page and check if the finding is fixed
+        result = verify_finding(
+            url=run.url,
+            finding_key=rec.finding_key,
+            pillar=rec.pillar,
+        )
+
+        fix_status = "verified" if result["verified"] else "failed"
+
+        # Create audit record
         try:
             AutoFixJob.objects.create(
                 analysis_run=run,
                 recommendation=rec,
-                fix_type="manual",
-                status="verified",
-                response_data={"message": "Manually verified by user."},
+                fix_type=rec.finding_key or "manual",
+                status=fix_status,
+                response_data=result,
             )
         except Exception:
             logger.exception("Failed to create verify record (run=%s rec=%s)", run.id, rec.id)
 
         return Response({
             "recommendation_id": rec.id,
-            "status": "verified",
-            "message": "Marked as verified.",
+            "status": fix_status,
+            "message": result["message"],
         })
 
 
