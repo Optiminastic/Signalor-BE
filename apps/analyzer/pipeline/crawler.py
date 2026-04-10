@@ -181,9 +181,14 @@ def fetch_file_content(base_url: str, path: str, session: requests.Session | Non
         )
         if resp.status_code == 200:
             text = resp.text
-            # Guard: if the response is an HTML password page, it's not the file
+            # Guard: if the response is an HTML page (password, app install, etc.), it's not the file
             if "storefront-password" in text or ('id="password"' in text and "password protected" in text.lower()):
                 return ""
+            # Shopify app proxy returns HTML when store has password or app not installed
+            if text.strip().startswith("<!DOCTYPE") or text.strip().startswith("<html"):
+                ct = resp.headers.get("content-type", "")
+                if "text/html" in ct:
+                    return ""
             return text
     except requests.RequestException:
         pass

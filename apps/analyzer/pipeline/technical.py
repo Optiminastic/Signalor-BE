@@ -91,6 +91,10 @@ def _score_infrastructure(crawl: CrawlResult) -> tuple[float, dict]:
         llms_content = fetch_file_content(
             crawl.url, "apps/signalor/llms.txt", session=crawl.session
         )
+    if not llms_content.strip():
+        llms_content = fetch_file_content(
+            crawl.url, "pages/llms-txt", session=crawl.session
+        )
     has_llms = bool(llms_content.strip())
     details["has_llms_txt"] = has_llms
 
