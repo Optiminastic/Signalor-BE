@@ -503,9 +503,260 @@ def _generate_fix_content(fix_type: str, run, recommendation) -> tuple[str, str 
 
 # ── Orchestrator ─────────────────────────────────────────────────────────
 
+def _get_manual_walkthrough(recommendation: Recommendation, provider: str) -> str:
+    """Return a detailed walkthrough for manual-only fixes."""
+    title_lower = (recommendation.title or "").lower()
+    desc_lower = (recommendation.description or "").lower()
+    is_shopify = provider == "shopify"
+    is_wp = provider == "wordpress"
+
+    if "sitemap" in title_lower:
+        if is_shopify:
+            return (
+                "Shopify auto-generates your sitemap at /sitemap.xml — no action needed.\n\n"
+                "How to verify:\n"
+                "1. Visit https://your-store.myshopify.com/sitemap.xml in your browser\n"
+                "2. You should see an XML file listing all your pages, products, and collections\n"
+                "3. Submit it to Google Search Console: go to google.com/search-console → Sitemaps → paste your sitemap URL\n"
+                "4. Also submit to Bing Webmaster Tools for broader AI coverage\n\n"
+                "Tip: AI engines use sitemaps to discover and index your pages. Submitting to search consoles ensures faster discovery."
+            )
+        return (
+            "Your sitemap needs to be properly configured.\n\n"
+            "How to fix:\n"
+            "1. Install an SEO plugin like Yoast SEO or Rank Math if you haven't already\n"
+            "2. Go to the plugin's settings → Sitemaps and make sure it's enabled\n"
+            "3. Visit https://yoursite.com/sitemap_index.xml to verify it works\n"
+            "4. Submit to Google Search Console and Bing Webmaster Tools\n\n"
+            "Tip: A properly configured sitemap helps AI crawlers discover all your important pages."
+        )
+
+    if "https" in title_lower or "ssl" in title_lower:
+        if is_shopify:
+            return (
+                "All Shopify stores have HTTPS enabled by default — no action needed.\n\n"
+                "How to verify:\n"
+                "1. Visit your store URL and check for the padlock icon in the browser address bar\n"
+                "2. If using a custom domain, go to Shopify Admin → Settings → Domains\n"
+                "3. Ensure your custom domain shows 'SSL certificate active'\n\n"
+                "Tip: HTTPS is a trust signal for both search engines and AI models."
+            )
+        return (
+            "Your site needs a valid SSL certificate for HTTPS.\n\n"
+            "How to fix:\n"
+            "1. Contact your hosting provider to enable SSL\n"
+            "2. Most hosts offer free SSL via Let's Encrypt — ask them to enable it\n"
+            "3. After enabling, redirect all HTTP traffic to HTTPS\n"
+            "4. Update your WordPress URL in Settings → General to use https://\n\n"
+            "Tip: AI crawlers may skip or downgrade pages served over plain HTTP."
+        )
+
+    if "page speed" in title_lower or "page load" in title_lower or "too slow" in title_lower:
+        if is_shopify:
+            return (
+                "Page speed affects both SEO and AI visibility.\n\n"
+                "How to improve:\n"
+                "1. Go to Shopify Admin → Online Store → Themes → Customize\n"
+                "2. Remove unused apps and scripts — each adds load time\n"
+                "3. Compress images: use apps like TinyIMG or Crush.pics\n"
+                "4. Minimize custom code in theme.liquid\n"
+                "5. Use Shopify's built-in lazy loading for images\n"
+                "6. Check your speed score at pagespeed.web.dev\n\n"
+                "Tip: AI crawlers have timeouts. If your page takes >5 seconds to load, they may skip it entirely."
+            )
+        return (
+            "Page speed affects both SEO and AI visibility.\n\n"
+            "How to improve:\n"
+            "1. Install a caching plugin like WP Super Cache or W3 Total Cache\n"
+            "2. Compress images with ShortPixel or Imagify\n"
+            "3. Use a CDN like Cloudflare (free tier available)\n"
+            "4. Minimize plugins — deactivate any you don't need\n"
+            "5. Check your speed score at pagespeed.web.dev\n\n"
+            "Tip: AI crawlers have timeouts. If your page takes >5 seconds to load, they may skip it entirely."
+        )
+
+    if "social profile" in title_lower or "brand website signal" in title_lower:
+        return (
+            "Strengthen your brand's online presence across external platforms.\n\n"
+            "How to fix:\n"
+            "1. Create or update profiles on LinkedIn, Twitter/X, Instagram, and Facebook\n"
+            "2. Use consistent brand name, logo, and description across all platforms\n"
+            "3. Link back to your website from every profile\n"
+            "4. Add your social links to your website footer\n"
+            "5. If applicable, create a Wikipedia page or get mentioned on industry authority sites\n\n"
+            "Tip: AI models cross-reference brand mentions across the web. "
+            "The more consistent, authoritative profiles you have, the more confidently AI will recommend you."
+        )
+
+    if "wikipedia" in title_lower or "reddit" in title_lower or "medium" in title_lower:
+        return (
+            "Get your brand mentioned on high-authority external platforms.\n\n"
+            "How to fix:\n"
+            "1. Write thought-leadership articles on Medium about your industry\n"
+            "2. Participate authentically in relevant Reddit communities (don't spam)\n"
+            "3. Get featured in industry blogs, podcasts, or review sites\n"
+            "4. Contribute expert answers on Quora related to your niche\n"
+            "5. If your brand is notable enough, create a Wikipedia article (strict notability rules apply)\n\n"
+            "Tip: AI models heavily weight mentions from trusted, high-authority sources. "
+            "A single mention on a .edu, .gov, or major publication can significantly boost your AI visibility."
+        )
+
+    if "google ai overview" in title_lower or "brand into ai" in title_lower:
+        return (
+            "Optimize your content to appear in AI-generated overviews and answers.\n\n"
+            "How to fix:\n"
+            "1. Structure content with clear headings (H2, H3) that match common questions\n"
+            "2. Write concise, factual answers in the first 2-3 sentences of each section\n"
+            "3. Use comparison tables, numbered lists, and specific data points\n"
+            "4. Add FAQ sections with direct, authoritative answers\n"
+            "5. Include statistics, case studies, and expert opinions with citations\n"
+            "6. Make sure your About page clearly states who you are, what you do, and why you're credible\n\n"
+            "Tip: AI overview answers are pulled from content that is structured, specific, and authoritative. "
+            "Generic marketing copy is rarely cited."
+        )
+
+    if "crawler blocked" in title_lower or "403" in title_lower:
+        if is_shopify:
+            return (
+                "AI crawlers may be blocked from accessing your store.\n\n"
+                "How to fix:\n"
+                "1. Check if your store has a password — go to Shopify Admin → Online Store → Preferences\n"
+                "2. If 'Password protection' is enabled, disable it (or use Signalor's storefront password feature)\n"
+                "3. Check your robots.txt at your-store.myshopify.com/robots.txt\n"
+                "4. Make sure AI bots (GPTBot, ClaudeBot, PerplexityBot) are not blocked\n"
+                "5. Use the Auto Fix for robots.txt to add allow rules for AI crawlers\n\n"
+                "Tip: Many stores accidentally block AI crawlers. If they can't access your page, you're invisible to AI."
+            )
+        return (
+            "AI crawlers may be blocked from accessing your site.\n\n"
+            "How to fix:\n"
+            "1. Check your robots.txt file at yoursite.com/robots.txt\n"
+            "2. Make sure AI bots are not blocked (GPTBot, ClaudeBot, PerplexityBot, Google-Extended)\n"
+            "3. Check your hosting firewall or security plugin — they may block unknown bots\n"
+            "4. If using Cloudflare, check Firewall Rules for bot blocks\n"
+            "5. Test by visiting your site with a User-Agent switcher set to 'GPTBot'\n\n"
+            "Tip: If AI crawlers get a 403, your page is completely invisible to AI engines."
+        )
+
+    # Generic fallback
+    return (
+        "This fix requires manual action that cannot be automated.\n\n"
+        "Review the recommendation details above and follow the guidance. "
+        "If you need help, use the AI Assistant chat in your dashboard for step-by-step support."
+    )
+
+
+def _build_homepage_manual_guide(fix_type: str, generated: str, gen_err: str | None, run) -> str:
+    """Build a copy-paste ready manual guide with AI-generated content for Shopify homepage fixes."""
+    brand = run.brand_name or run.url or "your brand"
+
+    if fix_type == "meta":
+        steps = (
+            "WHERE TO PASTE:\n"
+            "Shopify Admin → Online Store → Preferences\n\n"
+            "STEPS:\n"
+            "1. Open your Shopify Admin\n"
+            "2. Go to Online Store → Preferences\n"
+            "3. Find 'Homepage title' and paste the title below\n"
+            "4. Find 'Homepage meta description' and paste the description below\n"
+            "5. Click Save"
+        )
+        if gen_err:
+            return f"{steps}\n\nCould not generate content: {gen_err}"
+        # Parse generated content for title/description
+        title_line = ""
+        desc_line = ""
+        if generated:
+            try:
+                parsed = json.loads(generated)
+                title_line = parsed.get("seo_title", "")
+                desc_line = parsed.get("seo_description", "")
+            except (json.JSONDecodeError, AttributeError):
+                # Plain text — first line is title, rest is description
+                lines = [l.strip() for l in generated.strip().split("\n") if l.strip()]
+                title_line = lines[0] if lines else ""
+                desc_line = lines[1] if len(lines) > 1 else ""
+
+        content_block = ""
+        if title_line:
+            content_block += f"\nHOMEPAGE TITLE (copy this):\n{title_line}\n"
+        if desc_line:
+            content_block += f"\nMETA DESCRIPTION (copy this):\n{desc_line}\n"
+        if not content_block:
+            content_block = f"\n{generated}\n"
+        return f"{steps}\n{content_block}"
+
+    if fix_type == "schema":
+        steps = (
+            "WHERE TO PASTE:\n"
+            "Shopify Admin → Online Store → Themes → Customize → App embeds\n\n"
+            "STEPS:\n"
+            "1. Open your Shopify Admin\n"
+            "2. Go to Online Store → Themes → Customize\n"
+            "3. Click the App embeds icon (paint brush) in the left sidebar\n"
+            "4. Toggle ON both 'Signalor Schema' and 'Signalor AI Meta'\n"
+            "5. Click Save\n\n"
+            "The Signalor extension auto-injects Organization schema on your homepage.\n"
+            "If you want custom schema, add a 'Custom Liquid' section and paste the JSON-LD below."
+        )
+        if gen_err:
+            return f"{steps}\n\nCould not generate schema: {gen_err}"
+        return f"{steps}\n\nGENERATED SCHEMA (copy this into Custom Liquid if needed):\n\n<script type=\"application/ld+json\">\n{generated}\n</script>"
+
+    if fix_type == "content":
+        steps = (
+            "WHERE TO PASTE:\n"
+            "Shopify Admin → Online Store → Themes → Customize\n\n"
+            "STEPS:\n"
+            "1. Open your Shopify Admin\n"
+            "2. Go to Online Store → Themes → Customize\n"
+            "3. Click 'Add section' and choose 'Rich text' or 'Custom Liquid'\n"
+            "4. Paste the content below into the section\n"
+            "5. Click Save"
+        )
+        if gen_err:
+            return f"{steps}\n\nCould not generate content: {gen_err}"
+        return f"{steps}\n\nCONTENT TO ADD (copy this):\n\n{generated}"
+
+    if fix_type == "faq":
+        steps = (
+            "WHERE TO PASTE:\n"
+            "Shopify Admin → Online Store → Themes → Customize\n\n"
+            "STEPS:\n"
+            "1. Open your Shopify Admin\n"
+            "2. Go to Online Store → Themes → Customize\n"
+            "3. Click 'Add section' and choose 'Collapsible content' or 'FAQ'\n"
+            "4. Add each question and answer from below\n"
+            "5. Click Save"
+        )
+        if gen_err:
+            return f"{steps}\n\nCould not generate FAQ: {gen_err}"
+        return f"{steps}\n\nFAQ CONTENT (add each Q&A):\n\n{generated}"
+
+    # Fallback
+    if gen_err:
+        return f"Could not generate fix: {gen_err}"
+    return f"Apply this manually:\n\n{generated}"
+
+
+def _is_homepage_url(url: str) -> bool:
+    """Check if URL is a store homepage (no /pages/ or /products/ path)."""
+    try:
+        from urllib.parse import urlparse
+        path = urlparse(url).path.rstrip("/")
+        return not path or path == ""
+    except Exception:
+        return False
+
+# Fix types that cannot be applied to Shopify homepages (content lives in theme)
+_HOMEPAGE_MANUAL_FIX_TYPES = {"content", "faq", "meta", "schema"}
+
+
 def apply_fixes(run, integration, recommendations: list[Recommendation]) -> list[dict]:
     """Generate fixes via AI + push through plugin/app for each recommendation."""
     results = []
+    is_homepage = _is_homepage_url(run.url or "")
+    is_shopify = integration.provider == "shopify"
 
     for rec in recommendations:
         fix_type = _detect_fix_type(rec)
@@ -518,11 +769,31 @@ def apply_fixes(run, integration, recommendations: list[Recommendation]) -> list
             status="running",
         )
 
-        # Manual fixes — skip with guidance
-        if fix_type == "manual":
+        # Shopify homepage: content/meta/schema/faq — generate content + give copy-paste instructions
+        if is_shopify and is_homepage and fix_type in _HOMEPAGE_MANUAL_FIX_TYPES:
+            try:
+                generated, gen_err = _generate_fix_content(fix_type, run, rec)
+            except Exception as e:
+                generated, gen_err = "", str(e)
+
+            walkthrough = _build_homepage_manual_guide(fix_type, generated, gen_err, run)
             result = {
                 "status": "manual",
-                "message": "This requires manual action (server config, external profiles). Follow the step-by-step instructions.",
+                "message": walkthrough,
+                "generated_content": generated if not gen_err else None,
+            }
+            job.status = AutoFixJob.Status.MANUAL
+            job.response_data = result
+            job.save(update_fields=["status", "response_data"])
+            results.append({"recommendation_id": rec.id, "status": "manual", "message": walkthrough, "fix_type": fix_type, "generated_content": generated if not gen_err else None})
+            continue
+
+        # Manual fixes — skip with detailed guidance
+        if fix_type == "manual":
+            manual_msg = _get_manual_walkthrough(rec, integration.provider)
+            result = {
+                "status": "manual",
+                "message": manual_msg,
             }
             job.status = AutoFixJob.Status.MANUAL
             job.response_data = result

@@ -38,11 +38,52 @@ class RecommendationSerializer(serializers.ModelSerializer):
         "brand into ai", "social profile", "brand website signal",
     ]
 
+    # Fix types that can actually be auto-applied on any URL
+    AUTO_FIX_TITLE_KEYWORDS = [
+        "llms.txt", "robots.txt", "ai meta", "ai-meta", "ai crawler",
+        "ai bot", "gptbot", "claudebot", "noindex",
+    ]
+
+    # Fix types that need a product/page URL — cannot auto-fix on homepage
+    HOMEPAGE_MANUAL_TITLE_KEYWORDS = [
+        "meta description", "seo title", "title tag", "meta title",
+        "json-ld", "structured data", "schema",
+        "faq", "expert quote", "author attribution", "first-hand",
+        "about page", "contact page", "content", "keyword stuff",
+        "review", "comparison", "shipping", "product description",
+    ]
+
     def get_can_auto_fix(self, obj):
         title_lower = (obj.title or "").lower()
+        cat_lower = (obj.category or "").lower()
+
+        # Always manual
         for kw in self.MANUAL_TITLE_KEYWORDS:
             if kw in title_lower:
                 return False
+
+        # Check if this is a homepage analysis
+        run = obj.analysis_run
+        run_url = (run.url or "") if run else ""
+        is_homepage = False
+        if run_url:
+            try:
+                from urllib.parse import urlparse
+                path = urlparse(run_url).path.rstrip("/")
+                is_homepage = not path or path == ""
+            except Exception:
+                pass
+
+        # On homepage: only specific fix types can auto-apply
+        if is_homepage:
+            for kw in self.AUTO_FIX_TITLE_KEYWORDS:
+                if kw in title_lower:
+                    return True
+            # Schema category on homepage = theme extension (auto)
+            # but schema issues like "missing schema" on homepage = manual
+            return False
+
+        # On product/page URLs: most things can be auto-fixed
         return True
 
 
