@@ -1176,7 +1176,7 @@ STEP_META = {
     "no_faq_section": {
         "xp_reward": 60, "difficulty": "medium", "estimated_minutes": 20,
         "steps": [
-            {"n": 1, "title": "Write 5-8 common questions", "detail": "Think about what your customers ask most. Check your support inbox, reviews, or Google 'People Also Ask' for ideas.", "xp": 10},
+            {"n": 1, "title": "Write 5-8 common questions", "detail": "Use the FAQ prompts in this recommendation, your support inbox, and reviews. Ask in Chat for a tailored Q&A list—no manual keyword research needed.", "xp": 10},
             {"n": 2, "title": "Write clear answers", "detail": "Each answer should be 2-4 sentences. Start with a direct answer, then add details. Use specific facts and numbers.", "xp": 15},
             {"n": 3, "title": "Add the FAQ to your page", "detail": "Add a FAQ section at the bottom of your page.", "xp": 15,
              "shopify": {"detail": "Option A (easiest): Shopify Admin → Online Store → Themes → Customize → select the page → click 'Add section' → choose 'Collapsible content' → add your Q&As as rows → Save.\n\nOption B: Go to Online Store → Pages → edit the page → in the text editor, type each question as a bold heading and the answer below it → Save."},
@@ -1216,19 +1216,19 @@ STEP_META = {
     "no_citations": {
         "xp_reward": 80, "difficulty": "medium", "estimated_minutes": 25,
         "steps": [
-            {"n": 1, "title": "Find sources that support your claims", "detail": "Search Google for research, statistics, or expert opinions that back up what you say. Look for .gov, .edu, or well-known publications.", "xp": 15},
-            {"n": 2, "title": "Add references in your content", "detail": "When you make a claim, mention where it comes from. Example: 'According to a 2024 Dermatology Journal study, natural ingredients reduce skin irritation by 40%.'", "xp": 25,
-             "shopify": {"detail": "Edit your page → add phrases like 'According to [Source]...' or 'Research from [University] shows...' → highlight the source name → add a link to the original study. Save."},
-             "wordpress": {"detail": "Edit your page → add citations inline → highlight source names and add links to the original research → Update."}},
-            {"n": 3, "title": "Add a Sources section at the bottom", "detail": "At the end of your page, add a heading 'Sources' and list all the references you cited.", "xp": 20},
-            {"n": 4, "title": "Link to original sources", "detail": "Each source should be a clickable link to the original research or report. This builds trust with both AI and readers.", "xp": 20},
+            {"n": 1, "title": "Start from Signalor's suggestions", "detail": "Use the citation ideas, example wording, and source links in this recommendation (or tap Ask in Chat for tailored sources). You do not need to search the web yourself.", "xp": 15},
+            {"n": 2, "title": "Weave citations into your page", "detail": "Place the suggested attributions next to the claims they support—Signalor's examples show the pattern; adjust names and links only if your editor requires it.", "xp": 25,
+             "shopify": {"detail": "In the page editor, add the suggested 'According to…' lines next to each claim → link the source name to the URL Signalor provided → Save."},
+             "wordpress": {"detail": "In the block editor, add the suggested citation lines beside each claim → link source titles to the URLs from this recommendation → Update."}},
+            {"n": 3, "title": "Add a Sources section", "detail": "At the end of the page, add a 'Sources' heading and type or insert the bullet list from this recommendation (or ask Chat to regenerate the list for you).", "xp": 20},
+            {"n": 4, "title": "Keep every source clickable", "detail": "Each entry in Sources should link to the original page or study. Use the URLs from this card so readers and AI can follow the evidence.", "xp": 20},
         ],
     },
     "no_statistics": {
         "xp_reward": 70, "difficulty": "medium", "estimated_minutes": 20,
         "steps": [
             {"n": 1, "title": "Find vague claims in your content", "detail": "Look for phrases like 'many customers', 'most people', 'a lot of'. These need specific numbers.", "xp": 10},
-            {"n": 2, "title": "Research real numbers", "detail": "Search Google for statistics related to your claims. Look for industry reports, surveys, or studies.", "xp": 20},
+            {"n": 2, "title": "Use data Signalor suggests", "detail": "Take the statistics and source lines from this recommendation or Ask in Chat—pick numbers that match your claims and cite the source name we provide.", "xp": 20},
             {"n": 3, "title": "Replace vague with specific", "detail": "Change 'many people prefer organic' to '73% of consumers prefer organic products (Nielsen, 2024)'. Always mention the source.", "xp": 25,
              "shopify": {"detail": "Edit your page content → find vague statements → replace with specific numbers and sources → Save."},
              "wordpress": {"detail": "Edit your page → replace vague claims with data points → Update."}},
@@ -1239,7 +1239,7 @@ STEP_META = {
         "xp_reward": 50, "difficulty": "medium", "estimated_minutes": 15,
         "steps": [
             {"n": 1, "title": "Find experts to quote", "detail": "Think of recognized people in your industry — CEOs, researchers, authors, doctors. You can also quote your own team members if they have credentials.", "xp": 10},
-            {"n": 2, "title": "Find or write quotes", "detail": "Search for their quotes from interviews, books, or talks. Or interview your own team experts.", "xp": 15},
+            {"n": 2, "title": "Use provided or team quotes", "detail": "Use the example quotes and attributions from this recommendation, or Ask in Chat for options. Your own experts can approve a short quote—no outside research required.", "xp": 15},
             {"n": 3, "title": "Add quotes to your page", "detail": "Add 2-3 expert quotes with the person's name and title.", "xp": 25,
              "shopify": {"detail": "Edit your page → type the quote in quotation marks → on the next line, write the person's name and title. Example:\n\n\"Natural ingredients are the future of skincare.\"\n— Dr. Sarah Chen, Dermatologist at Stanford Medical\n\nSave when done."},
              "wordpress": {"detail": "Edit the page → click '+' → search 'Quote' → add the Quote block → type the quote and attribution → Update."}},
@@ -1258,7 +1258,7 @@ STEP_META = {
     "poor_readability": {
         "xp_reward": 40, "difficulty": "medium", "estimated_minutes": 20,
         "steps": [
-            {"n": 1, "title": "Check your reading level", "detail": "Copy your content and paste it into hemingwayapp.com (free). It highlights hard-to-read sentences.", "xp": 5},
+            {"n": 1, "title": "Spot hard sentences in your editor", "detail": "In your CMS, skim for sentences longer than about 25 words or dense jargon—Signalor's summary above usually flags the worst spots; Ask in Chat for rewritten alternatives.", "xp": 5},
             {"n": 2, "title": "Shorten long sentences", "detail": "Break any sentence over 25 words into two shorter ones. Aim for 15-20 words per sentence.", "xp": 15},
             {"n": 3, "title": "Simplify complex words", "detail": "Replace jargon with plain language. If you must use a technical term, explain it: 'Retinol (a form of Vitamin A) helps reduce wrinkles.'", "xp": 10},
             {"n": 4, "title": "Use shorter paragraphs", "detail": "Each paragraph should be 2-3 sentences max, covering one idea. Add line breaks between paragraphs.", "xp": 10,
@@ -1289,7 +1289,7 @@ STEP_META = {
     "low_word_count": {
         "xp_reward": 60, "difficulty": "hard", "estimated_minutes": 45,
         "steps": [
-            {"n": 1, "title": "Find what's missing", "detail": "Search Google for your topic. Look at what top-ranking pages cover that yours doesn't. Make a list of 3-5 subtopics to add.", "xp": 10},
+            {"n": 1, "title": "Use the content gaps listed here", "detail": "Signalor already compared your page to strong patterns—use the subtopics and bullets in this finding (or Ask in Chat) as your outline; no competitor search needed.", "xp": 10},
             {"n": 2, "title": "Expand your content", "detail": "For each subtopic, write 2-3 paragraphs with examples, data, and explanations. Aim for 1,500+ words total.", "xp": 25,
              "shopify": {"detail": "Edit your page → add new sections with headings for each subtopic → write detailed content under each → Save."},
              "wordpress": {"detail": "Edit your page → add Heading blocks for new sections → write content under each → Update."}},
@@ -1464,14 +1464,14 @@ STEP_META = {
         "xp_reward": 55, "difficulty": "medium", "estimated_minutes": 15,
         "steps": [
             {"n": 1, "title": "Identify unsupported claims", "detail": "Find statements in your content that make claims without linking to sources.", "xp": 10},
-            {"n": 2, "title": "Find authoritative sources", "detail": "Search Google Scholar, .gov, .edu sites for supporting evidence.", "xp": 20},
+            {"n": 2, "title": "Add links Signalor suggests", "detail": "Use the authoritative URLs and citation snippets in this recommendation—or Ask in Chat for a short list matched to your claims.", "xp": 20},
             {"n": 3, "title": "Add 3+ external links", "detail": "Link to the sources inline, using descriptive anchor text.", "xp": 25},
         ],
     },
     "no_trust_links": {
         "xp_reward": 50, "difficulty": "medium", "estimated_minutes": 15,
         "steps": [
-            {"n": 1, "title": "Find high-authority sources", "detail": "Search for .gov, .edu, Wikipedia, or major publications that support your claims.", "xp": 15},
+            {"n": 1, "title": "Use trusted links from this card", "detail": "Signalor suggests .gov, .edu, and major-publication links you can drop in—start there instead of searching manually.", "xp": 15},
             {"n": 2, "title": "Link to them in your content", "detail": "Add 2-3 links to authoritative domains within your article body.", "xp": 25},
             {"n": 3, "title": "Use descriptive anchor text", "detail": "Link text should describe the source: 'according to the FDA guidelines' not 'click here'.", "xp": 10},
         ],
@@ -1480,7 +1480,7 @@ STEP_META = {
         "xp_reward": 25, "difficulty": "easy", "estimated_minutes": 10,
         "steps": [
             {"n": 1, "title": "Audit your external links", "detail": "List all domains you link to. Are there fewer than 3 unique domains?", "xp": 5},
-            {"n": 2, "title": "Add links to new domains", "detail": "Find 2-3 additional authoritative sources from different domains.", "xp": 20},
+            {"n": 2, "title": "Add links to new domains", "detail": "Use the extra domain suggestions in this recommendation or Ask in Chat—pick 2–3 you do not already link to.", "xp": 20},
         ],
     },
     "no_about_page": {
@@ -1662,7 +1662,7 @@ STEP_META = {
         "xp_reward": 65, "difficulty": "hard", "estimated_minutes": 60,
         "steps": [
             {"n": 1, "title": "Optimize for featured snippets", "detail": "Structure content as Q&A: question in H2, direct answer immediately below.", "xp": 20},
-            {"n": 2, "title": "Target 'People Also Ask'", "detail": "Search your keywords on Google, note PAA questions, create content answering each.", "xp": 20},
+            {"n": 2, "title": "Cover follow-up questions", "detail": "Use the question ideas and headings Signalor suggests (or Ask in Chat) so your page answers the same follow-ups AI surfaces—without searching SERPs yourself.", "xp": 20},
             {"n": 3, "title": "Build topical authority", "detail": "Create a content cluster: 1 pillar page + 5-10 supporting articles, interlinked.", "xp": 25},
         ],
     },
@@ -1824,7 +1824,7 @@ STEP_META = {
     "no_comparison_content": {
         "xp_reward": 65, "difficulty": "hard", "estimated_minutes": 45,
         "steps": [
-            {"n": 1, "title": "Identify your top 3 competitors", "detail": "Search your main keywords on Google/ChatGPT. Note which brands appear. These are your comparison targets.", "xp": 10},
+            {"n": 1, "title": "Pick comparison brands", "detail": "Use the competitor names Signalor already surfaced for your run (or Ask in Chat for a short list). You do not need to search the web to discover them.", "xp": 10},
             {
                 "n": 2, "title": "Create a comparison page", "xp": 30,
                 "detail": "Title: '[Your Brand] vs [Competitor]'. Include a feature table, pricing comparison, and honest pros/cons.",
