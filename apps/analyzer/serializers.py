@@ -114,6 +114,8 @@ class BrandVisibilitySerializer(serializers.ModelSerializer):
             "reddit_score", "reddit_details",
             "medium_score", "medium_details",
             "web_mentions_score", "web_mentions_details",
+            "social_presence_details",
+            "ai_brand_facts",
             "overall_score",
         ]
 
@@ -146,15 +148,21 @@ class AnalysisRunDetailSerializer(serializers.ModelSerializer):
     recommendations = RecommendationSerializer(many=True, read_only=True)
     ai_probes = AIVisibilityProbeSerializer(many=True, read_only=True)
     brand_visibility = BrandVisibilitySerializer(read_only=True)
+    display_brand_name = serializers.SerializerMethodField()
 
     class Meta:
         model = AnalysisRun
         fields = [
-            "id", "slug", "url", "brand_name", "country", "email", "run_type", "status", "progress",
+            "id", "slug", "url", "brand_name", "display_brand_name", "country", "email", "run_type", "status", "progress",
             "composite_score", "error_message", "created_at", "updated_at",
             "page_scores", "competitors", "recommendations", "ai_probes",
             "brand_visibility", "llm_logs",
         ]
+
+    def get_display_brand_name(self, obj):
+        from apps.analyzer.pipeline.brand_naming import visibility_brand_label
+
+        return visibility_brand_label(getattr(obj, "url", "") or "", getattr(obj, "brand_name", "") or "")
 
 
 class StartAnalysisSerializer(serializers.Serializer):

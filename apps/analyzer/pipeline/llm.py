@@ -21,12 +21,14 @@ MODELS = {
     "gpt": "openai/gpt-4o-mini",
     "claude": "anthropic/claude-3.5-haiku",
     "gemini": "google/gemini-2.0-flash-001",
+    "perplexity": "perplexity/sonar",
 }
 
 MODEL_LABELS = {
     "openai/gpt-4o-mini": "GPT-4o Mini",
     "anthropic/claude-3.5-haiku": "Claude 3.5 Haiku",
     "google/gemini-2.0-flash-001": "Gemini 2.0 Flash",
+    "perplexity/sonar": "Perplexity Sonar",
     "gemini-direct": "Gemini 2.0 Flash (Direct)",
 }
 
@@ -296,6 +298,10 @@ def ask_multiple_llms(prompt: str, providers: list[str] | None = None, purpose: 
     if providers is None:
         providers = list(MODELS.keys())
 
+    providers = [p for p in providers if p in MODELS]
+    if not providers:
+        return {}
+
     # If only direct Gemini is available (no OpenRouter), just use that
     if not _get_openrouter_key():
         result = _call_gemini_direct(prompt, purpose)
@@ -307,7 +313,7 @@ def ask_multiple_llms(prompt: str, providers: list[str] | None = None, purpose: 
     def _call_provider(provider):
         return provider, ask_llm(prompt, preferred_provider=provider, purpose=purpose, max_tokens=max_tokens)
 
-    with ThreadPoolExecutor(max_workers=len(providers)) as executor:
+    with ThreadPoolExecutor(max_workers=max(1, len(providers))) as executor:
         futures = {executor.submit(_call_provider, p): p for p in providers}
         for future in as_completed(futures):
             try:

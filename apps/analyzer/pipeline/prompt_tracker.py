@@ -15,6 +15,7 @@ _ENGINE_MAP = {
     "gpt": "chatgpt",
     "claude": "claude",
     "gemini": "gemini",
+    "perplexity": "perplexity",
 }
 
 DEFAULT_RUNS = 3  # Fire each prompt N times to handle AI randomness
@@ -24,10 +25,10 @@ def _providers_and_google_from_plan_engines(allowed_engines: list[str] | None) -
     """
     Map PLAN_LIMITS engine ids to OpenRouter provider keys and whether to run Serper.
 
-    If allowed_engines is None, use full stack (gpt, claude, gemini + Google).
+    If allowed_engines is None, use full stack (gpt, claude, gemini, perplexity + Google).
     """
     if allowed_engines is None:
-        return (["gpt", "claude", "gemini"], True)
+        return (["gpt", "claude", "gemini", "perplexity"], True)
     s = {e.strip().lower() for e in allowed_engines if e}
     provs: list[str] = []
     if "chatgpt" in s:
@@ -36,9 +37,12 @@ def _providers_and_google_from_plan_engines(allowed_engines: list[str] | None) -
         provs.append("gemini")
     if "claude" in s:
         provs.append("claude")
-    if not provs:
-        provs = ["gpt"]
+    if "perplexity" in s:
+        provs.append("perplexity")
+    # Do not inject LLMs the plan did not ask for (e.g. Google-only plans).
     include_google = "google" in s
+    if not provs and not include_google:
+        provs = ["gemini"]
     return (provs, include_google)
 
 
@@ -280,16 +284,18 @@ def fire_prompt_across_engines(
     all_results = []
 
     for run_idx in range(runs):
-        try:
-            responses = ask_multiple_llms(
-                prompt_text,
-                providers=provider_keys,
-                purpose=f"Prompt Track (run {run_idx + 1}/{runs})",
-                max_tokens=512,
-            )
-        except Exception as exc:
-            logger.warning("fire_prompt run %d failed: %s", run_idx + 1, exc)
-            continue
+        responses: dict[str, str] = {}
+        if provider_keys:
+            try:
+                responses = ask_multiple_llms(
+                    prompt_text,
+                    providers=provider_keys,
+                    purpose=f"Prompt Track (run {run_idx + 1}/{runs})",
+                    max_tokens=512,
+                )
+            except Exception as exc:
+                logger.warning("fire_prompt run %d failed: %s", run_idx + 1, exc)
+                continue
 
         for provider_key, response_text in responses.items():
             engine = _ENGINE_MAP.get(provider_key, provider_key)

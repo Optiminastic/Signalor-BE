@@ -1870,8 +1870,14 @@ class ShareOfVoiceView(APIView):
     def get(self, request, slug):
         from django.shortcuts import get_object_or_404
         from django.db.models import Count, Q
+
         run = get_object_or_404(AnalysisRun, slug=slug)
-        engines = [e[0] for e in PromptResult.Engine.choices]
+        em = (run.email or "").strip()
+        valid_engine_keys = {e[0] for e in PromptResult.Engine.choices}
+        if is_plan_limits_enforcement_enabled() and em:
+            engines = [e for e in get_plan_limits(em)["engines"] if e in valid_engine_keys]
+        else:
+            engines = [e[0] for e in PromptResult.Engine.choices]
         data = []
         for engine in engines:
             qs = PromptResult.objects.filter(prompt_track__analysis_run=run, engine=engine)
@@ -1891,9 +1897,18 @@ class CitationTrendView(APIView):
         from django.db.models import Count, Q
         run = get_object_or_404(AnalysisRun, slug=slug)
 
+        em = (run.email or "").strip()
+        valid_engine_keys = {e[0] for e in PromptResult.Engine.choices}
+        if is_plan_limits_enforcement_enabled() and em:
+            allowed = [e for e in get_plan_limits(em)["engines"] if e in valid_engine_keys]
+        else:
+            allowed = None
+
+        base = PromptResult.objects.filter(prompt_track__analysis_run=run)
+        if allowed is not None:
+            base = base.filter(engine__in=allowed)
         qs = (
-            PromptResult.objects
-            .filter(prompt_track__analysis_run=run)
+            base
             .annotate(week_start=TruncWeek("checked_at"))
             .values("week_start", "engine")
             .annotate(

@@ -183,6 +183,16 @@ class BrandVisibility(models.Model):
     medium_details = models.JSONField(default=dict)
     web_mentions_score = models.FloatField(default=0)
     web_mentions_details = models.JSONField(default=dict)
+    social_presence_details = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Instagram/Facebook public metrics and derived presence scores",
+    )
+    ai_brand_facts = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="LLM-grounded notes on how AI may reflect the brand from visibility signals",
+    )
     overall_score = models.FloatField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 

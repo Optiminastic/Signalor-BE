@@ -12,7 +12,8 @@ from .models import (
     PromptTrack,
     PromptResult,
 )
-from .pipeline.brand_visibility import extract_brand_name, run_brand_visibility
+from .pipeline.brand_naming import visibility_brand_label
+from .pipeline.brand_visibility import run_brand_visibility
 from .pipeline.aggregator import compute_composite, compute_static_composite, detect_industry
 from .pipeline.ai_visibility import score_ai_visibility
 from .pipeline.competitors import discover_competitors
@@ -228,8 +229,8 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
     ai_vis_score, ai_vis_details, probes_data = 0.0, {}, []
     brand_vis_result = None
 
-    brand_name = run.brand_name or extract_brand_name(run.url)
-    if not run.brand_name and brand_name:
+    brand_name = visibility_brand_label(run.url, run.brand_name)
+    if run.brand_name != brand_name:
         run.brand_name = brand_name
         run.save(update_fields=["brand_name"])
 
@@ -468,9 +469,9 @@ def run_single_page_analysis(run_id: int):
 
         _update_status(run, AnalysisRun.Status.ANALYZING, 30)
 
-        # Derive brand name
-        brand_name = run.brand_name or extract_brand_name(run.url)
-        if not run.brand_name and brand_name:
+        # Derive brand label from URL (corrects generic / mismatched stored names)
+        brand_name = visibility_brand_label(run.url, run.brand_name)
+        if run.brand_name != brand_name:
             run.brand_name = brand_name
             run.save(update_fields=["brand_name"])
 
