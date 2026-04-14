@@ -40,11 +40,11 @@ PLAN_LIMITS = {
     "business": {
         "label": "Max",
         "price_gbp": 59.99,
-        "max_projects": 4,
+        "max_projects": 6,
         "max_prompts": 200,
         "engines": ["chatgpt", "gemini", "perplexity", "claude", "google"],
         "features": [
-            "4 projects",
+            "6 projects",
             "Up to 200 prompts",
             "All AI engines including Claude",
             "Everything in Pro",
