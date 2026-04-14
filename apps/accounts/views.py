@@ -17,6 +17,44 @@ from datetime import timedelta
 
 from .models import Subscription, PLAN_LIMITS
 from .subscription_utils import is_internal_email
+from dodopayments import AuthenticationError, PermissionDeniedError
+
+from .dodo_env import (
+    dodo_live_mode_enabled,
+    dodo_mode_public,
+    normalized_dodo_api_key,
+)
+
+
+def _dodo_opposite_mode_hint() -> str:
+    """
+    If checkout failed with 401 in the configured mode, probe the other Dodo environment
+    with the same key (read-only products.list). When that succeeds, tell the user to flip
+    DODO_LIVE_MODE — common misconfiguration (test key + live mode).
+    """
+    from dodopayments import AuthenticationError, DodoPayments
+
+    key = normalized_dodo_api_key()
+    if not key:
+        return ""
+    try:
+        if dodo_live_mode_enabled():
+            alt = DodoPayments(bearer_token=key, environment="test_mode")
+            next(iter(alt.products.list(page_size=1)), None)
+            return (
+                " This key works in Dodo TEST mode. Set DODO_LIVE_MODE=false and use "
+                "product ids from the Test dashboard (or switch to a Live secret key)."
+            )
+        alt = DodoPayments(bearer_token=key, environment="live_mode")
+        next(iter(alt.products.list(page_size=1)), None)
+        return (
+            " This key works in Dodo LIVE mode. Set DODO_LIVE_MODE=true and use "
+            "product ids from the Live dashboard (or switch to a Test secret key)."
+        )
+    except AuthenticationError:
+        return ""
+    except Exception:
+        return ""
 from .dodo_invoice import extract_payment_id_from_webhook, fetch_payment_invoice_pdf
 
 logger = logging.getLogger("apps")
@@ -25,25 +63,20 @@ FRONTEND_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000").rstrip("/
 
 
 def _get_dodo():
-    """Initialize Dodo Payments client."""
+    """Initialize Dodo Payments client (official SDK uses environment= test_mode | live_mode)."""
     from dodopayments import DodoPayments
-    key = os.getenv("DODO_API_KEY", "")
+
+    key = normalized_dodo_api_key()
     if not key:
         return None
-    is_live = os.getenv("DODO_LIVE_MODE", "false").lower() in ("true", "1", "yes")
-    return DodoPayments(bearer_token=key, live_mode=is_live)
+    environment = "live_mode" if dodo_live_mode_enabled() else "test_mode"
+    return DodoPayments(bearer_token=key, environment=environment)
 
 
 class CreateCheckoutSessionView(APIView):
     """POST /api/payments/create-checkout/"""
-    permission_classes = [AllowAny]
 
-    # Map plan names to Dodo product IDs (set via env vars)
-    PLAN_PRODUCT_MAP = {
-        "starter": os.getenv("DODO_PRODUCT_ID_STARTER", os.getenv("DODO_PRODUCT_ID", "")),
-        "pro": os.getenv("DODO_PRODUCT_ID_PRO", ""),
-        "business": os.getenv("DODO_PRODUCT_ID_BUSINESS", ""),
-    }
+    permission_classes = [AllowAny]
 
     def post(self, request):
         email = request.data.get("email", "").lower().strip()
@@ -59,38 +92,87 @@ class CreateCheckoutSessionView(APIView):
         if not dodo:
             return Response({"error": "Payment system not configured."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        product_id = self.PLAN_PRODUCT_MAP.get(plan, "")
+        product_map = {
+            "starter": os.getenv("DODO_PRODUCT_ID_STARTER", os.getenv("DODO_PRODUCT_ID", "")).strip(),
+            "pro": os.getenv("DODO_PRODUCT_ID_PRO", "").strip(),
+            "business": os.getenv("DODO_PRODUCT_ID_BUSINESS", "").strip(),
+        }
+        product_id = product_map.get(plan, "")
         if not product_id:
             return Response({"error": f"Product not configured for {plan} plan."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # Get or create subscription record
         sub, _ = Subscription.objects.get_or_create(email=email)
 
         try:
-            subscription = dodo.subscriptions.create(
+            # Current Dodo Python SDK: checkout_sessions (not subscriptions.create with payment_link).
+            checkout_session = dodo.checkout_sessions.create(
+                product_cart=[{"product_id": product_id, "quantity": 1}],
+                return_url=f"{FRONTEND_URL}/payments/success",
                 customer={
                     "email": email,
-                    "name": email.split("@")[0],
+                    "name": email.split("@")[0].replace(".", " ").title() or "Customer",
                 },
-                product_id=product_id,
-                return_url=f"{FRONTEND_URL}/payments/success",
-                metadata={
-                    "email": email,
-                    "plan": plan,
-                },
+                metadata={"email": email, "plan": plan},
             )
-
-            # Store Dodo IDs and plan
-            if hasattr(subscription, "customer") and subscription.customer:
-                sub.payment_customer_id = getattr(subscription.customer, "customer_id", "") or ""
-            sub.payment_subscription_id = subscription.subscription_id or ""
             sub.plan = plan
-            sub.save(update_fields=["payment_customer_id", "payment_subscription_id", "plan"])
+            sub.save(update_fields=["plan"])
 
-            return Response({"checkout_url": subscription.payment_link})
+            checkout_url = getattr(checkout_session, "checkout_url", None) or getattr(
+                checkout_session, "url", None
+            )
+            if not checkout_url:
+                logger.error("Dodo checkout session missing checkout_url: %s", checkout_session)
+                return Response(
+                    {"error": "Checkout session created but no redirect URL returned."},
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+
+            return Response({"checkout_url": checkout_url})
+        except AuthenticationError:
+            mode = dodo_mode_public()
+            diag = _dodo_opposite_mode_hint()
+            logger.warning(
+                "Dodo checkout 401: key/write-access/mode mismatch (dodo_mode=%s)",
+                mode,
+            )
+            return Response(
+                {
+                    "error": (
+                        "Dodo returned 401 (unauthorized). Use a secret API key from the "
+                        f"same Dodo dashboard mode as this server ({mode}): "
+                        "Developer → API Keys, with write access enabled. "
+                        "Set DODO_API_KEY or DODO_PAYMENTS_API_KEY to the raw token only (no 'Bearer '). "
+                        "Product ids (DODO_PRODUCT_ID_*) must exist in that same mode. "
+                        "Restart Django after editing ranking-be/.env."
+                        + diag
+                    ),
+                    "dodo_mode": mode,
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except PermissionDeniedError as e:
+            mode = dodo_mode_public()
+            logger.warning("Dodo checkout 403: likely read-only API key (%s)", e)
+            return Response(
+                {
+                    "error": (
+                        "Dodo returned 403 (forbidden). The API key may be read-only. "
+                        "Create a new key in Developer → API Keys with write access enabled, "
+                        "then update DODO_API_KEY in ranking-be/.env and restart Django."
+                    ),
+                    "dodo_mode": mode,
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
         except Exception as e:
             logger.exception("Dodo checkout error")
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response(
+                {
+                    "error": str(e),
+                    "dodo_mode": dodo_mode_public(),
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 
 class SubscriptionStatusView(APIView):

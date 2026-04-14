@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import logging
-import os
 
 import requests
+
+from .dodo_env import dodo_live_mode_enabled, normalized_dodo_api_key
 
 logger = logging.getLogger("apps")
 
 
 def dodo_api_base() -> str:
-    live = os.getenv("DODO_LIVE_MODE", "false").lower() in ("true", "1", "yes")
-    return "https://live.dodopayments.com" if live else "https://test.dodopayments.com"
+    return (
+        "https://live.dodopayments.com"
+        if dodo_live_mode_enabled()
+        else "https://test.dodopayments.com"
+    )
 
 
 def _scan_payment_id_dict(data: dict) -> str:
@@ -52,7 +56,7 @@ def fetch_payment_invoice_pdf(payment_id: str) -> tuple[bytes | None, str | None
     GET /invoices/payments/{payment_id} → application/pdf
     Returns (pdf_bytes, error_tag).
     """
-    key = os.getenv("DODO_API_KEY", "").strip()
+    key = normalized_dodo_api_key()
     if not key or not payment_id:
         return None, "not_configured"
     base = dodo_api_base().rstrip("/")
