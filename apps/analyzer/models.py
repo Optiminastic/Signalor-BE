@@ -179,8 +179,6 @@ class BrandVisibility(models.Model):
     google_details = models.JSONField(default=dict)
     reddit_score = models.FloatField(default=0)
     reddit_details = models.JSONField(default=dict)
-    medium_score = models.FloatField(default=0)
-    medium_details = models.JSONField(default=dict)
     web_mentions_score = models.FloatField(default=0)
     web_mentions_details = models.JSONField(default=dict)
     social_presence_details = models.JSONField(
@@ -235,7 +233,6 @@ class UserAction(models.Model):
         
         # Brand actions
         POST_REDDIT = "post_reddit", "Post on Reddit"
-        POST_MEDIUM = "post_medium", "Publish on Medium"
         BUILD_BACKLINKS = "build_backlinks", "Build Backlinks"
     
     class ActionStatus(models.TextChoices):

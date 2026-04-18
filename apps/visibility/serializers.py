@@ -19,7 +19,6 @@ class VisibilityCheckDetailSerializer(serializers.ModelSerializer):
             "id", "brand_name", "brand_url", "email", "status", "progress",
             "google_score", "google_details",
             "reddit_score", "reddit_details",
-            "medium_score", "medium_details",
             "overall_score", "error_message",
             "created_at", "updated_at",
         ]

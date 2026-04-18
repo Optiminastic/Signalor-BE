@@ -570,7 +570,7 @@ RECOMMENDATION_RULES = {
                   "• Submit to HARO (Help A Reporter Out)\n"
                   "• Contribute guest posts to industry blogs\n"
                   "• Issue press releases for milestones\n\n"
-                  "STEP 4 — Post on Reddit and Medium (see other recommendations)\n\n"
+                  "STEP 4 — Post on Reddit (see other recommendations)\n\n"
                   "PRO TIP: AI models update knowledge every few weeks. Changes you make today can appear in AI responses within 2-4 weeks.",
         "impact_estimate": "Could improve entity + AI visibility score by ~20 points",
         "category": "entity",
@@ -618,7 +618,7 @@ RECOMMENDATION_RULES = {
         "category": "entity",
     },
 
-    # ── Community Presence (Reddit & Medium) ──────────────────────────────
+    # ── Community Presence (Reddit) ───────────────────────────────────────
     "no_reddit_presence": {
         "pillar": "entity",
         "priority": "high",
@@ -638,30 +638,6 @@ RECOMMENDATION_RULES = {
                   "• Add more context and data when asked\n\n"
                   "PRO TIP: Answer questions in relevant threads where your product/expertise is a natural fit. This builds organic mentions that AI models pick up.",
         "impact_estimate": "Could improve entity score by ~10 points + ongoing AI citations",
-        "category": "entity",
-    },
-    "no_medium_presence": {
-        "pillar": "entity",
-        "priority": "high",
-        "title": "Publish on Medium for AI Discovery",
-        "description": "No Medium presence detected. Medium articles rank highly in AI training data and search results. Publishing thought leadership on Medium creates authoritative backlinks and AI-indexable content about your brand.",
-        "action": "Publish on Medium to create AI-discoverable brand content:\n\n"
-                  "STEP 1 — Create a Medium account:\n"
-                  "• Use your real name + company title for E-E-A-T\n"
-                  "• Add a bio mentioning your brand and expertise\n\n"
-                  "STEP 2 — Write a high-value article:\n"
-                  "• Title: \"[Year] Guide to [Your Topic] — What Actually Works\"\n"
-                  "• Include statistics, citations, and data points\n"
-                  "• Mention your brand naturally (2-3 times max)\n"
-                  "• Add relevant tags to reach the right audience\n\n"
-                  "STEP 3 — Submit to publications:\n"
-                  "• Submit to relevant Medium publications (Towards Data Science, Better Programming, The Startup, etc.)\n"
-                  "• Publications amplify reach 5-10x\n\n"
-                  "STEP 4 — Cross-link:\n"
-                  "• Link from Medium article to your website\n"
-                  "• Link from your website to the Medium article\n"
-                  "• This creates a citation loop that AI models recognize",
-        "impact_estimate": "Could improve entity score by ~10 points + brand authority",
         "category": "entity",
     },
 
@@ -709,30 +685,6 @@ RECOMMENDATION_RULES = {
                   "• Share industry insights monthly\n"
                   "• AI models re-index Reddit frequently\n\n"
                   "PRO TIP: A single popular Reddit thread mentioning your brand can appear in AI responses for months.",
-        "impact_estimate": "Could improve AI visibility score by ~10 points",
-        "category": "ai_visibility",
-    },
-    "no_medium_ai_presence": {
-        "pillar": "ai_visibility",
-        "priority": "high",
-        "title": "Publish on Medium for AI Citations",
-        "description": "Your brand has no Medium presence. Medium articles are heavily indexed by AI models and frequently cited in AI-generated responses. This is one of the fastest ways to get into AI search results.",
-        "action": "STEP 1 — Create your Medium profile:\n"
-                  "• Use your real name + company credentials\n"
-                  "• Write a bio that establishes expertise\n\n"
-                  "STEP 2 — Publish your first article:\n"
-                  "• Title: '[Year] Guide to [Your Topic]'\n"
-                  "• Include statistics, citations, and expert insights\n"
-                  "• Mention your brand naturally 2-3 times\n"
-                  "• Add 5+ relevant tags\n\n"
-                  "STEP 3 — Submit to a publication:\n"
-                  "• 'The Startup', 'Better Programming', 'Towards Data Science'\n"
-                  "• Publications multiply reach 5-10x\n\n"
-                  "STEP 4 — Cross-link for maximum AI impact:\n"
-                  "• Link Medium article → your website\n"
-                  "• Link your website → Medium article\n"
-                  "• Add Medium link to your social profiles\n\n"
-                  "PRO TIP: Medium articles rank on Google within days, and AI models index them within 2-4 weeks.",
         "impact_estimate": "Could improve AI visibility score by ~10 points",
         "category": "ai_visibility",
     },
@@ -1064,11 +1016,9 @@ IMPACT_SCORES = {
     "no_social_profiles": 40,
     # Community presence (entity sub-actions)
     "no_reddit_presence": 68,   # Reddit indexed by AI heavily
-    "no_medium_presence": 64,   # Medium = brand authority
     # AI Visibility — Web Presence
     "not_in_google_ai": 82,     # Google AI Overview is #1 discovery
     "no_reddit_ai_presence": 72, # Reddit feeds AI responses
-    "no_medium_ai_presence": 66, # Medium = AI-indexed authority
     "weak_brand_site": 48,       # Brand site quality matters
     # Crawl failures
     "crawl_blocked_403": 98,    # Can't be indexed at all
@@ -1105,8 +1055,7 @@ MAX_PER_PILLAR = 3
 
 # Off-page findings — filtered out, only on-page + technical shown
 OFFPAGE_FINDINGS = {
-    "brand_not_in_ai", "no_medium_ai_presence", "no_medium_presence",
-    "no_reddit_ai_presence", "no_reddit_presence", "no_social_profiles",
+    "brand_not_in_ai", "no_reddit_ai_presence", "no_reddit_presence", "no_social_profiles",
     "no_wikipedia_presence", "not_in_google_ai", "weak_brand_site",
 }
 OFFPAGE_PILLARS = {"entity", "ai_visibility"}
@@ -1116,8 +1065,8 @@ MANUAL_FINDINGS = {
     "no_sitemap", "no_https", "slow_load_time", "crawl_failed",
     "crawl_blocked_403", "crawl_timeout",
     "brand_not_in_ai", "no_wikipedia_presence", "no_social_profiles",
-    "no_reddit_presence", "no_medium_presence",
-    "not_in_google_ai", "no_reddit_ai_presence", "no_medium_ai_presence",
+    "no_reddit_presence",
+    "not_in_google_ai", "no_reddit_ai_presence",
     "weak_brand_site",
 }
 
@@ -1618,7 +1567,7 @@ STEP_META = {
             {"n": 1, "title": "Get listed on directories", "detail": "Submit to Product Hunt, G2, Capterra, Crunchbase, and AlternativeTo.", "xp": 25},
             {"n": 2, "title": "Create comparison content", "detail": "Write blog posts: '[Your Brand] vs [Competitor]'. AI models heavily cite comparison content.", "xp": 25},
             {"n": 3, "title": "Get press mentions", "detail": "Submit to HARO, contribute guest posts, issue press releases for milestones.", "xp": 25},
-            {"n": 4, "title": "Post on Reddit and Medium", "detail": "Create valuable content mentioning your brand on both platforms.", "xp": 25},
+            {"n": 4, "title": "Post on Reddit", "detail": "Create valuable content mentioning your brand on Reddit.", "xp": 25},
         ],
     },
     "no_social_profiles": {
@@ -1647,15 +1596,6 @@ STEP_META = {
             {"n": 4, "title": "Answer existing questions", "detail": "Find threads where your expertise is relevant and provide helpful answers.", "xp": 10},
         ],
     },
-    "no_medium_presence": {
-        "xp_reward": 55, "difficulty": "medium", "estimated_minutes": 45,
-        "steps": [
-            {"n": 1, "title": "Create Medium account", "detail": "Use your real name + company title. Write a bio mentioning your brand.", "xp": 10},
-            {"n": 2, "title": "Write a high-value article", "detail": "Title: '[Year] Guide to [Your Topic]'. Include stats, citations, and data.", "xp": 20},
-            {"n": 3, "title": "Submit to a publication", "detail": "Submit to 'The Startup', 'Better Programming', or your niche's top publication.", "xp": 15},
-            {"n": 4, "title": "Cross-link both ways", "detail": "Link from Medium → your site AND your site → Medium article.", "xp": 10},
-        ],
-    },
 
     # ── AI Visibility ──
     "not_in_google_ai": {
@@ -1673,15 +1613,6 @@ STEP_META = {
             {"n": 2, "title": "Start contributing value", "detail": "Answer questions with genuine expertise. Build karma and reputation.", "xp": 15},
             {"n": 3, "title": "Create a showcase post", "detail": "Share genuine data: 'How we solved [problem] — lessons learned'.", "xp": 20},
             {"n": 4, "title": "Maintain weekly presence", "detail": "Comment on relevant threads weekly. AI re-indexes Reddit frequently.", "xp": 10},
-        ],
-    },
-    "no_medium_ai_presence": {
-        "xp_reward": 50, "difficulty": "medium", "estimated_minutes": 45,
-        "steps": [
-            {"n": 1, "title": "Create your profile", "detail": "Use real name + credentials. Bio should establish expertise.", "xp": 10},
-            {"n": 2, "title": "Publish your first article", "detail": "Include statistics, citations, expert insights. Mention brand 2-3 times naturally.", "xp": 20},
-            {"n": 3, "title": "Submit to a publication", "detail": "Publications multiply reach 5-10x.", "xp": 10},
-            {"n": 4, "title": "Cross-link for AI impact", "detail": "Link Medium → your site. Link your site → Medium. Add to social profiles.", "xp": 10},
         ],
     },
     "weak_brand_site": {

@@ -30,7 +30,6 @@ def run_ai_brand_perception(
     brand_url: str,
     google_details: dict,
     reddit_details: dict,
-    medium_details: dict,
     web_mentions_details: dict,
     *,
     stored_brand_name: str = "",
@@ -53,7 +52,6 @@ def run_ai_brand_perception(
         "user_supplied_brand_name": (stored_brand_name or "").strip(),
         "google_visibility": google_details if isinstance(google_details, dict) else {},
         "reddit_visibility": reddit_details if isinstance(reddit_details, dict) else {},
-        "medium_visibility": medium_details if isinstance(medium_details, dict) else {},
         "web_mentions": web_mentions_details if isinstance(web_mentions_details, dict) else {},
     }
     context = _json_clip(bundle)
@@ -66,7 +64,7 @@ STRICT GROUNDING — violations make the answer useless:
 - Do NOT name any social platform (Instagram, Facebook, X/Twitter, LinkedIn, YouTube, TikTok, Pinterest, etc.) unless that exact word OR its domain (e.g. instagram.com, facebook.com) appears inside the JSON string values (not in your head).
 - Do NOT state indexed page counts, follower counts, revenue, awards, or rankings unless that exact number or claim appears in the JSON.
 - Do NOT claim "strong presence", "well known", or "leader" unless the JSON explicitly supports it with concrete fields (e.g. scores, mention counts, snippets).
-- Every fact must be a direct paraphrase of something inferable from a specific subsection: google_visibility, reddit_visibility, medium_visibility, or web_mentions. If a subsection is empty or only errors, say signals are missing for that channel.
+- Every fact must be a direct paraphrase of something inferable from a specific subsection: google_visibility, reddit_visibility, or web_mentions. If a subsection is empty or only errors, say signals are missing for that channel.
 - If the JSON is mostly empty or LLM-estimated, facts must say uncertainty is high and avoid specific platform lists.
 
 Return ONLY valid JSON (no markdown):

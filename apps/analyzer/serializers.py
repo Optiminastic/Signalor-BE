@@ -34,7 +34,7 @@ class RecommendationSerializer(serializers.ModelSerializer):
     MANUAL_TITLE_KEYWORDS = [
         "sitemap", "enable https", "page load speed", "improve page load",
         "crawler blocked", "blocks automated", "too slow to crawl",
-        "wikipedia", "reddit", "medium", "google ai overview",
+        "wikipedia", "reddit", "google ai overview",
         "brand into ai", "social profile", "brand website signal",
     ]
 
@@ -112,7 +112,6 @@ class BrandVisibilitySerializer(serializers.ModelSerializer):
         fields = [
             "google_score", "google_details",
             "reddit_score", "reddit_details",
-            "medium_score", "medium_details",
             "web_mentions_score", "web_mentions_details",
             "social_presence_details",
             "ai_brand_facts",

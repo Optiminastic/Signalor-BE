@@ -119,7 +119,7 @@ def _score_identity(crawl: CrawlResult) -> tuple[float, dict]:
 
     # 1c. Author has external presence — sameAs, LinkedIn, social links (5 pts)
     has_social = False
-    social_patterns = ["linkedin.com", "twitter.com", "x.com", "github.com", "medium.com"]
+    social_patterns = ["linkedin.com", "twitter.com", "x.com", "github.com"]
     # Check JSON-LD sameAs
     for script in soup.find_all("script", type="application/ld+json"):
         try:

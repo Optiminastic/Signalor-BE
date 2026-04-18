@@ -6,7 +6,6 @@ class VisibilityCheck(models.Model):
         PENDING = "pending"
         CHECKING_GOOGLE = "checking_google"
         CHECKING_REDDIT = "checking_reddit"
-        CHECKING_MEDIUM = "checking_medium"
         SCORING = "scoring"
         COMPLETE = "complete"
         FAILED = "failed"
@@ -26,10 +25,6 @@ class VisibilityCheck(models.Model):
     # Reddit
     reddit_score = models.FloatField(null=True, blank=True)
     reddit_details = models.JSONField(default=dict, blank=True)
-
-    # Medium
-    medium_score = models.FloatField(null=True, blank=True)
-    medium_details = models.JSONField(default=dict, blank=True)
 
     # Overall
     overall_score = models.FloatField(null=True, blank=True)

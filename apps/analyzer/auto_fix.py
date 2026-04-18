@@ -103,7 +103,7 @@ def _detect_fix_type(recommendation: Recommendation) -> str:
     manual_keywords = [
         "sitemap", "https", "ssl", "page load speed", "page speed",
         "crawler blocked", "403", "too slow to crawl", "timeout",
-        "wikipedia", "reddit", "medium", "google ai overview",
+        "wikipedia", "reddit", "google ai overview",
         "brand into ai", "social profile", "brand website signal",
     ]
     for kw in manual_keywords:
@@ -588,15 +588,14 @@ def _get_manual_walkthrough(recommendation: Recommendation, provider: str) -> st
             "The more consistent, authoritative profiles you have, the more confidently AI will recommend you."
         )
 
-    if "wikipedia" in title_lower or "reddit" in title_lower or "medium" in title_lower:
+    if "wikipedia" in title_lower or "reddit" in title_lower:
         return (
             "Get your brand mentioned on high-authority external platforms.\n\n"
             "How to fix:\n"
-            "1. Write thought-leadership articles on Medium about your industry\n"
-            "2. Participate authentically in relevant Reddit communities (don't spam)\n"
-            "3. Get featured in industry blogs, podcasts, or review sites\n"
-            "4. Contribute expert answers on Quora related to your niche\n"
-            "5. If your brand is notable enough, create a Wikipedia article (strict notability rules apply)\n\n"
+            "1. Participate authentically in relevant Reddit communities (don't spam)\n"
+            "2. Get featured in industry blogs, podcasts, or review sites\n"
+            "3. Contribute expert answers on Quora related to your niche\n"
+            "4. If your brand is notable enough, create a Wikipedia article (strict notability rules apply)\n\n"
             "Tip: AI models heavily weight mentions from trusted, high-authority sources. "
             "A single mention on a .edu, .gov, or major publication can significantly boost your AI visibility."
         )

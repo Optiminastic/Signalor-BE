@@ -1550,7 +1550,7 @@ class QuickActionView(APIView):
             "eeat": "add_author",
             "entity": "post_reddit",
             "content": "add_faq",
-            "ai_visibility": "post_medium",
+            "ai_visibility": "post_reddit",
         }
 
         action_type = action_type_map.get(recommendation.category, "add_faq")
@@ -1621,7 +1621,7 @@ class BulkCreateUserActionView(APIView):
             "eeat": "add_author",
             "entity": "post_reddit",
             "content": "add_faq",
-            "ai_visibility": "post_medium",
+            "ai_visibility": "post_reddit",
         }
 
         created_actions = []
@@ -1670,7 +1670,7 @@ class BulkCreateUserActionView(APIView):
                     action_type = "add_robots"
                 elif "author" in title.lower() or "e-e-a-t" in title.lower():
                     action_type = "add_author"
-                elif "reddit" in title.lower() or "medium" in title.lower():
+                elif "reddit" in title.lower():
                     action_type = "post_reddit"
             
             points = priority_points.get(priority, 10)

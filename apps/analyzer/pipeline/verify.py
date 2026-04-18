@@ -77,19 +77,16 @@ FINDING_TO_PILLAR = {
     "no_social_profiles": "entity",
     "no_wikipedia_presence": "entity",
     "no_reddit_presence": "entity",
-    "no_medium_presence": "entity",
     # AI Visibility
     "not_in_google_ai": "ai_visibility",
     "no_reddit_ai_presence": "ai_visibility",
-    "no_medium_ai_presence": "ai_visibility",
     "weak_brand_site": "ai_visibility",
 }
 
 # Findings that can't be verified by re-crawl (require external checks)
 SKIP_RECRAWL = {
     "brand_not_in_ai", "no_wikipedia_presence", "no_reddit_presence",
-    "no_medium_presence", "not_in_google_ai", "no_reddit_ai_presence",
-    "no_medium_ai_presence", "weak_brand_site",
+    "not_in_google_ai", "no_reddit_ai_presence", "weak_brand_site",
 }
 
 

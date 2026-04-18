@@ -4,7 +4,6 @@ import threading
 from .models import VisibilityCheck
 from .pipeline.google_check import check_google
 from .pipeline.reddit_check import check_reddit
-from .pipeline.medium_check import check_medium
 
 logger = logging.getLogger("apps")
 
@@ -27,7 +26,7 @@ def run_visibility_check(check_id: int):
         brand_name = check.brand_name
         brand_url = check.brand_url
 
-        # Phase 1: Google (10-35%)
+        # Phase 1: Google (10-50%)
         _update_status(check, VisibilityCheck.Status.CHECKING_GOOGLE, 10)
         try:
             google_score, google_details = check_google(brand_name, brand_url)
@@ -37,13 +36,13 @@ def run_visibility_check(check_id: int):
 
         check.google_score = google_score
         check.google_details = google_details
-        check.progress = 35
+        check.progress = 50
         check.save(update_fields=[
             "google_score", "google_details", "progress", "updated_at",
         ])
 
-        # Phase 2: Reddit (40-60%)
-        _update_status(check, VisibilityCheck.Status.CHECKING_REDDIT, 40)
+        # Phase 2: Reddit (55-85%)
+        _update_status(check, VisibilityCheck.Status.CHECKING_REDDIT, 55)
         try:
             reddit_score, reddit_details = check_reddit(brand_name)
         except Exception as exc:
@@ -52,34 +51,18 @@ def run_visibility_check(check_id: int):
 
         check.reddit_score = reddit_score
         check.reddit_details = reddit_details
-        check.progress = 60
+        check.progress = 85
         check.save(update_fields=[
             "reddit_score", "reddit_details", "progress", "updated_at",
         ])
 
-        # Phase 3: Medium (65-85%)
-        _update_status(check, VisibilityCheck.Status.CHECKING_MEDIUM, 65)
-        try:
-            medium_score, medium_details = check_medium(brand_name)
-        except Exception as exc:
-            logger.warning("Medium check failed for %d: %s", check_id, exc)
-            medium_score, medium_details = 0.0, {"error": str(exc)}
-
-        check.medium_score = medium_score
-        check.medium_details = medium_details
-        check.progress = 85
-        check.save(update_fields=[
-            "medium_score", "medium_details", "progress", "updated_at",
-        ])
-
-        # Phase 4: Overall scoring (90-100%)
+        # Phase 3: Overall scoring (90-100%)
         _update_status(check, VisibilityCheck.Status.SCORING, 90)
 
-        # Weighted: Google 50%, Reddit 30%, Medium 20%
+        # Weighted: Google 62%, Reddit 38%
         overall = (
-            (google_score or 0) * 0.50
-            + (reddit_score or 0) * 0.30
-            + (medium_score or 0) * 0.20
+            (google_score or 0) * 0.62
+            + (reddit_score or 0) * 0.38
         )
 
         check.overall_score = round(overall, 1)
