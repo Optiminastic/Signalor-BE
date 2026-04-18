@@ -1785,7 +1785,12 @@ class PromptListCreateView(APIView):
     def get(self, request, slug):
         from django.shortcuts import get_object_or_404
         run = get_object_or_404(AnalysisRun, slug=slug)
-        tracks = run.prompt_tracks.prefetch_related("results").order_by("-score", "-created_at")
+        tracks = (
+            run.prompt_tracks
+               .filter(deleted_at__isnull=True)
+               .prefetch_related("results")
+               .order_by("-score", "-created_at")
+        )
         serializer = PromptTrackSerializer(tracks, many=True)
         return Response(serializer.data)
 
@@ -1831,7 +1836,9 @@ class RecheckPromptView(APIView):
         from django.shortcuts import get_object_or_404
         import threading
         run = get_object_or_404(AnalysisRun, slug=slug)
-        track = get_object_or_404(PromptTrack, pk=track_id, analysis_run=run)
+        track = get_object_or_404(
+            PromptTrack, pk=track_id, analysis_run=run, deleted_at__isnull=True
+        )
 
         brand_name = run.brand_name or run.url
         brand_url = run.url
@@ -1846,6 +1853,28 @@ class RecheckPromptView(APIView):
         return Response({"status": "rechecking"}, status=status.HTTP_202_ACCEPTED)
 
 
+class PromptDeleteView(APIView):
+    """DELETE /runs/s/<slug>/prompts/<track_id>/ — soft-delete a tracked prompt.
+
+    The row is retained (flagged with `deleted_at`) so the user's historical
+    count still applies toward their plan's `max_prompts`. This prevents
+    deleting-and-re-adding to bypass plan limits. Usage/billing endpoints
+    also count soft-deleted rows.
+    """
+    permission_classes = [AllowAny]
+
+    def delete(self, request, slug, track_id):
+        from django.shortcuts import get_object_or_404
+        from django.utils import timezone
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        track = get_object_or_404(
+            PromptTrack, pk=track_id, analysis_run=run, deleted_at__isnull=True
+        )
+        track.deleted_at = timezone.now()
+        track.save(update_fields=["deleted_at"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class RecheckAllPromptsView(APIView):
     """POST /runs/s/<slug>/recheck-all/ — re-fire every prompt for this run."""
     permission_classes = [AllowAny]
@@ -1854,7 +1883,7 @@ class RecheckAllPromptsView(APIView):
         from django.shortcuts import get_object_or_404
         import threading
         run = get_object_or_404(AnalysisRun, slug=slug)
-        tracks = list(run.prompt_tracks.all())
+        tracks = list(run.prompt_tracks.filter(deleted_at__isnull=True))
 
         if not tracks:
             return Response({"status": "no_tracks", "count": 0})

@@ -629,6 +629,10 @@ class PromptTrack(models.Model):
     third_party_score = models.FloatField(default=0.0)      # Factor 5 — supplementary
 
     created_at = models.DateTimeField(auto_now_add=True)
+    # Soft-delete so that deleting a prompt does NOT free a plan-limit slot.
+    # Active (visible) prompts are those with deleted_at IS NULL; all rows
+    # still count toward `max_prompts` usage.
+    deleted_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"PromptTrack #{self.pk} — {self.prompt_text[:60]}"

@@ -32,6 +32,7 @@ from .views import (
     CitationTrendView,
     RecheckPromptView,
     RecheckAllPromptsView,
+    PromptDeleteView,
     GeneratePromptsView,
     # New features
     ScoreHistoryView,
@@ -56,6 +57,7 @@ urlpatterns = [
     path("runs/", AnalysisRunListView.as_view(), name="run-list"),
     path("runs/<int:run_id>/", AnalysisRunDetailView.as_view(), name="run-detail"),
     path("runs/s/<str:slug>/prompts/",                          PromptListCreateView.as_view(),   name="prompt-list-create"),
+    path("runs/s/<str:slug>/prompts/<int:track_id>/",          PromptDeleteView.as_view(),       name="prompt-delete"),
     path("runs/s/<str:slug>/prompts/<int:track_id>/recheck/",  RecheckPromptView.as_view(),      name="prompt-recheck"),
     path("runs/s/<str:slug>/recheck-all/",                     RecheckAllPromptsView.as_view(),  name="prompt-recheck-all"),
     path("runs/s/<str:slug>/share-of-voice/",                  ShareOfVoiceView.as_view(),       name="share-of-voice"),

@@ -64,8 +64,13 @@ class Command(BaseCommand):
         force_all = options["all"]
         workers = options["workers"]
 
-        # Build queryset
-        qs = PromptTrack.objects.select_related("analysis_run").prefetch_related("results")
+        # Build queryset (skip soft-deleted prompts — they shouldn't burn API calls)
+        qs = (
+            PromptTrack.objects
+                .filter(deleted_at__isnull=True)
+                .select_related("analysis_run")
+                .prefetch_related("results")
+        )
         if slug:
             try:
                 run = AnalysisRun.objects.get(slug=slug)
