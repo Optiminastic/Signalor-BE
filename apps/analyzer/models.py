@@ -55,6 +55,7 @@ class AnalysisRun(models.Model):
             models.Index(fields=["email"]),
             models.Index(fields=["status"]),
             models.Index(fields=["slug"]),
+            models.Index(fields=["email", "status"]),
         ]
 
     def save(self, *args, **kwargs):
@@ -614,11 +615,35 @@ ACTION_TEMPLATES = {
 
 
 class PromptTrack(models.Model):
+    class SearchIntent(models.TextChoices):
+        """Why the user is asking (GEO / prompt strategy)."""
+
+        BRAND = "brand", "Brand"
+        INFORMATIONAL = "informational", "Information"
+        TRANSACTIONAL = "transactional", "Transactional"
+
+    class PromptSurfaceType(models.TextChoices):
+        """Shape of the query vs brand & competition (classic AI-search buckets)."""
+
+        ORGANIC = "organic", "Organic"
+        BRANDED = "branded", "Brand"
+        COMPETITIVE = "competitive", "Competition"
+
     analysis_run = models.ForeignKey(
         AnalysisRun, on_delete=models.CASCADE, related_name="prompt_tracks"
     )
     prompt_text = models.TextField()
     is_custom = models.BooleanField(default=False)
+    intent = models.CharField(
+        max_length=20,
+        choices=SearchIntent.choices,
+        default=SearchIntent.INFORMATIONAL,
+    )
+    prompt_type = models.CharField(
+        max_length=20,
+        choices=PromptSurfaceType.choices,
+        default=PromptSurfaceType.ORGANIC,
+    )
     score = models.FloatField(default=0.0)
 
     # 5-Factor AI Visibility Ranking Scores (all 0.0–1.0)
@@ -636,6 +661,11 @@ class PromptTrack(models.Model):
 
     def __str__(self):
         return f"PromptTrack #{self.pk} — {self.prompt_text[:60]}"
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["analysis_run", "score", "created_at"]),
+        ]
 
 
 class PromptResult(models.Model):
@@ -667,6 +697,10 @@ class PromptResult(models.Model):
 
     class Meta:
         ordering = ["checked_at"]
+        indexes = [
+            models.Index(fields=["prompt_track", "engine"]),
+            models.Index(fields=["prompt_track", "brand_mentioned"]),
+        ]
 
     def __str__(self):
         return f"PromptResult [{self.engine}] {'✓' if self.brand_mentioned else '✗'} {self.sentiment}"

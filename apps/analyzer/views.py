@@ -1788,6 +1788,7 @@ class PromptListCreateView(APIView):
         tracks = (
             run.prompt_tracks
                .filter(deleted_at__isnull=True)
+               .select_related("analysis_run")
                .prefetch_related("results")
                .order_by("-score", "-created_at")
         )
@@ -1810,10 +1811,20 @@ class PromptListCreateView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        from .pipeline.prompt_tracker import classify_prompt_intent_and_type
+
+        brand_ctx = (run.brand_name or "").strip()
+        intent, prompt_type = classify_prompt_intent_and_type(
+            ser.validated_data["prompt_text"],
+            brand_ctx,
+            (run.url or "").strip(),
+        )
         track = PromptTrack.objects.create(
             analysis_run=run,
             prompt_text=ser.validated_data["prompt_text"],
             is_custom=True,
+            intent=intent,
+            prompt_type=prompt_type,
         )
 
         brand_name = run.brand_name or run.url
@@ -1826,6 +1837,19 @@ class PromptListCreateView(APIView):
         t.start()
 
         return Response(PromptTrackSerializer(track).data, status=status.HTTP_202_ACCEPTED)
+
+
+class PromptResultDetailView(APIView):
+    """GET /runs/s/<slug>/prompts/<track_id>/results/<result_id>/ — full response_text."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug, track_id, result_id):
+        from django.shortcuts import get_object_or_404
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        track = get_object_or_404(PromptTrack, pk=track_id, analysis_run=run)
+        result = get_object_or_404(PromptResult, pk=result_id, prompt_track=track)
+        from .serializers import PromptResultFullSerializer
+        return Response(PromptResultFullSerializer(result).data)
 
 
 class RecheckPromptView(APIView):

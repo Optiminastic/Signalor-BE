@@ -155,7 +155,7 @@ class AnalysisRunDetailSerializer(serializers.ModelSerializer):
             "id", "slug", "url", "brand_name", "display_brand_name", "country", "email", "run_type", "status", "progress",
             "composite_score", "error_message", "created_at", "updated_at",
             "page_scores", "competitors", "recommendations", "ai_probes",
-            "brand_visibility", "llm_logs",
+            "brand_visibility",
         ]
 
     def get_display_brand_name(self, obj):
@@ -391,6 +391,21 @@ class ActionStatsSerializer(serializers.Serializer):
 
 
 class PromptResultSerializer(serializers.ModelSerializer):
+    response_text = serializers.SerializerMethodField()
+
+    def get_response_text(self, obj):
+        text = obj.response_text or ""
+        return text[:500] if len(text) > 500 else text
+
+    class Meta:
+        model = PromptResult
+        fields = [
+            "id", "engine", "response_text", "brand_mentioned",
+            "sentiment", "confidence", "rank_position", "checked_at",
+        ]
+
+
+class PromptResultFullSerializer(serializers.ModelSerializer):
     class Meta:
         model = PromptResult
         fields = [
@@ -401,6 +416,8 @@ class PromptResultSerializer(serializers.ModelSerializer):
 
 class PromptTrackSerializer(serializers.ModelSerializer):
     results = PromptResultSerializer(many=True, read_only=True)
+    intent = serializers.SerializerMethodField()
+    prompt_type = serializers.SerializerMethodField()
     visibility_pct = serializers.SerializerMethodField()
     avg_position = serializers.SerializerMethodField()
     sentiment_label = serializers.SerializerMethodField()
@@ -417,13 +434,38 @@ class PromptTrackSerializer(serializers.ModelSerializer):
     class Meta:
         model = PromptTrack
         fields = [
-            "id", "prompt_text", "is_custom", "score", "created_at", "results",
+            "id", "prompt_text", "is_custom", "intent", "prompt_type", "score",
+            "created_at", "results",
             "visibility_pct", "avg_position", "sentiment_label", "ranking_label",
             "total_runs", "mentions",
             # 5-factor scores
             "factor_authority", "factor_content_quality", "factor_structural",
             "factor_semantic", "factor_third_party",
         ]
+
+    def _taxonomy(self, obj):
+        """Recompute from prompt + run so labels stay accurate when rules improve."""
+        if not hasattr(obj, "_taxonomy_cache"):
+            from .pipeline.prompt_tracker import classify_prompt_intent_and_type
+
+            run = getattr(obj, "analysis_run", None)
+            if run is None:
+                obj._taxonomy_cache = ("informational", "organic")
+            else:
+                brand = (getattr(run, "brand_name", None) or "").strip()
+                url = (getattr(run, "url", None) or "").strip()
+                obj._taxonomy_cache = classify_prompt_intent_and_type(
+                    obj.prompt_text,
+                    brand,
+                    url,
+                )
+        return obj._taxonomy_cache
+
+    def get_intent(self, obj):
+        return self._taxonomy(obj)[0]
+
+    def get_prompt_type(self, obj):
+        return self._taxonomy(obj)[1]
 
     def _score_data(self, obj):
         if not hasattr(obj, "_score_cache"):
