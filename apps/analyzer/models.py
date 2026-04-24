@@ -929,6 +929,7 @@ class BlogAutomationJob(models.Model):
 
 class ScheduledAnalysis(models.Model):
     class Frequency(models.TextChoices):
+        ONCE = "once"
         WEEKLY = "weekly"
         MONTHLY = "monthly"
 

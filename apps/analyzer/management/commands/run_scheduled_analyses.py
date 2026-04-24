@@ -66,12 +66,16 @@ class Command(BaseCommand):
         # Refresh from DB
         run.refresh_from_db()
 
-        # Update schedule
-        delta = timedelta(days=7) if schedule.frequency == "weekly" else timedelta(days=30)
+        # Update schedule — one-off runs deactivate; recurring reschedule.
         schedule.last_run_at = timezone.now()
         schedule.last_run_slug = run.slug
-        schedule.next_run_at = timezone.now() + delta
-        schedule.save(update_fields=["last_run_at", "last_run_slug", "next_run_at"])
+        if schedule.frequency == "once":
+            schedule.is_active = False
+            schedule.save(update_fields=["last_run_at", "last_run_slug", "is_active"])
+        else:
+            delta = timedelta(days=7) if schedule.frequency == "weekly" else timedelta(days=30)
+            schedule.next_run_at = timezone.now() + delta
+            schedule.save(update_fields=["last_run_at", "last_run_slug", "next_run_at"])
 
         # Send email digest
         if run.status == "complete":

@@ -2216,18 +2216,38 @@ class ScheduledAnalysisView(APIView):
         brand_name = request.data.get("brand_name", "").strip()
         frequency = request.data.get("frequency", "weekly")
         is_active = request.data.get("is_active", True)
+        run_at_raw = request.data.get("run_at")  # optional ISO datetime
 
         if not email or not org_id or not url:
             return Response({"error": "email, org_id, and url required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if frequency not in ("once", "weekly", "monthly"):
+            return Response({"error": "frequency must be once/weekly/monthly."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             org = Organization.objects.get(pk=org_id)
         except Organization.DoesNotExist:
             return Response({"error": "Organization not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        from .models import ScheduledAnalysis
-        delta = timedelta(days=7) if frequency == "weekly" else timedelta(days=30)
+        # Parse explicit run_at when provided, else derive from frequency
+        next_run_at = None
+        if run_at_raw:
+            from django.utils.dateparse import parse_datetime
+            parsed = parse_datetime(str(run_at_raw))
+            if not parsed:
+                return Response({"error": "run_at must be an ISO datetime."}, status=status.HTTP_400_BAD_REQUEST)
+            if timezone.is_naive(parsed):
+                parsed = timezone.make_aware(parsed, timezone.get_current_timezone())
+            if parsed <= timezone.now():
+                return Response({"error": "run_at must be in the future."}, status=status.HTTP_400_BAD_REQUEST)
+            next_run_at = parsed
+        else:
+            if frequency == "once":
+                return Response({"error": "run_at is required when frequency=once."}, status=status.HTTP_400_BAD_REQUEST)
+            delta = timedelta(days=7) if frequency == "weekly" else timedelta(days=30)
+            next_run_at = timezone.now() + delta
 
+        from .models import ScheduledAnalysis
         schedule, created = ScheduledAnalysis.objects.update_or_create(
             organization=org,
             email=email,
@@ -2236,7 +2256,7 @@ class ScheduledAnalysisView(APIView):
                 "brand_name": brand_name,
                 "frequency": frequency,
                 "is_active": is_active,
-                "next_run_at": timezone.now() + delta,
+                "next_run_at": next_run_at,
             },
         )
         from .serializers import ScheduledAnalysisSerializer
