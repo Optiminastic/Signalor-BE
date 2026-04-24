@@ -28,6 +28,7 @@ from .views import (
     BulkCreateUserActionView,
     # Prompt tracking views
     PromptListCreateView,
+    PromptResultDetailView,
     ShareOfVoiceView,
     CitationTrendView,
     CitationSourcesView,
@@ -49,6 +50,13 @@ from .views import (
     SitemapAuditStartView,
     SitemapAuditDetailView,
     AgentLogView,
+    # Schema watchtower
+    SchemaWatchStartView,
+    SchemaWatchDetailView,
+    # Rank tracker
+    RankAuditStartView,
+    RankAuditDetailView,
+    RankAuditRefreshQueryView,
 )
 
 app_name = "analyzer"
@@ -61,9 +69,14 @@ urlpatterns = [
     path("schedule/", ScheduledAnalysisView.as_view(), name="schedule"),
     path("runs/", AnalysisRunListView.as_view(), name="run-list"),
     path("runs/<int:run_id>/", AnalysisRunDetailView.as_view(), name="run-detail"),
-    path("runs/s/<str:slug>/prompts/",                          PromptListCreateView.as_view(),   name="prompt-list-create"),
-    path("runs/s/<str:slug>/prompts/<int:track_id>/",          PromptDeleteView.as_view(),       name="prompt-delete"),
-    path("runs/s/<str:slug>/prompts/<int:track_id>/recheck/",  RecheckPromptView.as_view(),      name="prompt-recheck"),
+    path("runs/s/<str:slug>/prompts/", PromptListCreateView.as_view(), name="prompt-list-create"),
+    path(
+        "runs/s/<str:slug>/prompts/<int:track_id>/results/<int:result_id>/",
+        PromptResultDetailView.as_view(),
+        name="prompt-result-detail",
+    ),
+    path("runs/s/<str:slug>/prompts/<int:track_id>/recheck/", RecheckPromptView.as_view(), name="prompt-recheck"),
+    path("runs/s/<str:slug>/prompts/<int:track_id>/", PromptDeleteView.as_view(), name="prompt-delete"),
     path("runs/s/<str:slug>/recheck-all/",                     RecheckAllPromptsView.as_view(),  name="prompt-recheck-all"),
     path("runs/s/<str:slug>/share-of-voice/",                  ShareOfVoiceView.as_view(),       name="share-of-voice"),
     path("runs/s/<str:slug>/citation-trend/",                  CitationTrendView.as_view(),      name="citation-trend"),
@@ -81,6 +94,13 @@ urlpatterns = [
     path("runs/s/<str:slug>/sitemap/", SitemapAuditDetailView.as_view(), name="sitemap-audit-detail"),
     path("runs/s/<str:slug>/sitemap/start/", SitemapAuditStartView.as_view(), name="sitemap-audit-start"),
     path("runs/s/<str:slug>/agent-log/", AgentLogView.as_view(), name="agent-log"),
+    # Schema watchtower
+    path("runs/s/<str:slug>/schema-watch/", SchemaWatchDetailView.as_view(), name="schema-watch-detail"),
+    path("runs/s/<str:slug>/schema-watch/start/", SchemaWatchStartView.as_view(), name="schema-watch-start"),
+    # Rank tracker
+    path("runs/s/<str:slug>/rank/", RankAuditDetailView.as_view(), name="rank-audit-detail"),
+    path("runs/s/<str:slug>/rank/start/", RankAuditStartView.as_view(), name="rank-audit-start"),
+    path("runs/s/<str:slug>/rank/query/<int:query_id>/refresh/", RankAuditRefreshQueryView.as_view(), name="rank-audit-refresh-query"),
     path("runs/s/<str:slug>/", AnalysisRunBySlugView.as_view(), name="run-by-slug"),
     path("runs/<int:run_id>/status/", AnalysisRunStatusView.as_view(), name="run-status"),
     path("runs/<int:run_id>/export-pdf/", ExportPDFView.as_view(), name="export-pdf"),

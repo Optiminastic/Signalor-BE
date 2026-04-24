@@ -18,6 +18,11 @@ from .models import (
     SitemapAudit,
     SitemapAuditPage,
     AgentLogEntry,
+    SchemaWatch,
+    SchemaWatchPage,
+    RankAudit,
+    RankQuery,
+    RankResult,
     ACHIEVEMENTS_INFO,
     ACTION_TEMPLATES,
 )
@@ -159,7 +164,7 @@ class AnalysisRunDetailSerializer(serializers.ModelSerializer):
             "id", "slug", "url", "brand_name", "display_brand_name", "country", "email", "run_type", "status", "progress",
             "composite_score", "error_message", "created_at", "updated_at",
             "page_scores", "competitors", "recommendations", "ai_probes",
-            "brand_visibility", "llm_logs",
+            "brand_visibility",
         ]
 
     def get_display_brand_name(self, obj):
@@ -404,6 +409,23 @@ class PromptCitationSerializer(serializers.ModelSerializer):
 
 
 class PromptResultSerializer(serializers.ModelSerializer):
+    response_text = serializers.SerializerMethodField()
+    citations = PromptCitationSerializer(many=True, read_only=True)
+
+    def get_response_text(self, obj):
+        text = obj.response_text or ""
+        return text[:500] if len(text) > 500 else text
+
+    class Meta:
+        model = PromptResult
+        fields = [
+            "id", "engine", "response_text", "brand_mentioned",
+            "sentiment", "confidence", "rank_position", "checked_at",
+            "citations",
+        ]
+
+
+class PromptResultFullSerializer(serializers.ModelSerializer):
     citations = PromptCitationSerializer(many=True, read_only=True)
 
     class Meta:
@@ -417,6 +439,8 @@ class PromptResultSerializer(serializers.ModelSerializer):
 
 class PromptTrackSerializer(serializers.ModelSerializer):
     results = PromptResultSerializer(many=True, read_only=True)
+    intent = serializers.SerializerMethodField()
+    prompt_type = serializers.SerializerMethodField()
     visibility_pct = serializers.SerializerMethodField()
     avg_position = serializers.SerializerMethodField()
     sentiment_label = serializers.SerializerMethodField()
@@ -433,13 +457,38 @@ class PromptTrackSerializer(serializers.ModelSerializer):
     class Meta:
         model = PromptTrack
         fields = [
-            "id", "prompt_text", "is_custom", "score", "created_at", "results",
+            "id", "prompt_text", "is_custom", "intent", "prompt_type", "score",
+            "created_at", "results",
             "visibility_pct", "avg_position", "sentiment_label", "ranking_label",
             "total_runs", "mentions",
             # 5-factor scores
             "factor_authority", "factor_content_quality", "factor_structural",
             "factor_semantic", "factor_third_party",
         ]
+
+    def _taxonomy(self, obj):
+        """Recompute from prompt + run so labels stay accurate when rules improve."""
+        if not hasattr(obj, "_taxonomy_cache"):
+            from .pipeline.prompt_tracker import classify_prompt_intent_and_type
+
+            run = getattr(obj, "analysis_run", None)
+            if run is None:
+                obj._taxonomy_cache = ("informational", "organic")
+            else:
+                brand = (getattr(run, "brand_name", None) or "").strip()
+                url = (getattr(run, "url", None) or "").strip()
+                obj._taxonomy_cache = classify_prompt_intent_and_type(
+                    obj.prompt_text,
+                    brand,
+                    url,
+                )
+        return obj._taxonomy_cache
+
+    def get_intent(self, obj):
+        return self._taxonomy(obj)[0]
+
+    def get_prompt_type(self, obj):
+        return self._taxonomy(obj)[1]
 
     def _score_data(self, obj):
         if not hasattr(obj, "_score_cache"):
@@ -593,3 +642,65 @@ class AgentLogEntrySerializer(serializers.ModelSerializer):
     class Meta:
         model = AgentLogEntry
         fields = ["id", "bot_name", "path", "status_code", "ts", "source"]
+
+
+class SchemaWatchPageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SchemaWatchPage
+        fields = [
+            "id", "url", "path", "page_kind",
+            "status_code",
+            "schema_types", "jsonld_count", "raw_jsonld",
+            "severity", "issues", "fix_targets",
+            "error_message", "checked_at",
+        ]
+
+
+class SchemaWatchSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SchemaWatch
+        fields = [
+            "id", "status", "progress",
+            "total_urls", "healthy_count", "warn_count", "broken_count",
+            "discovered_from_sitemap",
+            "started_at", "finished_at", "created_at",
+            "error_message",
+        ]
+
+
+class RankResultSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RankResult
+        fields = [
+            "id", "surface", "position",
+            "url", "domain", "title", "snippet",
+            "engine", "response_text",
+            "sentiment",
+            "is_brand_mentioned", "competitors_mentioned",
+            "upvotes", "subreddit",
+            "checked_at",
+        ]
+
+
+class RankQuerySerializer(serializers.ModelSerializer):
+    results = RankResultSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = RankQuery
+        fields = [
+            "id", "prompt_text", "rank",
+            "brand_mention_count", "status", "error_message",
+            "results",
+        ]
+
+
+class RankAuditSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RankAudit
+        fields = [
+            "id", "status", "progress",
+            "total_queries", "queries_done",
+            "avg_brand_mentions", "avg_top3_brand_rate",
+            "started_at", "finished_at", "created_at",
+            "error_message",
+        ]

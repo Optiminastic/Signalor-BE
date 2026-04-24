@@ -89,7 +89,12 @@ def _save_probes_and_tracks(
     """Save AIVisibilityProbe rows and generate AI-powered brand-specific prompt tracks."""
     from apps.accounts.subscription_utils import get_plan_limits, is_plan_limits_enforcement_enabled
 
-    from .pipeline.prompt_tracker import generate_brand_prompts, fire_prompt_across_engines, compute_prompt_score
+    from .pipeline.prompt_tracker import (
+        generate_brand_prompts,
+        fire_prompt_across_engines,
+        compute_prompt_score,
+        classify_prompt_intent_and_type,
+    )
     from .pipeline.citations import persist_prompt_result, host_of, competitor_hosts_for_run
 
     # Save visibility probes
@@ -136,10 +141,17 @@ def _save_probes_and_tracks(
     rival_hosts = competitor_hosts_for_run(run)
     for prompt_text in brand_prompts:
         try:
+            intent, prompt_type = classify_prompt_intent_and_type(
+                prompt_text,
+                brand_name,
+                brand_url,
+            )
             track = PromptTrack.objects.create(
                 analysis_run=run,
                 prompt_text=prompt_text,
                 is_custom=False,
+                intent=intent,
+                prompt_type=prompt_type,
             )
             engine_results = fire_prompt_across_engines(
                 prompt_text, brand_name, brand_url, runs=1, allowed_engines=allowed_engines

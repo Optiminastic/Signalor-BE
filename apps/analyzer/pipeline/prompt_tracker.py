@@ -26,6 +26,219 @@ _ENGINE_MAP = {
 
 DEFAULT_RUNS = 3  # Fire each prompt N times to handle AI randomness
 
+_TOKEN_STOP = frozenset(
+    {
+        "the",
+        "and",
+        "for",
+        "from",
+        "with",
+        "inc",
+        "llc",
+        "ltd",
+        "corp",
+        "co",
+        "year",
+        "award",
+        "awards",
+        "best",
+        "top",
+        "site",
+        "web",
+        "www",
+        "com",
+        "org",
+        "net",
+        "http",
+        "https",
+    }
+)
+
+
+def _collect_brand_tokens(brand_name: str, brand_url: str = "") -> list[str]:
+    """
+    Build lowercase tokens to match inside prompt text: full name, meaningful
+    words, and the registrable host label (e.g. lokmat from lokmat.com).
+    """
+    import re
+    from urllib.parse import urlparse
+
+    toks: list[str] = []
+    bn = (brand_name or "").strip().lower()
+    if bn:
+        toks.append(bn)
+        for part in re.split(r"[\s,|/&]+", bn):
+            w = part.strip().strip("'\"")
+            if len(w) >= 4 and w not in _TOKEN_STOP:
+                toks.append(w)
+            elif len(w) == 3 and w.isalpha() and w not in _TOKEN_STOP:
+                toks.append(w)
+
+    raw_url = (brand_url or "").strip()
+    if raw_url:
+        try:
+            parsed = urlparse(raw_url if "://" in raw_url else f"https://{raw_url}")
+            host = (parsed.netloc or "").lower().replace("www.", "")
+            if host:
+                label = host.split(":")[0]
+                parts = label.split(".")
+                junk_sub = frozenset(
+                    {"www", "app", "m", "api", "blog", "cdn", "static", "shop", "store", "support", "help"}
+                )
+                if len(parts) >= 3:
+                    sld = parts[-2]
+                    if len(sld) >= 3 and sld not in {"localhost", "127"}:
+                        toks.append(sld)
+                    root = parts[0]
+                    if (
+                        root not in junk_sub
+                        and len(root) >= 3
+                        and root != sld
+                        and root not in _TOKEN_STOP
+                    ):
+                        toks.append(root)
+                elif len(parts) == 2:
+                    root = parts[0]
+                    if len(root) >= 3 and root not in {"localhost", "127"}:
+                        toks.append(root)
+        except Exception:
+            pass
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for x in toks:
+        x = (x or "").strip()
+        if x and x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+def _prompt_mentions_brand(t: str, tokens: list[str]) -> bool:
+    if not t or not tokens:
+        return False
+    for tok in tokens:
+        if len(tok) < 2:
+            continue
+        if tok in t:
+            return True
+    return False
+
+
+def classify_prompt_intent_and_type(
+    prompt_text: str,
+    brand_name: str = "",
+    brand_url: str = "",
+) -> tuple[str, str]:
+    """
+    Heuristic intent + query shape for GEO prompt rows.
+
+    Returns (intent, prompt_type) as internal codes matching PromptTrack enums:
+      intent: brand | informational | transactional
+      prompt_type: organic | branded | competitive
+
+    ``brand_url`` is used to derive host tokens (e.g. lokmat.com → lokmat) so
+    prompts that never repeat the legal brand_name string still classify as
+    branded when they mention the site / product name from the URL.
+    """
+    t = (prompt_text or "").lower()
+    tokens = _collect_brand_tokens(brand_name, brand_url)
+
+    transactional_kw = (
+        "buy ",
+        "buying",
+        "purchase",
+        "order ",
+        "pricing",
+        "price ",
+        "prices",
+        "cost ",
+        "costs",
+        "discount",
+        "coupon",
+        "deal",
+        "trial",
+        "demo",
+        "sign up",
+        "signup",
+        "subscribe",
+        "cheap",
+        "affordable",
+        "quote",
+        "booking",
+        "book a ",
+        "book an ",
+        "hire ",
+        "free trial",
+        "get a quote",
+        "pay for",
+        "checkout",
+        "nominate",
+        "nomination",
+        "nominations",
+        "register for",
+        "registration",
+        "apply for",
+        "apply to ",
+        "submit a ",
+        "submit an ",
+        "ticket",
+        "tickets",
+        "rsvp",
+        "enroll",
+        "enrollment",
+        "vote for",
+        "voting",
+    )
+    competitive_kw = (
+        " vs ",
+        " vs.",
+        "versus",
+        "compare ",
+        "compared",
+        "compare to",
+        "compare with",
+        "compared to",
+        "compared with",
+        "comparison",
+        "alternative to",
+        "alternatives to",
+        "instead of",
+        "better than",
+        "head to head",
+        "stack up",
+        "competitor",
+        "competition",
+        "which is better",
+        "who is better",
+        "or better",
+        "other regional",
+        "against other",
+        "among competitors",
+    )
+
+    has_brand = _prompt_mentions_brand(t, tokens)
+    is_transactional = any(k in t for k in transactional_kw)
+    is_competitive = any(k in t for k in competitive_kw) or (
+        "how does" in t and "compare" in t
+    )
+
+    if is_competitive:
+        query_type = "competitive"
+    elif has_brand:
+        query_type = "branded"
+    else:
+        query_type = "organic"
+
+    if is_transactional:
+        intent = "transactional"
+    elif has_brand:
+        intent = "brand"
+    else:
+        intent = "informational"
+
+    return intent, query_type
+
 
 def _providers_and_search_from_plan_engines(allowed_engines: list[str] | None) -> tuple[list[str], bool, bool]:
     """
