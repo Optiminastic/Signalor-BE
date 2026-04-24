@@ -52,6 +52,10 @@ from .views import (
     # Schema watchtower
     SchemaWatchStartView,
     SchemaWatchDetailView,
+    # Rank tracker
+    RankAuditStartView,
+    RankAuditDetailView,
+    RankAuditRefreshQueryView,
 )
 
 app_name = "analyzer"
@@ -87,6 +91,10 @@ urlpatterns = [
     # Schema watchtower
     path("runs/s/<str:slug>/schema-watch/", SchemaWatchDetailView.as_view(), name="schema-watch-detail"),
     path("runs/s/<str:slug>/schema-watch/start/", SchemaWatchStartView.as_view(), name="schema-watch-start"),
+    # Rank tracker
+    path("runs/s/<str:slug>/rank/", RankAuditDetailView.as_view(), name="rank-audit-detail"),
+    path("runs/s/<str:slug>/rank/start/", RankAuditStartView.as_view(), name="rank-audit-start"),
+    path("runs/s/<str:slug>/rank/query/<int:query_id>/refresh/", RankAuditRefreshQueryView.as_view(), name="rank-audit-refresh-query"),
     path("runs/s/<str:slug>/", AnalysisRunBySlugView.as_view(), name="run-by-slug"),
     path("runs/<int:run_id>/status/", AnalysisRunStatusView.as_view(), name="run-status"),
     path("runs/<int:run_id>/export-pdf/", ExportPDFView.as_view(), name="export-pdf"),

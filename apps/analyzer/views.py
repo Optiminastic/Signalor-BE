@@ -2931,3 +2931,187 @@ class SchemaWatchDetailView(APIView):
             "page": page,
             "page_size": page_size,
         })
+
+
+class RankAuditStartView(APIView):
+    """POST /runs/s/<slug>/rank/start/ — kick off an async rank audit."""
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug):
+        import threading
+        from django.shortcuts import get_object_or_404
+        from .models import RankAudit
+        from .pipeline.rank_tracker import run_rank_audit
+        from .serializers import RankAuditSerializer
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+
+        already = (
+            RankAudit.objects
+            .filter(analysis_run=run, status__in=[RankAudit.Status.QUEUED, RankAudit.Status.RUNNING])
+            .first()
+        )
+        if already is not None:
+            return Response(
+                {"detail": "An audit is already running for this run.",
+                 "audit": RankAuditSerializer(already).data},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        audit = RankAudit.objects.create(
+            analysis_run=run,
+            status=RankAudit.Status.QUEUED,
+        )
+
+        def _do(aid):
+            try:
+                close_old_connections()
+                run_rank_audit(aid)
+            except Exception:
+                logger.exception("run_rank_audit thread failed")
+
+        threading.Thread(target=_do, args=(audit.id,), daemon=True).start()
+
+        return Response(
+            RankAuditSerializer(audit).data,
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
+class RankAuditDetailView(APIView):
+    """GET /runs/s/<slug>/rank/ — latest audit summary + queries + their results."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .models import RankAudit
+        from .serializers import RankAuditSerializer, RankQuerySerializer
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        audit = (
+            RankAudit.objects.filter(analysis_run=run).order_by("-created_at").first()
+        )
+        if audit is None:
+            return Response({"audit": None, "queries": []})
+
+        queries_qs = audit.queries.all().prefetch_related("results")
+
+        surface = request.GET.get("surface")
+        query_id = request.GET.get("query_id")
+        q_substr = (request.GET.get("q") or "").strip()
+        only_brand = request.GET.get("only_brand") in ("1", "true", "True")
+
+        if query_id:
+            try:
+                queries_qs = queries_qs.filter(id=int(query_id))
+            except (TypeError, ValueError):
+                pass
+
+        if q_substr:
+            queries_qs = queries_qs.filter(prompt_text__icontains=q_substr)
+
+        queries = list(queries_qs.order_by("rank", "id"))
+
+        data = []
+        for q in queries:
+            results = list(q.results.all())
+            if surface:
+                results = [r for r in results if r.surface == surface]
+            if only_brand:
+                results = [r for r in results if r.is_brand_mentioned]
+            results.sort(key=lambda r: (r.surface, r.position))
+            q._prefetched_results = results  # type: ignore[attr-defined]
+
+        serialized = []
+        for q in queries:
+            payload = {
+                "id": q.id,
+                "prompt_text": q.prompt_text,
+                "rank": q.rank,
+                "brand_mention_count": q.brand_mention_count,
+                "status": q.status,
+                "error_message": q.error_message,
+                "results": [
+                    {
+                        "id": r.id,
+                        "surface": r.surface,
+                        "position": r.position,
+                        "url": r.url,
+                        "domain": r.domain,
+                        "title": r.title,
+                        "snippet": r.snippet,
+                        "engine": r.engine,
+                        "response_text": r.response_text,
+                        "sentiment": r.sentiment,
+                        "is_brand_mentioned": r.is_brand_mentioned,
+                        "competitors_mentioned": r.competitors_mentioned,
+                        "upvotes": r.upvotes,
+                        "subreddit": r.subreddit,
+                        "checked_at": r.checked_at.isoformat() if r.checked_at else None,
+                    }
+                    for r in getattr(q, "_prefetched_results", q.results.all())
+                ],
+            }
+            serialized.append(payload)
+
+        return Response({
+            "audit": RankAuditSerializer(audit).data,
+            "queries": serialized,
+        })
+
+
+class RankAuditRefreshQueryView(APIView):
+    """POST /runs/s/<slug>/rank/query/<query_id>/refresh/ — re-fetch one query across all surfaces."""
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug, query_id):
+        import threading
+        from django.shortcuts import get_object_or_404
+        from .models import RankAudit, RankQuery, RankResult
+        from .pipeline.rank_tracker import audit_query
+        from .serializers import RankQuerySerializer
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        audit = (
+            RankAudit.objects.filter(analysis_run=run).order_by("-created_at").first()
+        )
+        if audit is None:
+            return Response({"detail": "No audit exists for this run."}, status=status.HTTP_404_NOT_FOUND)
+
+        query = get_object_or_404(RankQuery, id=query_id, audit=audit)
+
+        RankResult.objects.filter(query=query).delete()
+        query.status = RankQuery.Status.QUEUED
+        query.brand_mention_count = 0
+        query.error_message = ""
+        query.save(update_fields=["status", "brand_mention_count", "error_message"])
+
+        from urllib.parse import urlparse as _urlparse
+        from .pipeline.rank_tracker import _derive_geo
+        brand_names = [n for n in (run.brand_name,) if n]
+        try:
+            brand_domain = _urlparse(run.url or "").netloc.lower().replace("www.", "")
+        except Exception:
+            brand_domain = ""
+        if brand_domain:
+            brand_names.append(brand_domain)
+        try:
+            competitor_names = [
+                c for c in run.competitors.values_list("name", flat=True) if c
+            ]
+        except Exception:
+            competitor_names = []
+        gl = (_derive_geo(run).get("gl") or "")
+
+        def _do(qid):
+            close_old_connections()
+            try:
+                from .models import RankQuery as _RQ
+                q = _RQ.objects.get(pk=qid)
+                audit_query(q, brand_names, competitor_names, brand_domain=brand_domain, gl=gl)
+            except Exception:
+                logger.exception("refresh rank query thread failed")
+
+        threading.Thread(target=_do, args=(query.id,), daemon=True).start()
+
+        return Response(RankQuerySerializer(query).data, status=status.HTTP_202_ACCEPTED)
