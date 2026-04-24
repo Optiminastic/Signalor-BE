@@ -226,30 +226,35 @@ Known competitors:
         else "- If location is unspecified, use country-neutral framing. Do NOT invent a country."
     )
 
-    prompt = f"""You are a GEO expert. Produce {count} search prompts that a real user would type when **evaluating options in this space** — the kind of prompts that surface competitor comparisons, tradeoff reasoning, and brand-vs-brand analysis on Google, Reddit, Quora, and AI assistants.
+    prompt = f"""You are a GEO expert. Produce {count} realistic search prompts a buyer would use to discover and evaluate options in THE BRAND'S CATEGORY. The goal is to generate queries that surface multi-brand listicles, reviews, and comparisons — pages and AI answers where a smaller brand like the target can reasonably appear alongside bigger names.
 
 CONTEXT:
 {context}
 
 {location_rules}
 
-Each prompt MUST:
-- Be something a real buyer/researcher would naturally search or ask an AI — 8 to 18 words
-- Invite comparison, reasoning, or evaluation (not brochure-style "best X" listicles only)
-- Naturally elicit specific brand names in the answer — use categorical, problem-oriented wording
-- NEVER mention "{brand}" itself (the user doesn't already know this brand)
+HARD RULES — READ CAREFULLY:
+- NEVER mention "{brand}" in prompts (the user is discovering — they don't know this brand yet).
+- AT MOST 1 prompt may name a single competitor by name, and ONLY in the form "alternatives to X" or "X vs [category]" (NOT "X vs Y" — no competitor-vs-competitor prompts).
+- DO NOT write "<CompetitorA> vs <CompetitorB>" prompts — they only surface pages about those two specific brands and exclude smaller / newer players like this brand.
+- Prompts should be category-first, use-case-first, problem-first, or price-first — NOT brand-first.
+- Write conversational language a real human would type, not SEO keyword strings.
+- Each prompt: 8 to 18 words.
 
-Distribute across these intents:
-1. Head-to-head (3 prompts): "X vs Y", "X or Y for [use case]", "difference between X and Y" — uses competitor names if meaningful AND the competitor is relevant to {location_line or "the topic"}.
-2. Decision reasoning (3 prompts): "how to choose…", "what to look for in…", "is it worth paying more for…", "which is more trusted for…"
-3. Pros & cons / tradeoffs (2 prompts): "pros and cons of [category] providers", "downsides of using [category type]"
-4. Category leaders / ranking reasoning (2 prompts): "who is the most respected [category] in {location_line or '[region]'}", "which [category] has the best reputation in {location_line or '[region]'}", "most credible [award/service/product] in {location_line or '[region]'}"
+Distribute across these intents (aim for this rough split):
+1. Category + location listicles (3 prompts): "best <category> for <use case> in <location>", "top <category> brands for <audience>", "most trusted <category> in <location>"
+   — These surface "Top 10" blog posts, Reddit threads, and AI answers that commonly include smaller brands.
+2. Use-case / problem-driven (3 prompts): "<category> for <specific user problem>", "which <category> works for <audience or skin/hair/situation type>"
+   — Narrow, specific needs where smaller niche brands tend to be recommended.
+3. Decision reasoning (2 prompts): "how to choose the right <category>", "what should I look for when buying <category>", "what makes a good <category>"
+4. Evaluation / sentiment (2 prompts): "pros and cons of <category>", "is <category> worth the money", "what do Reddit users say about <category>", "honest reviews of <category>"
+   — Open-ended enough that multiple brand names appear.
 
-Rules:
-- Do NOT write pure "best 10 X" or "top X in Y" listicle queries — those are low-signal for comparisons.
-- If a competitor from the list above is NOT relevant to {location_line or "the brand's geography"}, ignore that competitor — do not include it in prompts.
-- Conversational phrasing. Avoid keyword-stuffed SEO style.
-- Each prompt must read naturally to a human; no awkward marketing language.
+AVOID:
+- "X vs Y" head-to-head between two known competitors.
+- Prompts that name more than one competitor.
+- Vague one-word prompts like "best cosmetics" — always add a qualifier (location, audience, problem, or price).
+- Prompts where the brand would obviously have zero chance of being mentioned.
 
 Return ONLY a JSON array of {count} strings. No markdown, no explanations."""
 
