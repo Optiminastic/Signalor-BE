@@ -809,6 +809,9 @@ class AnalysisRunStatusView(APIView):
 class ExportPDFView(APIView):
     permission_classes = [AllowAny]
 
+    def get(self, request, run_id):
+        return self.post(request, run_id)
+
     def post(self, request, run_id):
         try:
             run = AnalysisRun.objects.get(pk=run_id)
@@ -833,9 +836,36 @@ class ExportPDFView(APIView):
             recommendations = run.recommendations.all()
             competitors = run.competitors.filter(scored=True)
 
+            main_page_pillars = []
+            if main_page:
+                pillar_defs = [
+                    ("Content Structure", main_page.content_score),
+                    ("Schema Markup", main_page.schema_score),
+                    ("E-E-A-T Signals", main_page.eeat_score),
+                    ("Technical GEO", main_page.technical_score),
+                    ("Entity Authority", main_page.entity_score),
+                    ("AI Visibility", main_page.ai_visibility_score),
+                ]
+                for label, score in pillar_defs:
+                    s = float(score or 0)
+                    s = max(0.0, min(100.0, s))
+                    main_page_pillars.append({
+                        "label": label,
+                        "score": s,
+                        "remainder": 100.0 - s,
+                    })
+
+            # Sort recommendations: critical → high → medium → low.
+            priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+            recommendations = sorted(
+                recommendations,
+                key=lambda r: (priority_order.get(getattr(r, "priority", "low"), 4), r.id),
+            )
+
             context = {
                 "run": run,
                 "main_page": main_page,
+                "main_page_pillars": main_page_pillars,
                 "recommendations": recommendations,
                 "competitors": competitors,
                 "ai_probes": run.ai_probes.all(),
