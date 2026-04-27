@@ -3,6 +3,11 @@ from .base import *
 
 DEBUG = False
 
+# Render / reverse proxies: correct scheme and host for request.build_absolute_uri()
+# (needed for Shopify OAuth redirect_uri matching Partners allowlist).
+USE_X_FORWARDED_HOST = True
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
 SECRET_KEY = os.getenv('SECRET_KEY')
 if not SECRET_KEY:
     raise ValueError("SECRET_KEY environment variable must be set")

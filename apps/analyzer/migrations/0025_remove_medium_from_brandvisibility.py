@@ -1,4 +1,4 @@
-from django.db import migrations
+from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
@@ -8,13 +8,23 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RemoveField(
-            model_name="brandvisibility",
-            name="medium_score",
-        ),
-        migrations.RemoveField(
-            model_name="brandvisibility",
-            name="medium_details",
+        # Use IF EXISTS so the migration doesn't crash if the column was already
+        # dropped manually or the DB was synced from a newer model state.
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(
+                    sql='ALTER TABLE "analyzer_brandvisibility" DROP COLUMN IF EXISTS "medium_score";',
+                    reverse_sql='ALTER TABLE "analyzer_brandvisibility" ADD COLUMN "medium_score" double precision NOT NULL DEFAULT 0;',
+                ),
+                migrations.RunSQL(
+                    sql='ALTER TABLE "analyzer_brandvisibility" DROP COLUMN IF EXISTS "medium_details";',
+                    reverse_sql="",
+                ),
+            ],
+            state_operations=[
+                migrations.RemoveField(model_name="brandvisibility", name="medium_score"),
+                migrations.RemoveField(model_name="brandvisibility", name="medium_details"),
+            ],
         ),
         migrations.RemoveField(
             model_name="useraction",
@@ -23,7 +33,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name="useraction",
             name="action_type",
-            field=migrations.swappable_dependency("analyzer.UserAction") if False else __import__("django.db.models", fromlist=["CharField"]).CharField(
+            field=models.CharField(
                 max_length=30,
                 choices=[
                     ("add_faq", "Add FAQ Section"),
