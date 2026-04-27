@@ -289,6 +289,58 @@ def score_schema(crawl: CrawlResult) -> tuple[float, dict]:
     details["checks"]["schema_variety"] = type_count
     details["checks"]["schema_variety_pts"] = variety_pts
 
+    # ── Entity Linking check (bonus/penalty) ──────────────────────────────
+    # Does the schema form a connected knowledge graph?
+    # author → Person → sameAs, article → author → organization
+    entity_links = 0
+    entity_checks = []
+
+    for obj in all_objects:
+        obj_type = obj.get("@type", "")
+        obj_types = obj_type if isinstance(obj_type, list) else [obj_type]
+
+        # Check: author is a Person with sameAs
+        author = obj.get("author", {})
+        if isinstance(author, dict):
+            if author.get("@type") == "Person" and author.get("name"):
+                entity_links += 1
+                entity_checks.append("author→Person")
+                if author.get("sameAs"):
+                    entity_links += 1
+                    entity_checks.append("author→sameAs")
+                if author.get("url"):
+                    entity_links += 1
+                    entity_checks.append("author→url")
+
+        # Check: publisher is an Organization
+        publisher = obj.get("publisher", {})
+        if isinstance(publisher, dict) and publisher.get("@type") in ("Organization", "Corporation"):
+            entity_links += 1
+            entity_checks.append("publisher→Organization")
+            if publisher.get("logo"):
+                entity_links += 1
+                entity_checks.append("publisher→logo")
+
+        # Check: @id references (linked graph)
+        if obj.get("@id"):
+            entity_links += 1
+
+    details["checks"]["entity_linking"] = entity_checks
+    details["checks"]["entity_link_count"] = entity_links
+
+    # Bonus: well-linked graph (up to 5 pts extra, capped by safe_score)
+    if entity_links >= 5:
+        score += 5
+    elif entity_links >= 3:
+        score += 3
+    elif entity_links >= 1:
+        score += 1
+
+    # Penalty: schema exists but completely disconnected (no linking)
+    if len(all_objects) >= 2 and entity_links == 0:
+        score -= 5
+        details["findings"].append("schema_disconnected_graph")
+
     score = safe_score(score)
     details["score"] = score
     return score, details

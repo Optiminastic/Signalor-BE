@@ -52,7 +52,6 @@ NON_COMPETITOR_HOST_HINTS = (
     "x.com",
     "twitter.com",
     "reddit.com",
-    "medium.com",
     "quora.com",
     "pinterest.com",
     "blogspot.com",

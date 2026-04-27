@@ -61,6 +61,9 @@ def fetch_ga4_data(integration: Integration, days: int = 30) -> dict:
     # 4. Daily trend
     daily_trend = _fetch_daily_trend(client, property_path, date_range)
 
+    # 5. Country breakdown
+    countries = _fetch_countries(client, property_path, date_range)
+
     return {
         "date_start": start_date.isoformat(),
         "date_end": end_date.isoformat(),
@@ -68,6 +71,7 @@ def fetch_ga4_data(integration: Integration, days: int = 30) -> dict:
         "top_pages": top_pages,
         "traffic_sources": traffic_sources,
         "daily_trend": daily_trend,
+        "countries": countries,
     }
 
 
@@ -195,6 +199,34 @@ def _fetch_daily_trend(client, property_path, date_range) -> list:
             daily[formatted_date]["organic_sessions"] += count
 
     return sorted(daily.values(), key=lambda x: x["date"])
+
+
+def _fetch_countries(client, property_path, date_range, limit=50) -> list:
+    """Fetch top countries by sessions — returns ISO alpha-2 country codes + session counts."""
+    from google.analytics.data_v1beta.types import OrderBy
+    response = client.run_report(RunReportRequest(
+        property=property_path,
+        date_ranges=[date_range],
+        dimensions=[
+            Dimension(name="country"),
+            Dimension(name="countryId"),   # ISO alpha-2 e.g. "IN", "US"
+        ],
+        metrics=[Metric(name="sessions")],
+        order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="sessions"), desc=True)],
+        limit=limit,
+    ))
+    countries = []
+    for row in response.rows:
+        country_name = row.dimension_values[0].value
+        country_id   = row.dimension_values[1].value   # alpha-2
+        sessions     = int(row.metric_values[0].value or 0)
+        if country_id and country_id != "(not set)":
+            countries.append({
+                "country": country_name,
+                "country_id": country_id.upper(),
+                "sessions": sessions,
+            })
+    return countries
 
 
 def fetch_ga4_page_metrics(integration: Integration, page_url: str, days: int = 30) -> dict:

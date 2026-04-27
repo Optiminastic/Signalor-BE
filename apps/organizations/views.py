@@ -19,6 +19,17 @@ class OnboardView(APIView):
         serializer.is_valid(raise_exception=True)
 
         email = serializer.validated_data["email"]
+
+        # Enforce project limit
+        from apps.accounts.subscription_utils import plan_limit_error_response_dict, project_limit_reached
+
+        reached, msg = project_limit_reached(email)
+        if reached:
+            return Response(
+                plan_limit_error_response_dict(msg),
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         org = serializer.save()
         logger.info("Organization created: %s for %s", org.name, email)
 

@@ -11,7 +11,13 @@ import requests
 logger = logging.getLogger("apps")
 
 API_VERSION = "2026-01"
-AUTH_SCOPES = ["read_products", "read_orders", "read_customers"]
+AUTH_SCOPES = [
+    "read_products", "write_products",
+    "read_orders", "read_customers",
+    "read_content", "write_content",
+    "read_metafields", "write_metafields",
+    "read_themes", "write_themes",
+]
 
 
 def normalize_shop_domain(shop_domain: str) -> str:
@@ -53,6 +59,34 @@ def build_shopify_oauth_url(
         }
     )
     return f"https://{domain}/admin/oauth/authorize?{query}"
+
+
+def build_shopify_admin_install_custom_app_url(
+    client_id: str,
+    redirect_uri: str,
+    state: str,
+    scopes: list[str] | None = None,
+) -> str:
+    """
+    OAuth entry via admin.shopify.com (custom / dev apps).
+
+    Use when ``{shop}.myshopify.com/admin/oauth/authorize`` sends merchants through
+    ``/store/.../app/grant`` and you want the ``/oauth/install_custom_app`` path instead.
+
+    If Shopify rejects this (some setups require Admin-signed ``signature``), set
+    ``SHOPIFY_CUSTOM_APP_INSTALL_URL`` to the full install link from Shopify Admin.
+    """
+    scope_str = ",".join(scopes or AUTH_SCOPES)
+    query = urlencode(
+        {
+            "client_id": client_id,
+            "no_redirect": "true",
+            "redirect_uri": redirect_uri,
+            "scope": scope_str,
+            "state": state,
+        }
+    )
+    return f"https://admin.shopify.com/oauth/install_custom_app?{query}"
 
 
 def verify_shopify_oauth_hmac(raw_query_string: str, shared_secret: str) -> bool:

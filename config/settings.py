@@ -23,7 +23,10 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 
 DEBUG = os.getenv('DEBUG', 'False') == 'True'
 
-ALLOWED_HOSTS = ['rankking-be.onrender.com','ranking-fe-chi.vercel.app','signalorai-be.onrender.com','signalorai.vercel.app','api.signalor.ai','https://api.signalor.ai/'] 
+# Hostnames only (no scheme/path). Extend with ALLOWED_HOSTS env (comma-separated).
+_default = ["localhost", "127.0.0.1", "0.0.0.0"]
+_extra = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "").split(",") if h.strip()]
+ALLOWED_HOSTS = list(dict.fromkeys(_default + _extra))
 
 INSTALLED_APPS = [
     'django.contrib.admin',

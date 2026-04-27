@@ -25,7 +25,6 @@ PLATFORM_DOMAINS = {
     "dev.to": "blog",
     "hashnode.dev": "blog",
     "blogspot.com": "blog",
-    "medium.com": "blog",
     "hubspot.com": "blog",
     "wix.com": "blog",
     # News
@@ -123,7 +122,7 @@ def _check_via_cse(
 ) -> tuple[float, dict] | None:
     """Use Google CSE to find web mentions (excludes Reddit/own domain)."""
     try:
-        query = f'"{brand_name}" -site:reddit.com -site:medium.com -site:{brand_domain}'
+        query = f'"{brand_name}" -site:reddit.com -site:{brand_domain}'
         resp = requests.get(
             "https://www.googleapis.com/customsearch/v1",
             params={"key": api_key, "cx": cx, "q": query, "num": 10},
@@ -210,7 +209,7 @@ def _llm_web_mentions(
             f"Find where the brand '{brand_name}' (website: {brand_url}) is mentioned "
             f"across the web. Look for mentions on blogs, news sites, forums, social media, "
             f"review sites, industry publications, etc.\n\n"
-            f"Exclude {brand_domain} (the brand's own site), reddit.com, and medium.com.\n\n"
+            f"Exclude {brand_domain} (the brand's own site) and reddit.com.\n\n"
             f"For each mention, provide:\n"
             f"- url: the specific URL where the brand is mentioned\n"
             f"- title: the page/article title\n"

@@ -28,7 +28,7 @@ class GADataSnapshotSerializer(serializers.ModelSerializer):
         fields = [
             "id", "date_start", "date_end", "sessions", "organic_sessions",
             "bounce_rate", "avg_session_duration", "top_pages",
-            "traffic_sources", "daily_trend", "sync_status",
+            "traffic_sources", "daily_trend", "countries", "sync_status",
             "error_message", "created_at",
         ]
 

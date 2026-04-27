@@ -21,12 +21,14 @@ MODELS = {
     "gpt": "openai/gpt-4o-mini",
     "claude": "anthropic/claude-3.5-haiku",
     "gemini": "google/gemini-2.0-flash-001",
+    "perplexity": "perplexity/sonar",
 }
 
 MODEL_LABELS = {
     "openai/gpt-4o-mini": "GPT-4o Mini",
     "anthropic/claude-3.5-haiku": "Claude 3.5 Haiku",
     "google/gemini-2.0-flash-001": "Gemini 2.0 Flash",
+    "perplexity/sonar": "Perplexity Sonar",
     "gemini-direct": "Gemini 2.0 Flash (Direct)",
 }
 
@@ -140,30 +142,129 @@ def ask_llm(
     prompt: str,
     preferred_provider: str | None = None,
     max_tokens: int = 1024,
-    temperature: float = 0.3,
+    temperature: float = 0.0,
     purpose: str = "",
 ) -> str:
     """
     Send a prompt to an LLM via OpenRouter, or direct Gemini as fallback.
     Returns response text string. Empty string on failure.
     """
+    text, _ = ask_llm_with_citations(
+        prompt,
+        preferred_provider=preferred_provider,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        purpose=purpose,
+    )
+    return text
+
+
+def ask_llm_with_citations(
+    prompt: str,
+    preferred_provider: str | None = None,
+    max_tokens: int = 1024,
+    temperature: float = 0.0,
+    purpose: str = "",
+) -> tuple[str, list[dict]]:
+    """
+    Send a prompt to an LLM and return (text, citations[]).
+
+    Citations come from provider-specific fields OpenRouter passes through
+    (Perplexity `citations`, annotations with `url_citation`, Gemini grounding).
+    Empty list when the provider does not attach source metadata.
+    """
     if not is_available():
-        return ""
+        return ("", [])
 
     openrouter_key = _get_openrouter_key()
 
     if openrouter_key:
         return _call_openrouter(prompt, preferred_provider, max_tokens, temperature, openrouter_key, purpose)
     else:
-        return _call_gemini_direct(prompt, purpose)
+        return (_call_gemini_direct(prompt, purpose), [])
+
+
+def _extract_citations_from_openrouter(data: dict) -> list[dict]:
+    """
+    Pull structured citations from an OpenRouter JSON response.
+
+    Handles three provider shapes OpenRouter passes through:
+      1. Perplexity: top-level `citations: [url, url, ...]` (list of strings).
+      2. `:online` / web-search models: `choices[0].message.annotations[]`
+         with entries like {type: "url_citation", url_citation: {url, title, content}}.
+      3. Gemini grounding: sometimes surfaces in `choices[0].message.grounding_metadata`
+         (`grounding_chunks[].web.uri`).
+
+    Deduplicated by URL in first-seen order. Returns [{url, title, snippet, position}].
+    """
+    from urllib.parse import urlparse
+
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(url: str, title: str = "", snippet: str = "") -> None:
+        if not isinstance(url, str):
+            return
+        u = url.strip()
+        if not u or not u.startswith(("http://", "https://")):
+            return
+        if u in seen:
+            return
+        try:
+            if not urlparse(u).netloc:
+                return
+        except Exception:
+            return
+        seen.add(u)
+        out.append({
+            "url": u[:2048],
+            "title": (title or "")[:512],
+            "snippet": (snippet or "")[:2000],
+            "position": len(out) + 1,
+        })
+
+    try:
+        # 1. Perplexity — top-level citations array (list of URL strings)
+        top_cites = data.get("citations")
+        if isinstance(top_cites, list):
+            for c in top_cites:
+                if isinstance(c, str):
+                    _add(c)
+                elif isinstance(c, dict):
+                    _add(c.get("url", ""), c.get("title", ""), c.get("snippet") or c.get("content", ""))
+
+        # 2. Annotations on the assistant message (OpenAI :online, web-search models)
+        message = (data.get("choices") or [{}])[0].get("message", {}) or {}
+        annotations = message.get("annotations") or []
+        if isinstance(annotations, list):
+            for ann in annotations:
+                if not isinstance(ann, dict):
+                    continue
+                if ann.get("type") == "url_citation" and isinstance(ann.get("url_citation"), dict):
+                    uc = ann["url_citation"]
+                    _add(uc.get("url", ""), uc.get("title", ""), uc.get("content", ""))
+                elif ann.get("type") == "url" and ann.get("url"):
+                    _add(ann.get("url", ""), ann.get("title", ""), ann.get("snippet", ""))
+
+        # 3. Gemini-style grounding metadata (occasionally passed through)
+        grounding = message.get("grounding_metadata") or message.get("groundingMetadata")
+        if isinstance(grounding, dict):
+            chunks = grounding.get("grounding_chunks") or grounding.get("groundingChunks") or []
+            for ch in chunks:
+                web = (ch or {}).get("web") or {}
+                _add(web.get("uri", ""), web.get("title", ""))
+    except Exception as exc:
+        logger.debug("citation extraction failed: %s", exc)
+
+    return out
 
 
 def _call_openrouter(
     prompt: str, preferred_provider: str | None,
     max_tokens: int, temperature: float, api_key: str,
     purpose: str = "",
-) -> str:
-    """Call OpenRouter API."""
+) -> tuple[str, list[dict]]:
+    """Call OpenRouter API. Returns (text, citations[])."""
     model = _pick_model(preferred_provider)
 
     headers = {
@@ -196,10 +297,14 @@ def _call_openrouter(
         if resp.status_code == 200:
             data = resp.json()
             content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            citations = _extract_citations_from_openrouter(data)
             response_preview = _log_preview(content, 200)
-            logger.info("[LLM RESPONSE] << %s | %dms | %d chars | \"%s...\"", model, duration_ms, len(content), response_preview)
+            logger.info(
+                "[LLM RESPONSE] << %s | %dms | %d chars | %d citations | \"%s...\"",
+                model, duration_ms, len(content), len(citations), response_preview,
+            )
             _log_call(model, purpose, prompt, content.strip(), "success", duration_ms)
-            return content.strip()
+            return (content.strip(), citations)
 
         logger.warning("[LLM FAILED] << %s | HTTP %d: %s", model, resp.status_code, resp.text[:200])
         _log_call(model, purpose, prompt, f"HTTP {resp.status_code}", "error", duration_ms)
@@ -214,14 +319,14 @@ def _call_openrouter(
         duration_ms = int((time.time() - t0) * 1000)
         logger.warning("OpenRouter error for %s: %s", model, exc)
         _log_call(model, purpose, prompt, str(exc), "error", duration_ms)
-        return ""
+        return ("", [])
 
 
 def _retry_with_next(
     prompt: str, failed_model: str, max_tokens: int, temperature: float,
     api_key: str, headers: dict, purpose: str = "",
-) -> str:
-    """Try the next model if the first one fails."""
+) -> tuple[str, list[dict]]:
+    """Try the next model if the first one fails. Returns (text, citations[])."""
     all_models = list(MODELS.values())
     for model in all_models:
         if model == failed_model:
@@ -245,13 +350,14 @@ def _retry_with_next(
             if resp.status_code == 200:
                 data = resp.json()
                 content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                citations = _extract_citations_from_openrouter(data)
                 logger.info("Fallback to %s succeeded (%dms)", model, duration_ms)
                 _log_call(model, purpose + " (retry)", prompt, content.strip(), "success", duration_ms)
-                return content.strip()
+                return (content.strip(), citations)
         except Exception:
             continue
 
-    return ""
+    return ("", [])
 
 
 def _call_gemini_direct(prompt: str, purpose: str = "") -> str:
@@ -269,7 +375,7 @@ def _call_gemini_direct(prompt: str, purpose: str = "") -> str:
 
         genai.configure(api_key=google_key)
         model = genai.GenerativeModel("gemini-2.0-flash")
-        response = model.generate_content(prompt)
+        response = model.generate_content(prompt, generation_config={"temperature": 0.0})
         text = response.text.strip()
         duration_ms = int((time.time() - t0) * 1000)
         response_preview = _log_preview(text, 200)
@@ -290,33 +396,54 @@ def ask_multiple_llms(prompt: str, providers: list[str] | None = None, purpose: 
 
     Returns: {"gpt": "response...", "claude": "response...", "gemini": "response..."}
     """
+    rich = ask_multiple_llms_with_citations(prompt, providers=providers, purpose=purpose, max_tokens=max_tokens)
+    return {p: v["text"] for p, v in rich.items()}
+
+
+def ask_multiple_llms_with_citations(
+    prompt: str,
+    providers: list[str] | None = None,
+    purpose: str = "",
+    max_tokens: int = 512,
+) -> dict[str, dict]:
+    """
+    Parallel variant that returns structured {text, citations[]} per provider.
+
+    Returns: {"gpt": {"text": "...", "citations": [{url, title, snippet, position}]}, ...}
+    """
     if not is_available():
         return {}
 
     if providers is None:
         providers = list(MODELS.keys())
 
+    providers = [p for p in providers if p in MODELS]
+    if not providers:
+        return {}
+
     # If only direct Gemini is available (no OpenRouter), just use that
     if not _get_openrouter_key():
-        result = _call_gemini_direct(prompt, purpose)
-        return {"gemini": result} if result else {}
+        text = _call_gemini_direct(prompt, purpose)
+        return {"gemini": {"text": text, "citations": []}} if text else {}
 
-    # Fire all providers in parallel
-    results = {}
+    results: dict[str, dict] = {}
 
     def _call_provider(provider):
-        return provider, ask_llm(prompt, preferred_provider=provider, purpose=purpose, max_tokens=max_tokens)
+        text, citations = ask_llm_with_citations(
+            prompt, preferred_provider=provider, purpose=purpose, max_tokens=max_tokens,
+        )
+        return provider, {"text": text, "citations": citations}
 
-    with ThreadPoolExecutor(max_workers=len(providers)) as executor:
+    with ThreadPoolExecutor(max_workers=max(1, len(providers))) as executor:
         futures = {executor.submit(_call_provider, p): p for p in providers}
         for future in as_completed(futures):
             try:
-                provider, response = future.result()
-                results[provider] = response
+                provider, payload = future.result()
+                results[provider] = payload
             except Exception as exc:
                 provider = futures[future]
                 logger.warning("Parallel LLM call failed for %s: %s", provider, exc)
-                results[provider] = ""
+                results[provider] = {"text": "", "citations": []}
 
     return results
 

@@ -98,6 +98,9 @@ class GADataSnapshot(models.Model):
     daily_trend = models.JSONField(default=list, blank=True)
     # [{"date": "2026-01-01", "sessions": 100, "organic_sessions": 60}, ...]
 
+    countries = models.JSONField(default=list, blank=True)
+    # [{"country": "India", "country_id": "IN", "sessions": 5000}, ...]
+
     # Sync metadata
     sync_status = models.CharField(
         max_length=20,

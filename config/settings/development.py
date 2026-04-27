@@ -6,15 +6,11 @@ DEBUG = True
 
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-dev-key-change-in-production')
 
+# Local defaults only; add deploy hosts via ALLOWED_HOSTS in .env (comma-separated).
 _default_hosts = [
     "localhost",
     "127.0.0.1",
     "0.0.0.0",
-    "rankking-be.onrender.com",
-    "ranking-fe-chi.vercel.app",
-    "signalorai-be.onrender.com",
-    "signalorai.vercel.app",
-    "api.signalor.ai",
 ]
 _env_hosts = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "").split(",") if h.strip()]
 ALLOWED_HOSTS = list(dict.fromkeys(_default_hosts + _env_hosts))

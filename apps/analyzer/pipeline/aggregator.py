@@ -4,92 +4,53 @@ from .utils import safe_score
 
 logger = logging.getLogger("apps")
 
-# Default weights — content + schema = 20%, the rest = 80%
-# The 4 actionable pillars (eeat, technical, entity, ai_visibility)
-# carry the most weight because users can take direct action on them.
+# Weights v3: Content + E-E-A-T = 50% (trust pillars)
+# Technical = 15%, Schema = 10%, Entity = 15%, AI Visibility = 10%
 DEFAULT_WEIGHTS = {
-    "content": 0.10,
+    "content": 0.25,
     "schema": 0.10,
-    "eeat": 0.22,
-    "technical": 0.20,
-    "entity": 0.20,
-    "ai_visibility": 0.18,
+    "eeat": 0.25,
+    "technical": 0.15,
+    "entity": 0.15,
+    "ai_visibility": 0.10,
 }
 
-# Industry-specific weight overrides
-# content + schema always sum to 0.20; actionable pillars get the 0.80
 INDUSTRY_WEIGHTS = {
     "health": {
-        "content": 0.10,
-        "schema": 0.10,
-        "eeat": 0.30,      # Health content NEEDS trust signals
-        "technical": 0.15,
-        "entity": 0.15,
-        "ai_visibility": 0.20,
+        "content": 0.18, "schema": 0.10, "eeat": 0.30,
+        "technical": 0.14, "entity": 0.13, "ai_visibility": 0.15,
     },
     "medical": {
-        "content": 0.10,
-        "schema": 0.10,
-        "eeat": 0.30,
-        "technical": 0.15,
-        "entity": 0.15,
-        "ai_visibility": 0.20,
+        "content": 0.18, "schema": 0.10, "eeat": 0.30,
+        "technical": 0.14, "entity": 0.13, "ai_visibility": 0.15,
     },
     "finance": {
-        "content": 0.10,
-        "schema": 0.10,
-        "eeat": 0.28,      # Financial content needs authority
-        "technical": 0.15,
-        "entity": 0.22,
-        "ai_visibility": 0.15,
+        "content": 0.18, "schema": 0.10, "eeat": 0.28,
+        "technical": 0.14, "entity": 0.15, "ai_visibility": 0.15,
     },
     "ecommerce": {
-        "content": 0.10,
-        "schema": 0.10,
-        "eeat": 0.15,
-        "technical": 0.20,
-        "entity": 0.20,
-        "ai_visibility": 0.25,
+        "content": 0.20, "schema": 0.10, "eeat": 0.20,
+        "technical": 0.15, "entity": 0.15, "ai_visibility": 0.20,
     },
     "saas": {
-        "content": 0.10,
-        "schema": 0.10,
-        "eeat": 0.18,
-        "technical": 0.20,
-        "entity": 0.17,
-        "ai_visibility": 0.25,   # AI visibility matters most for SaaS discovery
+        "content": 0.20, "schema": 0.10, "eeat": 0.22,
+        "technical": 0.13, "entity": 0.15, "ai_visibility": 0.20,
     },
     "legal": {
-        "content": 0.10,
-        "schema": 0.10,
-        "eeat": 0.30,
-        "technical": 0.15,
-        "entity": 0.15,
-        "ai_visibility": 0.20,
+        "content": 0.18, "schema": 0.10, "eeat": 0.30,
+        "technical": 0.14, "entity": 0.13, "ai_visibility": 0.15,
     },
     "education": {
-        "content": 0.10,
-        "schema": 0.10,
-        "eeat": 0.25,
-        "technical": 0.15,
-        "entity": 0.20,
-        "ai_visibility": 0.20,
+        "content": 0.18, "schema": 0.10, "eeat": 0.28,
+        "technical": 0.14, "entity": 0.15, "ai_visibility": 0.15,
     },
     "news": {
-        "content": 0.10,
-        "schema": 0.10,
-        "eeat": 0.25,
-        "technical": 0.15,
-        "entity": 0.15,
-        "ai_visibility": 0.25,
+        "content": 0.18, "schema": 0.10, "eeat": 0.25,
+        "technical": 0.14, "entity": 0.15, "ai_visibility": 0.18,
     },
     "local_business": {
-        "content": 0.10,
-        "schema": 0.10,
-        "eeat": 0.18,
-        "technical": 0.17,
-        "entity": 0.25,    # Local businesses need strong entity presence
-        "ai_visibility": 0.20,
+        "content": 0.18, "schema": 0.10, "eeat": 0.22,
+        "technical": 0.15, "entity": 0.20, "ai_visibility": 0.15,
     },
 }
 
@@ -169,6 +130,25 @@ def compute_composite(
         + entity * weights["entity"]
         + ai_visibility * weights["ai_visibility"]
     )
+
+    # ── Smarter clamps v3 ──
+
+    # If AI doesn't see you, you don't exist
+    if ai_visibility < 20 and entity < 20:
+        composite = min(composite, 50.0)
+
+    # Untrustworthy content can't score high
+    if content < 15 and eeat < 15:
+        composite = min(composite, 35.0)
+
+    # Bad infrastructure tanks everything
+    if technical < 30:
+        composite = min(composite, 40.0)
+
+    # Technical floor: technically sound sites shouldn't score dead
+    if technical > 50 and content < 10:
+        composite = max(composite, 15.0)
+
     return safe_score(composite)
 
 

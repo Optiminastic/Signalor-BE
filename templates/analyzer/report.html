@@ -2,439 +2,517 @@
 <html xmlns:pdf="http://www.w3.org/1999/xhtml">
 <head>
   <meta charset="utf-8">
-  <title>GEO Analysis Report &mdash; {{ run.url }}</title>
+  <title>Signalor GEO Report &mdash; {{ run.url }}</title>
   <style>
     @page {
       size: A4;
-      margin: 40pt 44pt 56pt 44pt;
+      margin: 44pt 48pt 60pt 48pt;
     }
 
     body {
       font-family: Helvetica, Arial, sans-serif;
-      color: #0D1117;
-      font-size: 10.5pt;
-      line-height: 1.65;
+      color: #18181B;
+      font-size: 10pt;
+      line-height: 1.55;
       margin: 0;
       padding: 0;
     }
 
-    /* ─────────────────────────────────────────────
-       REPEATING PAGE FOOTER
-       Moved to end of <body> so its in-flow render
-       does not appear before the cover.
-       position:fixed keeps it on every page.
-    ───────────────────────────────────────────── */
+    /* ─── Repeating footer on every page ─── */
     .page-footer {
       position: fixed;
-      bottom: -44pt;     /* 56pt bottom margin - 44pt height = 12pt from page edge */
-      left:   -44pt;
-      right:  -44pt;
+      bottom: -48pt;
+      left:   -48pt;
+      right:  -48pt;
       height: 36pt;
       background-color: #ffffff;
-      border-top: 1.5pt solid #C5CDFF;
-      padding: 8pt 44pt 0 44pt;
+      border-top: 0.75pt solid #E5E7EB;
+      padding: 10pt 48pt 0 48pt;
     }
     .footer-table { width: 100%; border: none; margin: 0; }
     .footer-table td {
       border: none; padding: 0;
-      font-size: 8.5pt; color: #5A6A7A; vertical-align: middle;
+      font-size: 8pt; color: #6B7280; vertical-align: middle;
     }
-    .footer-brand { font-weight: 600; color: #3A4ACF; }
+    .footer-brand { color: #E04D00; font-weight: 700; letter-spacing: 0.4pt; }
 
-    /* ─────────────────────────────────────────────
-       COVER — table layout so xhtml2pdf renders ONE
-       solid background block, not fragmented boxes.
-    ───────────────────────────────────────────── */
-
-    /* Accent strip: negative margins bleed to page edges */
-    .cover-accent-strip {
-      background-color: #5B6BF8;
-      height: 5pt;
-      margin: -40pt -44pt 0 -44pt;
-      padding: 0;
+    /* ═══════ COVER ═══════ */
+    .cover-accent {
+      background-color: #E04D00;
+      height: 6pt;
+      margin: -44pt -48pt 0 -48pt;
       font-size: 0;
       line-height: 0;
     }
-
-    /* Main cover block — table for reliable bg rendering */
     .cover-table {
       width: 100%;
       border-collapse: collapse;
-      margin: 0 -44pt;
+      margin: 0 -48pt;
     }
-    .cover-main-cell {
-      background-color: #1E2A4A;
-      padding: 48pt 52pt 0 52pt;
+    .cover-hero-cell {
+      background-color: #FAFAF9;
+      padding: 64pt 56pt 28pt 56pt;
       vertical-align: top;
     }
-    .cover-bottom-cell {
-      background-color: #172140;
-      padding: 22pt 52pt 48pt 52pt;
-      vertical-align: top;
-    }
-
-    /* Cover typography — padding-bottom only, never margin */
     .cover-eyebrow {
-      font-size: 7pt;
+      font-size: 7.5pt;
       font-weight: 700;
-      letter-spacing: 2.2pt;
+      letter-spacing: 2.4pt;
       text-transform: uppercase;
-      color: #8BA3FF;
-      padding: 0 0 26pt 0;
+      color: #E04D00;
+      padding: 0 0 18pt 0;
       margin: 0;
     }
     .cover-title {
-      font-size: 34pt;
+      font-size: 36pt;
       font-weight: 700;
-      color: #ffffff;
-      line-height: 1.12;
-      padding: 0 0 8pt 0;
+      color: #18181B;
+      line-height: 1.08;
+      letter-spacing: -0.5pt;
+      padding: 0 0 14pt 0;
       margin: 0;
     }
     .cover-subtitle {
-      font-size: 11pt;
-      color: #6B7EA3;
+      font-size: 11.5pt;
+      color: #6B7280;
       font-weight: 400;
-      padding: 0 0 32pt 0;
+      line-height: 1.5;
+      padding: 0 0 0 0;
       margin: 0;
-    }
-    .cover-rule-cell {
-      background-color: #1E2A4A;
-      border-bottom: 1pt solid #2A3B5E;
-      padding: 0;
-      height: 0;
-      font-size: 0;
-      line-height: 0;
-    }
-    .cover-spacer-cell {
-      background-color: #1E2A4A;
-      height: 24pt;
-      padding: 0;
-      font-size: 0;
-      line-height: 0;
+      max-width: 380pt;
     }
     .cover-meta-cell {
-      background-color: #1E2A4A;
-      padding: 0 52pt 32pt 52pt;
+      background-color: #FAFAF9;
+      padding: 24pt 56pt 16pt 56pt;
       vertical-align: top;
+      border-top: 0.5pt solid #E5E7EB;
     }
+    .meta-row { width: 100%; border-collapse: collapse; }
+    .meta-row td { border: none; padding: 0; vertical-align: top; }
     .cover-label {
       font-size: 7pt;
-      color: #5A6F8C;
+      color: #9CA3AF;
       text-transform: uppercase;
       letter-spacing: 1.5pt;
       font-weight: 700;
-      padding: 0 0 5pt 0;
-      margin: 0;
-    }
-    .cover-brand-name {
-      font-size: 15pt;
-      color: #C8D5E8;
-      font-weight: 700;
-      padding: 0 0 20pt 0;
-      margin: 0;
-    }
-    .cover-url {
-      font-size: 11pt;
-      color: #8A9DBB;
-      font-weight: 500;
-      word-break: break-all;
-      padding: 0 0 24pt 0;
-      margin: 0;
-    }
-    .cover-meta {
-      font-size: 8.5pt;
-      color: #4A5E7A;
       padding: 0 0 4pt 0;
+      margin: 0;
+    }
+    .cover-value {
+      font-size: 11pt;
+      color: #18181B;
+      font-weight: 600;
+      word-break: break-all;
+      padding: 0 0 0 0;
+      margin: 0;
+    }
+    .cover-bottom-cell {
+      background-color: #18181B;
+      padding: 22pt 56pt 22pt 56pt;
+      vertical-align: middle;
+    }
+    .cover-bottom-text {
+      font-size: 9pt;
+      color: #A1A1AA;
+      padding: 0;
       margin: 0;
     }
     .cover-badge {
       display: inline-block;
-      border: 1pt solid #2E4060;
-      color: #4A6080;
+      background-color: #E04D00;
+      color: #ffffff;
       font-size: 7pt;
       font-weight: 700;
-      letter-spacing: 1.8pt;
+      letter-spacing: 1.6pt;
       text-transform: uppercase;
-      padding: 3pt 12pt;
+      padding: 4pt 12pt;
     }
 
-    /* ── Section Headings ── */
-    h2 {
-      font-size: 14pt;
+    /* ═══════ SECTIONS ═══════ */
+    .section-eyebrow {
+      font-size: 7.5pt;
       font-weight: 700;
-      color: #1E2A4A;
-      margin: 26pt 0 10pt 0;
-      padding-bottom: 6pt;
-      border-bottom: 2pt solid #5B6BF8;
+      letter-spacing: 2pt;
+      text-transform: uppercase;
+      color: #E04D00;
+      margin: 24pt 0 6pt 0;
+    }
+    h2 {
+      font-size: 17pt;
+      font-weight: 700;
+      color: #18181B;
+      letter-spacing: -0.3pt;
+      margin: 0 0 14pt 0;
+      padding: 0 0 10pt 0;
+      border-bottom: 0.5pt solid #E5E7EB;
     }
     p { margin: 0 0 8pt 0; }
 
-    /* ── Score Hero ── */
-    .score-hero-outer {
-      text-align: center;
-      margin: 12pt 0 24pt 0;
-    }
-    .score-hero-box {
-      display: inline-block;
-      background-color: #EEF1FF;
-      border: 1.5pt solid #B8C1FF;
-      padding: 22pt 52pt;
-      text-align: center;
-    }
-    .score-number {
-      font-size: 56pt;
-      font-weight: 700;
-      color: #3A4ACF;
-      line-height: 1;
-      margin: 0;
-    }
-    .score-label {
-      font-size: 8.5pt;
-      font-weight: 700;
-      color: #5A6A7A;
-      text-transform: uppercase;
-      letter-spacing: 0.6pt;
-      margin: 8pt 0 2pt 0;
-    }
-    .score-max {
-      font-size: 9pt;
-      color: #5A6A7A;
-      margin: 0;
-    }
-
-    /* ── Tables ── */
-    table {
+    /* ═══════ SCORE HERO ═══════ */
+    .score-hero {
       width: 100%;
       border-collapse: collapse;
-      margin: 6pt 0 16pt 0;
-      font-size: 10pt;
+      margin: 8pt 0 16pt 0;
     }
-    th {
-      background-color: #1E2A4A;
+    .score-hero td {
+      border: none;
+      padding: 0;
+      vertical-align: middle;
+    }
+    .score-number-cell {
+      width: 38%;
+      background-color: #18181B;
+      padding: 28pt 28pt 28pt 32pt;
+      vertical-align: middle;
+    }
+    .score-number {
+      font-size: 64pt;
+      font-weight: 700;
       color: #ffffff;
-      font-size: 8.5pt;
+      line-height: 1;
+      letter-spacing: -2pt;
+      margin: 0;
+    }
+    .score-of {
+      font-size: 12pt;
+      color: #71717A;
+      font-weight: 500;
+      margin: 4pt 0 0 0;
+    }
+    .score-label-cell {
+      width: 62%;
+      background-color: #FAFAF9;
+      padding: 28pt 32pt;
+      vertical-align: middle;
+    }
+    .score-label {
+      font-size: 8pt;
       font-weight: 700;
-      padding: 8pt 11pt;
-      text-align: left;
+      color: #E04D00;
       text-transform: uppercase;
-      letter-spacing: 0.4pt;
+      letter-spacing: 1.8pt;
+      margin: 0 0 6pt 0;
     }
-    td {
-      padding: 8pt 11pt;
-      border-bottom: 1pt solid #E1E7EF;
-      vertical-align: top;
-      color: #0D1117;
+    .score-headline {
+      font-size: 14pt;
+      font-weight: 600;
+      color: #18181B;
+      line-height: 1.35;
+      margin: 0 0 6pt 0;
     }
-    .row-even td { background-color: #F7F9FC; }
-    .pillar-score {
-      font-weight: 700;
-      text-align: right;
-      color: #3A4ACF;
-      font-size: 11.5pt;
+    .score-sub {
+      font-size: 9.5pt;
+      color: #6B7280;
+      line-height: 1.5;
+      margin: 0;
     }
 
-    /* ── Priority Badges ── */
+    /* ═══════ PILLAR BARS ═══════ */
+    .pillar-row {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 0 0 6pt 0;
+    }
+    .pillar-row td {
+      border: none;
+      padding: 6pt 0;
+      vertical-align: middle;
+    }
+    .pillar-name {
+      font-size: 10pt;
+      font-weight: 600;
+      color: #18181B;
+      width: 30%;
+      padding-right: 12pt;
+    }
+    .pillar-bar-cell {
+      width: 55%;
+      padding-right: 14pt;
+    }
+    .pillar-bar-track {
+      width: 100%;
+      background-color: #F4F4F5;
+      height: 8pt;
+      border-collapse: collapse;
+    }
+    .pillar-bar-track td {
+      padding: 0;
+      height: 8pt;
+      font-size: 0;
+      line-height: 0;
+    }
+    .pillar-bar-fill { background-color: #E04D00; }
+    .pillar-score-num {
+      font-size: 11pt;
+      font-weight: 700;
+      color: #18181B;
+      width: 15%;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ═══════ TABLES ═══════ */
+    table.data {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 6pt 0 12pt 0;
+      font-size: 9.5pt;
+    }
+    table.data th {
+      background-color: #FAFAF9;
+      color: #6B7280;
+      font-size: 7.5pt;
+      font-weight: 700;
+      padding: 9pt 12pt;
+      text-align: left;
+      text-transform: uppercase;
+      letter-spacing: 0.8pt;
+      border-bottom: 1pt solid #E5E7EB;
+    }
+    table.data td {
+      padding: 10pt 12pt;
+      border-bottom: 0.5pt solid #F4F4F5;
+      vertical-align: middle;
+      color: #18181B;
+    }
+    table.data .num {
+      font-weight: 700;
+      color: #E04D00;
+      text-align: right;
+      font-size: 10.5pt;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ═══════ PRIORITY BADGES ═══════ */
     .badge {
       display: inline-block;
       padding: 2pt 8pt;
-      font-size: 7.5pt;
+      font-size: 7pt;
       font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.5pt;
+      letter-spacing: 0.6pt;
       color: #ffffff;
     }
     .badge-critical { background-color: #DC2626; }
-    .badge-high     { background-color: #D97706; }
-    .badge-medium   { background-color: #2563EB; }
-    .badge-low      { background-color: #5A6A7A; }
+    .badge-high     { background-color: #EA580C; }
+    .badge-medium   { background-color: #F59E0B; }
+    .badge-low      { background-color: #71717A; }
 
-    /* ── Recommendation Cards ── */
+    /* ═══════ RECOMMENDATION CARDS ═══════ */
     .rec-card {
-      border: 1pt solid #E1E7EF;
-      border-left: 4pt solid #5B6BF8;
-      background-color: #F7F9FC;
-      padding: 10pt 14pt;
+      border: 0.5pt solid #E5E7EB;
+      border-left: 3pt solid #E5E7EB;
+      background-color: #ffffff;
+      padding: 12pt 14pt;
       margin: 8pt 0;
     }
     .rec-card-critical { border-left-color: #DC2626; }
-    .rec-card-high     { border-left-color: #D97706; }
-    .rec-card-medium   { border-left-color: #2563EB; }
-    .rec-card-low      { border-left-color: #5A6A7A; }
+    .rec-card-high     { border-left-color: #EA580C; }
+    .rec-card-medium   { border-left-color: #F59E0B; }
+    .rec-card-low      { border-left-color: #71717A; }
+    .rec-head { padding: 0 0 4pt 0; }
     .rec-title {
       font-weight: 700;
       font-size: 10.5pt;
-      color: #0D1117;
+      color: #18181B;
     }
     .rec-desc {
-      color: #374151;
-      font-size: 10pt;
-      margin: 5pt 0 4pt 0;
+      color: #4B5563;
+      font-size: 9.5pt;
+      line-height: 1.5;
+      margin: 4pt 0 6pt 0;
     }
     .rec-action {
-      color: #3A4ACF;
-      font-size: 9.5pt;
+      color: #18181B;
+      font-size: 9pt;
       font-weight: 600;
       margin: 4pt 0 0 0;
+      padding: 8pt 0 0 0;
+      border-top: 0.5pt solid #F4F4F5;
+    }
+    .rec-action-label {
+      color: #E04D00;
+      text-transform: uppercase;
+      letter-spacing: 1pt;
+      font-size: 7.5pt;
+      font-weight: 700;
+      padding-right: 6pt;
     }
     .rec-impact {
-      color: #5A6A7A;
-      font-size: 9pt;
-      margin: 3pt 0 0 0;
+      color: #6B7280;
+      font-size: 8.5pt;
+      margin: 4pt 0 0 0;
     }
 
-    /* ── Competitor Table ── */
-    .comp-score {
-      text-align: right;
-      font-weight: 700;
-      color: #3A4ACF;
-      font-size: 11pt;
-    }
-
-    /* ── AI Probes ── */
+    /* ═══════ AI PROBES ═══════ */
     .probe-card {
-      padding: 8pt 12pt;
-      border: 1pt solid #E1E7EF;
-      border-left: 3.5pt solid #E1E7EF;
-      background-color: #F7F9FC;
+      padding: 10pt 14pt;
+      border: 0.5pt solid #E5E7EB;
+      border-left: 3pt solid #E5E7EB;
+      background-color: #ffffff;
       margin: 6pt 0;
     }
     .probe-mentioned     { border-left-color: #16A34A; }
     .probe-not-mentioned { border-left-color: #DC2626; }
     .probe-question {
-      font-weight: 700;
-      font-size: 10pt;
-      color: #0D1117;
-      margin: 0 0 4pt 0;
+      font-weight: 600;
+      font-size: 9.5pt;
+      color: #18181B;
+      margin: 0 0 6pt 0;
+      line-height: 1.45;
     }
-    .mentioned     { color: #16A34A; font-weight: 700; font-size: 9.5pt; }
-    .not-mentioned { color: #DC2626; font-weight: 600; font-size: 9.5pt; }
+    .mentioned {
+      color: #16A34A;
+      font-weight: 700;
+      font-size: 8pt;
+      text-transform: uppercase;
+      letter-spacing: 0.5pt;
+    }
+    .not-mentioned {
+      color: #DC2626;
+      font-weight: 700;
+      font-size: 8pt;
+      text-transform: uppercase;
+      letter-spacing: 0.5pt;
+    }
 
-    /* ── Utils ── */
-    .muted      { color: #5A6A7A; }
+    /* ═══════ UTILS ═══════ */
+    .muted      { color: #6B7280; }
     .page-break { page-break-after: always; }
+    .keep-together { page-break-inside: avoid; }
   </style>
 </head>
 <body>
 
-  <!-- ══════════════════════════════════════════
-       COVER PAGE
-       Uses table layout so xhtml2pdf renders a
-       single solid background — no fragmented boxes.
-  ═══════════════════════════════════════════ -->
+  <!-- ═══════════ COVER PAGE ═══════════ -->
+  <div class="cover-accent">&nbsp;</div>
 
-  <!-- Brand-color accent strip bleeding to page edges -->
-  <div class="cover-accent-strip">&nbsp;</div>
-
-  <!-- Main dark cover block -->
   <table class="cover-table">
-    <!-- ── Top content ── -->
     <tr>
-      <td class="cover-main-cell">
-        <div class="cover-eyebrow">Optiminastic &mdash; AI Search Optimization</div>
-        <div class="cover-title">GEO Analysis<br>Report</div>
-        <div class="cover-subtitle">Generative Engine Optimization Intelligence</div>
+      <td class="cover-hero-cell">
+        <div class="cover-eyebrow">Signalor &middot; GEO Intelligence</div>
+        <div class="cover-title">AI Visibility<br>Report</div>
+        <div class="cover-subtitle">
+          How generative engines, search, and social surfaces describe your brand &mdash;
+          and exactly what to fix next.
+        </div>
       </td>
     </tr>
-    <!-- ── Hairline divider ── -->
-    <tr><td class="cover-rule-cell"></td></tr>
-    <tr><td class="cover-spacer-cell"></td></tr>
-    <!-- ── Brand & URL metadata ── -->
+
     <tr>
       <td class="cover-meta-cell">
-        {% if run.brand_name %}
-        <div class="cover-label">Brand</div>
-        <div class="cover-brand-name">{{ run.brand_name }}</div>
-        {% endif %}
-        <div class="cover-label">Analyzed URL</div>
-        <div class="cover-url">{{ run.url }}</div>
+        <table class="meta-row">
+          <tr>
+            {% if run.brand_name %}
+            <td style="width: 50%; padding-right: 16pt;">
+              <div class="cover-label">Brand</div>
+              <div class="cover-value">{{ run.brand_name }}</div>
+            </td>
+            {% endif %}
+            <td>
+              <div class="cover-label">Analyzed URL</div>
+              <div class="cover-value">{{ run.url }}</div>
+            </td>
+          </tr>
+        </table>
       </td>
     </tr>
-    <!-- ── Bottom meta band ── -->
+
     <tr>
       <td class="cover-bottom-cell">
-        <div class="cover-meta">Generated {{ run.updated_at|date:"F j, Y" }}</div>
-        <div class="cover-meta" style="padding-bottom: 16pt;">Prepared by Optiminastic</div>
-        <div class="cover-badge">Confidential</div>
+        <table style="width: 100%; border-collapse: collapse;">
+          <tr>
+            <td style="border: none; padding: 0; vertical-align: middle;">
+              <p class="cover-bottom-text">Generated {{ run.updated_at|date:"F j, Y" }}</p>
+              <p class="cover-bottom-text">Prepared by Signalor</p>
+            </td>
+            <td style="border: none; padding: 0; vertical-align: middle; text-align: right;">
+              <span class="cover-badge">Confidential</span>
+            </td>
+          </tr>
+        </table>
       </td>
     </tr>
   </table>
 
   <div class="page-break"></div>
 
-  <!-- ── Overall Score ── -->
+  <!-- ═══════════ OVERALL SCORE ═══════════ -->
   {% if run.composite_score is not None %}
+  <div class="section-eyebrow">Headline</div>
   <h2>Overall GEO Score</h2>
-  <div class="score-hero-outer">
-    <div class="score-hero-box">
-      <div class="score-number">{{ run.composite_score|floatformat:0 }}</div>
-      <div class="score-label">GEO Score</div>
-      <div class="score-max">out of 100</div>
-    </div>
-  </div>
-  {% endif %}
-
-  <!-- ── Pillar Breakdown ── -->
-  {% if main_page %}
-  <h2>Pillar Breakdown</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>Pillar</th>
-        <th style="text-align: right;">Score / 100</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>Content Structure</td>
-        <td class="pillar-score">{{ main_page.content_score|floatformat:1 }}</td>
-      </tr>
-      <tr class="row-even">
-        <td>Schema Markup</td>
-        <td class="pillar-score">{{ main_page.schema_score|floatformat:1 }}</td>
-      </tr>
-      <tr>
-        <td>E-E-A-T Signals</td>
-        <td class="pillar-score">{{ main_page.eeat_score|floatformat:1 }}</td>
-      </tr>
-      <tr class="row-even">
-        <td>Technical GEO</td>
-        <td class="pillar-score">{{ main_page.technical_score|floatformat:1 }}</td>
-      </tr>
-      <tr>
-        <td>Entity Authority</td>
-        <td class="pillar-score">{{ main_page.entity_score|floatformat:1 }}</td>
-      </tr>
-      <tr class="row-even">
-        <td>AI Visibility</td>
-        <td class="pillar-score">{{ main_page.ai_visibility_score|floatformat:1 }}</td>
-      </tr>
-    </tbody>
+  <table class="score-hero">
+    <tr>
+      <td class="score-number-cell">
+        <div class="score-number">{{ run.composite_score|floatformat:0 }}</div>
+        <div class="score-of">/ 100</div>
+      </td>
+      <td class="score-label-cell">
+        <div class="score-label">Composite Score</div>
+        <div class="score-headline">
+          Weighted blend across content, schema, E-E-A-T, technical, entity, and AI visibility signals.
+        </div>
+        <div class="score-sub">
+          Compare to industry peers and track week-over-week movement in the dashboard.
+        </div>
+      </td>
+    </tr>
   </table>
   {% endif %}
 
-  <!-- ── Recommendations ── -->
+  <!-- ═══════════ PILLAR BREAKDOWN ═══════════ -->
+  {% if main_page %}
+  <div class="section-eyebrow">Diagnosis</div>
+  <h2>Pillar Breakdown</h2>
+
+  {% for pillar in main_page_pillars %}
+  <table class="pillar-row keep-together">
+    <tr>
+      <td class="pillar-name">{{ pillar.label }}</td>
+      <td class="pillar-bar-cell">
+        <table class="pillar-bar-track">
+          <tr>
+            {% with pct=pillar.score|floatformat:"0" %}
+            <td class="pillar-bar-fill" style="width: {{ pct }}%;">&nbsp;</td>
+            <td style="width: {{ pillar.remainder }}%;">&nbsp;</td>
+            {% endwith %}
+          </tr>
+        </table>
+      </td>
+      <td class="pillar-score-num">{{ pillar.score|floatformat:1 }}</td>
+    </tr>
+  </table>
+  {% endfor %}
+  {% endif %}
+
+  <!-- ═══════════ RECOMMENDATIONS ═══════════ -->
   {% if recommendations %}
-  <h2>Recommendations</h2>
+  <div class="section-eyebrow">Action Plan</div>
+  <h2>Prioritized Fixes</h2>
   {% for rec in recommendations %}
-  <div class="rec-card rec-card-{{ rec.priority }}">
-    <div>
+  <div class="rec-card rec-card-{{ rec.priority }} keep-together">
+    <div class="rec-head">
       <span class="badge badge-{{ rec.priority }}">{{ rec.priority }}</span>
       &ensp;<span class="rec-title">{{ rec.title }}</span>
     </div>
     <p class="rec-desc">{{ rec.description }}</p>
-    <p class="rec-action">&#x25BA;&ensp;{{ rec.action }}</p>
+    {% if rec.action %}
+    <p class="rec-action">
+      <span class="rec-action-label">Do this</span>{{ rec.action }}
+    </p>
+    {% endif %}
     {% if rec.impact_estimate %}
-    <p class="rec-impact">{{ rec.impact_estimate }}</p>
+    <p class="rec-impact">Expected impact: {{ rec.impact_estimate }}</p>
     {% endif %}
   </div>
   {% endfor %}
   {% endif %}
 
-  <!-- ── Competitor Comparison ── -->
+  <!-- ═══════════ COMPETITORS ═══════════ -->
   {% if competitors %}
+  <div class="section-eyebrow">Benchmark</div>
   <h2>Competitor Comparison</h2>
-  <table>
+  <table class="data">
     <thead>
       <tr>
         <th>Competitor</th>
@@ -444,42 +522,38 @@
     </thead>
     <tbody>
       {% for comp in competitors %}
-      <tr{% if forloop.counter|divisibleby:2 %} class="row-even"{% endif %}>
+      <tr>
         <td style="font-weight: 600;">{{ comp.name }}</td>
-        <td class="muted" style="font-size: 9.5pt; word-break: break-all;">{{ comp.url }}</td>
-        <td class="comp-score">{{ comp.composite_score|floatformat:1|default:"&mdash;" }}</td>
+        <td class="muted" style="font-size: 9pt; word-break: break-all;">{{ comp.url }}</td>
+        <td class="num">{{ comp.composite_score|floatformat:1|default:"&mdash;" }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   {% endif %}
 
-  <!-- ── AI Visibility Probes ── -->
+  <!-- ═══════════ AI PROBES ═══════════ -->
   {% if ai_probes %}
-  <h2>AI Visibility Probes</h2>
+  <div class="section-eyebrow">AI Visibility</div>
+  <h2>Engine Probes</h2>
   {% for probe in ai_probes %}
-  <div class="probe-card {% if probe.brand_mentioned %}probe-mentioned{% else %}probe-not-mentioned{% endif %}">
-    <div class="probe-question">{{ probe.prompt_used }}</div>
+  <div class="probe-card {% if probe.brand_mentioned %}probe-mentioned{% else %}probe-not-mentioned{% endif %} keep-together">
+    <p class="probe-question">{{ probe.prompt_used }}</p>
     {% if probe.brand_mentioned %}
-    <span class="mentioned">&#x2713;&ensp;Brand mentioned in AI response</span>
+    <span class="mentioned">&#x2713; Mentioned</span>
     {% else %}
-    <span class="not-mentioned">&#x2717;&ensp;Brand not mentioned in AI response</span>
+    <span class="not-mentioned">&#x2717; Not mentioned</span>
     {% endif %}
   </div>
   {% endfor %}
   {% endif %}
 
-  <!-- ══════════════════════════════════════════
-       PAGE FOOTER — placed at end of body so its
-       in-flow render (xhtml2pdf quirk) falls at the
-       end of the last page, not the top of page 1.
-       position:fixed makes it repeat on every page.
-  ═══════════════════════════════════════════ -->
+  <!-- Repeating page footer -->
   <div class="page-footer">
     <table class="footer-table">
       <tr>
-        <td><span class="footer-brand">Optiminastic</span> &mdash; GEO Analysis Report</td>
-        <td style="text-align: right; color: #9AA5B4;">Page <pdf:pagenumber> of <pdf:pagecount></td>
+        <td><span class="footer-brand">SIGNALOR</span> &middot; AI Visibility Report</td>
+        <td style="text-align: right; color: #9CA3AF;">Page <pdf:pagenumber> of <pdf:pagecount></td>
       </tr>
     </table>
   </div>

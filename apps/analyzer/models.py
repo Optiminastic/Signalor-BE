@@ -41,7 +41,10 @@ class AnalysisRun(models.Model):
     )
     progress = models.IntegerField(default=0)
     composite_score = models.FloatField(null=True, blank=True)
+    content_hash = models.CharField(max_length=64, blank=True, default="")
     error_message = models.TextField(blank=True, default="")
+    # User-selected prompts from verified onboarding / post-checkout launch (empty for other flows)
+    onboarding_prompts = models.JSONField(default=list, blank=True)
     llm_logs = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -52,6 +55,7 @@ class AnalysisRun(models.Model):
             models.Index(fields=["email"]),
             models.Index(fields=["status"]),
             models.Index(fields=["slug"]),
+            models.Index(fields=["email", "status"]),
         ]
 
     def save(self, *args, **kwargs):
@@ -85,6 +89,7 @@ class PageScore(models.Model):
     ai_visibility_score = models.FloatField(default=0)
     ai_visibility_details = models.JSONField(default=dict)
     composite_score = models.FloatField(default=0)
+    content_hash = models.CharField(max_length=64, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -149,6 +154,16 @@ class Recommendation(models.Model):
     action = models.TextField()
     impact_estimate = models.CharField(max_length=100, blank=True, default="")
     category = models.CharField(max_length=30)
+    # Stable pipeline key (e.g. no_citations) for verify routing; blank for legacy rows.
+    finding_code = models.CharField(max_length=80, blank=True, default="")
+    why = models.CharField(max_length=200, blank=True, default="")
+    # Structured step-by-step guide + gamification metadata
+    steps = models.JSONField(default=list, blank=True)
+    xp_reward = models.IntegerField(default=0)
+    difficulty = models.CharField(max_length=20, blank=True, default="")  # easy, medium, hard
+    estimated_minutes = models.IntegerField(default=0)
+    # The finding key that triggered this recommendation (e.g. "no_h1", "no_citations")
+    finding_key = models.CharField(max_length=80, blank=True, default="")
 
     class Meta:
         ordering = ["priority", "pillar"]
@@ -165,10 +180,18 @@ class BrandVisibility(models.Model):
     google_details = models.JSONField(default=dict)
     reddit_score = models.FloatField(default=0)
     reddit_details = models.JSONField(default=dict)
-    medium_score = models.FloatField(default=0)
-    medium_details = models.JSONField(default=dict)
     web_mentions_score = models.FloatField(default=0)
     web_mentions_details = models.JSONField(default=dict)
+    social_presence_details = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Instagram/Facebook public metrics and derived presence scores",
+    )
+    ai_brand_facts = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="LLM-grounded notes on how AI may reflect the brand from visibility signals",
+    )
     overall_score = models.FloatField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -211,7 +234,6 @@ class UserAction(models.Model):
         
         # Brand actions
         POST_REDDIT = "post_reddit", "Post on Reddit"
-        POST_MEDIUM = "post_medium", "Publish on Medium"
         BUILD_BACKLINKS = "build_backlinks", "Build Backlinks"
     
     class ActionStatus(models.TextChoices):
@@ -593,15 +615,57 @@ ACTION_TEMPLATES = {
 
 
 class PromptTrack(models.Model):
+    class SearchIntent(models.TextChoices):
+        """Why the user is asking (GEO / prompt strategy)."""
+
+        BRAND = "brand", "Brand"
+        INFORMATIONAL = "informational", "Information"
+        TRANSACTIONAL = "transactional", "Transactional"
+
+    class PromptSurfaceType(models.TextChoices):
+        """Shape of the query vs brand & competition (classic AI-search buckets)."""
+
+        ORGANIC = "organic", "Organic"
+        BRANDED = "branded", "Brand"
+        COMPETITIVE = "competitive", "Competition"
+
     analysis_run = models.ForeignKey(
         AnalysisRun, on_delete=models.CASCADE, related_name="prompt_tracks"
     )
     prompt_text = models.TextField()
     is_custom = models.BooleanField(default=False)
+    intent = models.CharField(
+        max_length=20,
+        choices=SearchIntent.choices,
+        default=SearchIntent.INFORMATIONAL,
+    )
+    prompt_type = models.CharField(
+        max_length=20,
+        choices=PromptSurfaceType.choices,
+        default=PromptSurfaceType.ORGANIC,
+    )
+    score = models.FloatField(default=0.0)
+
+    # 5-Factor AI Visibility Ranking Scores (all 0.0–1.0)
+    authority_score = models.FloatField(default=0.0)        # Factor 1 — 40% weight
+    content_quality_score = models.FloatField(default=0.0)  # Factor 2 — 35% weight
+    structural_score = models.FloatField(default=0.0)       # Factor 3 — 25% weight
+    semantic_score = models.FloatField(default=0.0)         # Factor 4 — supplementary
+    third_party_score = models.FloatField(default=0.0)      # Factor 5 — supplementary
+
     created_at = models.DateTimeField(auto_now_add=True)
+    # Soft-delete so that deleting a prompt does NOT free a plan-limit slot.
+    # Active (visible) prompts are those with deleted_at IS NULL; all rows
+    # still count toward `max_prompts` usage.
+    deleted_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"PromptTrack #{self.pk} — {self.prompt_text[:60]}"
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["analysis_run", "score", "created_at"]),
+        ]
 
 
 class PromptResult(models.Model):
@@ -610,6 +674,8 @@ class PromptResult(models.Model):
         CLAUDE = "claude", "Claude"
         GEMINI = "gemini", "Gemini"
         PERPLEXITY = "perplexity", "Perplexity"
+        GOOGLE = "google", "Google"
+        BING = "bing", "Bing"
 
     class Sentiment(models.TextChoices):
         POSITIVE = "positive", "Positive"
@@ -631,9 +697,42 @@ class PromptResult(models.Model):
 
     class Meta:
         ordering = ["checked_at"]
+        indexes = [
+            models.Index(fields=["prompt_track", "engine"]),
+            models.Index(fields=["prompt_track", "brand_mentioned"]),
+        ]
 
     def __str__(self):
         return f"PromptResult [{self.engine}] {'✓' if self.brand_mentioned else '✗'} {self.sentiment}"
+
+
+class PromptCitation(models.Model):
+    """
+    URLs cited by an AI engine (or search engine) when responding to a tracked prompt.
+    Captures source attribution so "pages AI loves" roll-ups and competitor gap analysis
+    can be derived per-run without re-parsing response text.
+    """
+    prompt_result = models.ForeignKey(
+        PromptResult, on_delete=models.CASCADE, related_name="citations"
+    )
+    url = models.URLField(max_length=2048)
+    domain = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    title = models.CharField(max_length=512, blank=True, default="")
+    snippet = models.TextField(blank=True, default="")
+    position = models.IntegerField(default=0)
+    is_brand = models.BooleanField(default=False, db_index=True)
+    is_competitor = models.BooleanField(default=False, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["prompt_result_id", "position", "id"]
+        indexes = [
+            models.Index(fields=["domain", "is_brand"]),
+            models.Index(fields=["domain", "is_competitor"]),
+        ]
+
+    def __str__(self):
+        return f"Citation {self.domain} (brand={self.is_brand}, rival={self.is_competitor})"
 
 
 class BlogAutomationConfig(models.Model):
@@ -830,6 +929,7 @@ class BlogAutomationJob(models.Model):
 
 class ScheduledAnalysis(models.Model):
     class Frequency(models.TextChoices):
+        ONCE = "once"
         WEEKLY = "weekly"
         MONTHLY = "monthly"
 
@@ -866,6 +966,9 @@ class AutoFixJob(models.Model):
         SUCCESS = "success"
         PARTIAL = "partial"
         FAILED = "failed"
+        MANUAL = "manual"
+        SKIPPED = "skipped"
+        VERIFIED = "verified"
 
     class FixType(models.TextChoices):
         SCHEMA_MARKUP = "schema_markup"
@@ -879,9 +982,10 @@ class AutoFixJob(models.Model):
         Recommendation, on_delete=models.CASCADE, related_name="auto_fix_jobs"
     )
     integration = models.ForeignKey(
-        "integrations.Integration", on_delete=models.CASCADE, related_name="auto_fix_jobs"
+        "integrations.Integration", on_delete=models.CASCADE, related_name="auto_fix_jobs",
+        null=True, blank=True,
     )
-    fix_type = models.CharField(max_length=30, choices=FixType.choices)
+    fix_type = models.CharField(max_length=30)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     payload_sent = models.JSONField(default=dict, blank=True)
     response_data = models.JSONField(default=dict, blank=True)
@@ -893,3 +997,334 @@ class AutoFixJob(models.Model):
 
     def __str__(self):
         return f"AutoFix<{self.fix_type} {self.status}>"
+
+
+class SitemapAudit(models.Model):
+    class Status(models.TextChoices):
+        QUEUED = "queued"
+        RUNNING = "running"
+        COMPLETE = "complete"
+        FAILED = "failed"
+
+    analysis_run = models.ForeignKey(
+        AnalysisRun, on_delete=models.CASCADE, related_name="sitemap_audits"
+    )
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.QUEUED, db_index=True
+    )
+    progress = models.IntegerField(default=0)
+    sitemap_url = models.URLField(max_length=2048, blank=True, default="")
+    crawl_limit = models.IntegerField(default=200)
+
+    total_urls = models.IntegerField(default=0)
+    indexed_count = models.IntegerField(default=0)
+    redirect_count = models.IntegerField(default=0)
+    queued_count = models.IntegerField(default=0)
+    failed_count = models.IntegerField(default=0)
+
+    avg_lcp_ms = models.IntegerField(null=True, blank=True)
+    avg_fcp_ms = models.IntegerField(null=True, blank=True)
+    avg_ttfb_ms = models.IntegerField(null=True, blank=True)
+    avg_ai_score = models.IntegerField(null=True, blank=True)
+
+    truncated = models.BooleanField(default=False)
+    discovered_url_count = models.IntegerField(default=0)
+
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    error_message = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"SitemapAudit<{self.analysis_run_id} {self.status} {self.progress}%>"
+
+
+class SitemapAuditPage(models.Model):
+    class State(models.TextChoices):
+        CRAWLED = "crawled"
+        REDIRECT = "redirect"
+        QUEUED = "queued"
+        FAILED = "failed"
+
+    class Severity(models.TextChoices):
+        OK = "ok"
+        WARN = "warn"
+        FAIL = "fail"
+
+    audit = models.ForeignKey(
+        SitemapAudit, on_delete=models.CASCADE, related_name="pages"
+    )
+    url = models.URLField(max_length=2048)
+    path = models.CharField(max_length=2048, blank=True, default="")
+    final_url = models.URLField(max_length=2048, blank=True, default="")
+
+    state = models.CharField(
+        max_length=12, choices=State.choices, default=State.QUEUED, db_index=True
+    )
+    status_code = models.IntegerField(default=0, db_index=True)
+    redirect_count = models.IntegerField(default=0)
+
+    title = models.CharField(max_length=512, blank=True, default="")
+    meta_description = models.CharField(max_length=1024, blank=True, default="")
+    h1_count = models.IntegerField(default=0)
+
+    word_count = models.IntegerField(default=0)
+    text_ratio = models.FloatField(default=0.0)
+    content_length = models.IntegerField(default=0)
+
+    lcp_ms = models.IntegerField(null=True, blank=True)
+    fcp_ms = models.IntegerField(null=True, blank=True)
+    ttfb_ms = models.IntegerField(null=True, blank=True)
+    server_ms = models.IntegerField(null=True, blank=True)
+
+    resource_count = models.IntegerField(default=0)
+    resource_bytes = models.IntegerField(default=0)
+
+    link_count_total = models.IntegerField(default=0)
+    link_count_internal = models.IntegerField(default=0)
+    link_count_external = models.IntegerField(default=0)
+
+    jsonld_count = models.IntegerField(default=0)
+    has_canonical = models.BooleanField(default=False)
+    has_og = models.BooleanField(default=False)
+    is_noindex = models.BooleanField(default=False)
+
+    robots_allows_gptbot = models.BooleanField(default=True)
+    robots_allows_claudebot = models.BooleanField(default=True)
+    robots_allows_perplexitybot = models.BooleanField(default=True)
+
+    ai_score = models.IntegerField(default=0)
+    severity = models.CharField(
+        max_length=8, choices=Severity.choices, default=Severity.OK, db_index=True
+    )
+    findings = models.JSONField(default=list, blank=True)
+
+    error_message = models.CharField(max_length=512, blank=True, default="")
+    checked_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["audit_id", "id"]
+        indexes = [
+            models.Index(fields=["audit", "state"]),
+            models.Index(fields=["audit", "severity"]),
+        ]
+
+    def __str__(self):
+        return f"SitemapAuditPage<{self.url} {self.state} score={self.ai_score}>"
+
+
+class AgentLogEntry(models.Model):
+    """Skeleton for future ingestion of AI crawler hits (Cloudflare Logpush /
+    Vercel Edge logs). No ingestion in v1 — the table exists so the frontend
+    Agent-log tab can query an empty but well-typed endpoint."""
+
+    class Source(models.TextChoices):
+        CLOUDFLARE = "cloudflare"
+        VERCEL = "vercel"
+        MANUAL = "manual"
+
+    analysis_run = models.ForeignKey(
+        AnalysisRun, on_delete=models.CASCADE, related_name="agent_log_entries"
+    )
+    bot_name = models.CharField(max_length=64, db_index=True)
+    path = models.CharField(max_length=2048)
+    status_code = models.IntegerField(default=0)
+    ts = models.DateTimeField(db_index=True)
+    source = models.CharField(
+        max_length=16, choices=Source.choices, default=Source.MANUAL
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-ts"]
+        indexes = [models.Index(fields=["analysis_run", "bot_name"])]
+
+    def __str__(self):
+        return f"AgentLogEntry<{self.bot_name} {self.path}>"
+
+
+class SchemaWatch(models.Model):
+    """A run of the Schema Watchtower — validates JSON-LD on a set of URLs
+    (products, articles, FAQs) for breakage and drift. v1 is a static
+    validator; v2 will diff against a stored baseline for drift detection."""
+
+    class Status(models.TextChoices):
+        QUEUED = "queued"
+        RUNNING = "running"
+        COMPLETE = "complete"
+        FAILED = "failed"
+
+    analysis_run = models.ForeignKey(
+        AnalysisRun, on_delete=models.CASCADE, related_name="schema_watches"
+    )
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.QUEUED, db_index=True
+    )
+    progress = models.IntegerField(default=0)
+
+    total_urls = models.IntegerField(default=0)
+    healthy_count = models.IntegerField(default=0)
+    warn_count = models.IntegerField(default=0)
+    broken_count = models.IntegerField(default=0)
+
+    discovered_from_sitemap = models.BooleanField(default=True)
+
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    error_message = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"SchemaWatch<{self.analysis_run_id} {self.status} {self.progress}%>"
+
+
+class SchemaWatchPage(models.Model):
+    """One URL snapshot inside a SchemaWatch run."""
+
+    class Severity(models.TextChoices):
+        OK = "ok"
+        WARN = "warn"
+        FAIL = "fail"
+
+    watch = models.ForeignKey(
+        SchemaWatch, on_delete=models.CASCADE, related_name="pages"
+    )
+    url = models.URLField(max_length=2048)
+    path = models.CharField(max_length=2048, blank=True, default="")
+    page_kind = models.CharField(max_length=32, blank=True, default="")
+    status_code = models.IntegerField(default=0)
+
+    schema_types = models.JSONField(default=list, blank=True)
+    jsonld_count = models.IntegerField(default=0)
+    raw_jsonld = models.JSONField(default=list, blank=True)
+
+    severity = models.CharField(
+        max_length=8, choices=Severity.choices, default=Severity.OK, db_index=True
+    )
+    issues = models.JSONField(default=list, blank=True)
+    fix_targets = models.JSONField(default=list, blank=True)
+
+    error_message = models.CharField(max_length=512, blank=True, default="")
+    checked_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["watch_id", "id"]
+        indexes = [
+            models.Index(fields=["watch", "severity"]),
+        ]
+
+    def __str__(self):
+        return f"SchemaWatchPage<{self.url} {self.severity}>"
+
+
+class RankAudit(models.Model):
+    class Status(models.TextChoices):
+        QUEUED = "queued"
+        RUNNING = "running"
+        COMPLETE = "complete"
+        FAILED = "failed"
+
+    analysis_run = models.ForeignKey(
+        AnalysisRun, on_delete=models.CASCADE, related_name="rank_audits"
+    )
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.QUEUED, db_index=True
+    )
+    progress = models.IntegerField(default=0)
+    total_queries = models.IntegerField(default=0)
+    queries_done = models.IntegerField(default=0)
+
+    avg_brand_mentions = models.FloatField(default=0.0)
+    avg_top3_brand_rate = models.FloatField(default=0.0)
+
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    error_message = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"RankAudit<{self.analysis_run_id} {self.status} {self.progress}%>"
+
+
+class RankQuery(models.Model):
+    class Status(models.TextChoices):
+        QUEUED = "queued"
+        DONE = "done"
+        FAILED = "failed"
+
+    audit = models.ForeignKey(
+        RankAudit, on_delete=models.CASCADE, related_name="queries"
+    )
+    prompt_text = models.TextField()
+    rank = models.IntegerField(default=0)
+    brand_mention_count = models.IntegerField(default=0)
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.QUEUED, db_index=True
+    )
+    error_message = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["audit_id", "rank", "id"]
+
+    def __str__(self):
+        return f"RankQuery<{self.audit_id} #{self.rank} {self.status}>"
+
+
+class RankResult(models.Model):
+    class Surface(models.TextChoices):
+        GOOGLE = "google"
+        REDDIT = "reddit"
+        QUORA = "quora"
+        AI = "ai"
+
+    query = models.ForeignKey(
+        RankQuery, on_delete=models.CASCADE, related_name="results"
+    )
+    surface = models.CharField(
+        max_length=16, choices=Surface.choices, db_index=True
+    )
+    position = models.IntegerField()
+    url = models.URLField(max_length=2048, blank=True, default="")
+    domain = models.CharField(max_length=255, blank=True, default="")
+    title = models.CharField(max_length=300, blank=True, default="")
+    snippet = models.TextField(blank=True, default="")
+
+    # AI-surface specific — blank for SERP rows
+    engine = models.CharField(max_length=64, blank=True, default="")
+    response_text = models.TextField(blank=True, default="")
+
+    class Sentiment(models.TextChoices):
+        POSITIVE = "positive"
+        NEUTRAL = "neutral"
+        NEGATIVE = "negative"
+
+    sentiment = models.CharField(
+        max_length=10, choices=Sentiment.choices, default=Sentiment.NEUTRAL
+    )
+
+    is_brand_mentioned = models.BooleanField(default=False)
+    competitors_mentioned = models.JSONField(default=list, blank=True)
+
+    upvotes = models.IntegerField(null=True, blank=True)
+    subreddit = models.CharField(max_length=120, blank=True, default="")
+
+    checked_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["query_id", "surface", "position"]
+        indexes = [
+            models.Index(fields=["query", "surface", "position"]),
+        ]
+
+    def __str__(self):
+        return f"RankResult<{self.query_id} {self.surface}#{self.position}>"

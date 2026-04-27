@@ -1,13 +1,18 @@
 import os
-import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
-# Load .env from project root
-load_dotenv(BASE_DIR / '.env')
+# Load .env from project root. override=True so values in this file win over empty
+# or stale variables already in the process environment (a common cause of "missing" API keys).
+_env_path = BASE_DIR / ".env"
+_env_local = BASE_DIR / ".env.local"
+if _env_path.exists():
+    load_dotenv(_env_path, override=True)
+if _env_local.exists():
+    load_dotenv(_env_local, override=True)
 
 LOGS_DIR = BASE_DIR / 'logs'
 LOGS_DIR.mkdir(exist_ok=True)

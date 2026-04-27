@@ -1,47 +1,42 @@
-"""Brand Visibility orchestrator — runs Google, Reddit, Medium, Web Mentions checks."""
+"""Brand Visibility orchestrator — runs Google, Reddit, Web Mentions checks."""
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlparse
 
 from apps.visibility.pipeline.google_check import check_google
 from apps.visibility.pipeline.reddit_check import check_reddit
-from apps.visibility.pipeline.medium_check import check_medium
 from apps.visibility.pipeline.web_mentions_check import check_web_mentions
+
+from .ai_brand_perception import run_ai_brand_perception
+from .brand_naming import visibility_brand_label
+from .social_presence import run_social_presence
 
 logger = logging.getLogger("apps")
 
-# Weights: Google 40%, Reddit 20%, Medium 10%, Web Mentions 30%
-GOOGLE_WEIGHT = 0.40
-REDDIT_WEIGHT = 0.20
-MEDIUM_WEIGHT = 0.10
-WEB_MENTIONS_WEIGHT = 0.30
+# Weights: Google 44%, Reddit 22%, Web Mentions 34%
+GOOGLE_WEIGHT = 0.44
+REDDIT_WEIGHT = 0.22
+WEB_MENTIONS_WEIGHT = 0.34
 
 
 def extract_brand_name(url: str) -> str:
-    """Derive a brand name from the URL domain."""
-    try:
-        hostname = urlparse(url).hostname or ""
-        # Remove www. and TLD
-        parts = hostname.replace("www.", "").split(".")
-        if parts:
-            return parts[0].capitalize()
-    except Exception:
-        pass
-    return ""
+    """Derive display label from the URL registrable hostname (no user override)."""
+    return visibility_brand_label(url, "")
 
 
 def run_brand_visibility(brand_name: str, brand_url: str) -> dict:
-    """Run all 4 platform checks in parallel and return results dict."""
+    """Run all platform checks in parallel and return results dict."""
+    stored_label = (brand_name or "").strip()
+    effective = visibility_brand_label(brand_url, stored_label)
+    brand_name = effective
+
     google_score, google_details = 0.0, {}
     reddit_score, reddit_details = 0.0, {}
-    medium_score, medium_details = 0.0, {}
     web_mentions_score, web_mentions_details = 0.0, {}
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         google_future = executor.submit(check_google, brand_name, brand_url)
         reddit_future = executor.submit(check_reddit, brand_name)
-        medium_future = executor.submit(check_medium, brand_name)
         web_mentions_future = executor.submit(check_web_mentions, brand_name, brand_url)
 
         try:
@@ -57,12 +52,6 @@ def run_brand_visibility(brand_name: str, brand_url: str) -> dict:
             reddit_details = {"error": str(exc)}
 
         try:
-            medium_score, medium_details = medium_future.result()
-        except Exception as exc:
-            logger.warning("Brand visibility Medium check failed: %s", exc)
-            medium_details = {"error": str(exc)}
-
-        try:
             web_mentions_score, web_mentions_details = web_mentions_future.result()
         except Exception as exc:
             logger.warning("Brand visibility Web Mentions check failed: %s", exc)
@@ -71,18 +60,41 @@ def run_brand_visibility(brand_name: str, brand_url: str) -> dict:
     overall_score = (
         google_score * GOOGLE_WEIGHT
         + reddit_score * REDDIT_WEIGHT
-        + medium_score * MEDIUM_WEIGHT
         + web_mentions_score * WEB_MENTIONS_WEIGHT
     )
+
+    try:
+        social_presence_details = run_social_presence(
+            brand_name, brand_url, web_mentions_details if isinstance(web_mentions_details, dict) else {}
+        )
+    except Exception as exc:
+        logger.warning("Social presence check failed: %s", exc)
+        social_presence_details = {"error": str(exc)}
+
+    g_d = google_details if isinstance(google_details, dict) else {}
+    r_d = reddit_details if isinstance(reddit_details, dict) else {}
+    w_d = web_mentions_details if isinstance(web_mentions_details, dict) else {}
+    try:
+        ai_brand_facts = run_ai_brand_perception(
+            brand_name,
+            brand_url,
+            g_d,
+            r_d,
+            w_d,
+            stored_brand_name=stored_label,
+        )
+    except Exception as exc:
+        logger.warning("AI brand perception failed: %s", exc)
+        ai_brand_facts = {"facts": [], "summary": "", "caveat": str(exc)[:200], "error": str(exc)}
 
     return {
         "google_score": google_score,
         "google_details": google_details,
         "reddit_score": reddit_score,
         "reddit_details": reddit_details,
-        "medium_score": medium_score,
-        "medium_details": medium_details,
         "web_mentions_score": web_mentions_score,
         "web_mentions_details": web_mentions_details,
+        "social_presence_details": social_presence_details,
+        "ai_brand_facts": ai_brand_facts,
         "overall_score": round(overall_score, 1),
     }
