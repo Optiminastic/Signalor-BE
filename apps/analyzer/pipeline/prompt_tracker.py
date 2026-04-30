@@ -693,7 +693,8 @@ def compute_prompt_score(results: list[dict]) -> dict:
       Cross-engine coverage × 0.50 + mention rate × 0.30 + avg confidence × 0.20
 
     Factor 2 — Content Quality & Utility (35%)
-      Positive sentiment rate × 0.60 + normalised sentiment × 0.40
+      (Positive rate among mentions × 0.60 + normalised mention sentiment × 0.40)
+      × mention_rate. Zero when there are no mentions.
 
     Factor 3 — Structural Extractability (25%)
       Top-3 position rate × 0.50 + avg inverse-position score × 0.50
@@ -732,7 +733,6 @@ def compute_prompt_score(results: list[dict]) -> dict:
     sentiment_map = {"positive": 1, "neutral": 0, "negative": -1}
     raw_sentiments = [sentiment_map.get(r.get("sentiment", "neutral"), 0) for r in results]
     raw_sentiment_avg = sum(raw_sentiments) / len(raw_sentiments) if raw_sentiments else 0.0
-    norm_sentiment = (raw_sentiment_avg + 1) / 2  # −1..1 → 0..1
 
     all_engines = {r.get("engine") for r in results if r.get("engine")}
     cited_engines = {r.get("engine") for r in results if r.get("brand_mentioned") and r.get("engine")}
@@ -752,10 +752,6 @@ def compute_prompt_score(results: list[dict]) -> dict:
     top3_rate = top3_count / total if total else 0.0
     avg_inv_pos = (sum(1.0 / p for p in positions) / len(positions)) if positions else 0.0
 
-    # Positive/negative sentiment counts
-    pos_count = sum(1 for r in results if r.get("sentiment") == "positive")
-    pos_rate = pos_count / total if total else 0.0
-
     # ── Factor 1: Authority & Credibility (40%) ───────────────────────────
     authority_score = min(
         engine_coverage * 0.50 + mention_rate * 0.30 + avg_confidence * 0.20,
@@ -763,10 +759,29 @@ def compute_prompt_score(results: list[dict]) -> dict:
     )
 
     # ── Factor 2: Content Quality & Utility (35%) ─────────────────────────
-    content_quality_score = min(
-        pos_rate * 0.60 + norm_sentiment * 0.40,
-        1.0,
-    )
+    # Only consider sentiment from responses where the brand was actually
+    # mentioned — otherwise the neutral baseline of unrelated responses
+    # inflates the score (e.g. 0 mentions would yield 20 from norm_sentiment=0.5).
+    mentioned_sentiments = [
+        sentiment_map.get(r.get("sentiment", "neutral"), 0)
+        for r in results if r.get("brand_mentioned")
+    ]
+    if mentioned_sentiments:
+        raw_sentiment_avg_m = sum(mentioned_sentiments) / len(mentioned_sentiments)
+        norm_sentiment_m = (raw_sentiment_avg_m + 1) / 2
+        pos_count_m = sum(
+            1 for r in results
+            if r.get("brand_mentioned") and r.get("sentiment") == "positive"
+        )
+        pos_rate_m = pos_count_m / len(mentioned_sentiments)
+        # Dampen by mention_rate so a single mention out of many runs
+        # doesn't max out content quality.
+        content_quality_score = min(
+            (pos_rate_m * 0.60 + norm_sentiment_m * 0.40) * mention_rate,
+            1.0,
+        )
+    else:
+        content_quality_score = 0.0
 
     # ── Factor 3: Structural Extractability (25%) ─────────────────────────
     structural_score = min(

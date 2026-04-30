@@ -61,6 +61,15 @@ from .views import (
     RankAuditStartView,
     RankAuditDetailView,
     RankAuditRefreshQueryView,
+    PromptRankView,
+    # Backlink marketplace
+    BacklinkCatalogView,
+    BacklinkOrderListCreateView,
+    BacklinkOrderDetailView,
+    # Wikipedia draft generator
+    PromptWikipediaDraftView,
+    # Schema / E-E-A-T generators
+    PromptSchemaView,
 )
 
 app_name = "analyzer"
@@ -117,6 +126,13 @@ urlpatterns = [
     path("runs/s/<str:slug>/rank/", RankAuditDetailView.as_view(), name="rank-audit-detail"),
     path("runs/s/<str:slug>/rank/start/", RankAuditStartView.as_view(), name="rank-audit-start"),
     path("runs/s/<str:slug>/rank/query/<int:query_id>/refresh/", RankAuditRefreshQueryView.as_view(), name="rank-audit-refresh-query"),
+    path("runs/s/<str:slug>/prompts/<int:track_id>/rank/", PromptRankView.as_view(), name="prompt-rank"),
+    # Backlink marketplace
+    path("runs/s/<str:slug>/backlinks/catalog/", BacklinkCatalogView.as_view(), name="backlink-catalog"),
+    path("runs/s/<str:slug>/backlinks/orders/", BacklinkOrderListCreateView.as_view(), name="backlink-orders"),
+    path("runs/s/<str:slug>/backlinks/orders/<int:order_id>/", BacklinkOrderDetailView.as_view(), name="backlink-order-detail"),
+    path("runs/s/<str:slug>/prompts/<int:track_id>/wikipedia/draft/", PromptWikipediaDraftView.as_view(), name="prompt-wikipedia-draft"),
+    path("runs/s/<str:slug>/prompts/<int:track_id>/schema/", PromptSchemaView.as_view(), name="prompt-schema"),
     path("runs/s/<str:slug>/", AnalysisRunBySlugView.as_view(), name="run-by-slug"),
     path("runs/<int:run_id>/status/", AnalysisRunStatusView.as_view(), name="run-status"),
     path("runs/<int:run_id>/export-pdf/", ExportPDFView.as_view(), name="export-pdf"),

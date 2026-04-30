@@ -1407,3 +1407,153 @@ class RankResult(models.Model):
 
     def __str__(self):
         return f"RankResult<{self.query_id} {self.surface}#{self.position}>"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Backlink marketplace
+# Connects the brand to paid backlink providers (FATJOE, The HOTH, Adsy, …).
+# Catalog is cached locally; orders are placed through the provider's API and
+# tracked here through delivery.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class BacklinkProvider(models.Model):
+    """Configured backlink-as-a-service vendor (one row per integration)."""
+
+    slug = models.SlugField(max_length=40, unique=True)
+    display_name = models.CharField(max_length=120)
+    is_enabled = models.BooleanField(default=True)
+    homepage_url = models.URLField(max_length=500, blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["display_name"]
+
+    def __str__(self):
+        return self.display_name
+
+
+class BacklinkProduct(models.Model):
+    """
+    A single buyable backlink listing — typically a guest post / niche edit
+    on a specific domain. Catalog is refreshed periodically from the provider.
+    """
+
+    class LinkType(models.TextChoices):
+        GUEST_POST = "guest_post", "Guest Post"
+        NICHE_EDIT = "niche_edit", "Niche Edit"
+        SPONSORED = "sponsored", "Sponsored Post"
+        CITATION = "citation", "Citation / Listing"
+        OTHER = "other", "Other"
+
+    provider = models.ForeignKey(
+        BacklinkProvider,
+        on_delete=models.CASCADE,
+        related_name="products",
+    )
+    sku = models.CharField(max_length=120, db_index=True)
+    domain = models.CharField(max_length=255, db_index=True)
+    title = models.CharField(max_length=300, blank=True, default="")
+    link_type = models.CharField(
+        max_length=20, choices=LinkType.choices, default=LinkType.GUEST_POST
+    )
+    domain_authority = models.IntegerField(null=True, blank=True)  # 0–100 scale
+    domain_rank = models.IntegerField(null=True, blank=True)        # 0–1000 scale
+    monthly_traffic = models.IntegerField(null=True, blank=True)
+    niche_tags = models.JSONField(default=list, blank=True)
+    language = models.CharField(max_length=8, default="en")
+    country = models.CharField(max_length=8, blank=True, default="")
+    do_follow = models.BooleanField(default=True)
+
+    # All money in minor units (cents) to avoid float issues.
+    wholesale_price_cents = models.IntegerField(default=0)
+    retail_price_cents = models.IntegerField(default=0)
+    currency = models.CharField(max_length=3, default="USD")
+    lead_time_days = models.IntegerField(default=7)
+
+    extras = models.JSONField(default=dict, blank=True)
+    last_seen_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-domain_authority", "domain"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["provider", "sku"], name="uniq_provider_sku"
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["provider", "domain"]),
+            models.Index(fields=["link_type"]),
+        ]
+
+    def __str__(self):
+        return f"{self.domain} ({self.provider.slug})"
+
+
+class BacklinkOrder(models.Model):
+    """A placed order against a BacklinkProduct, tracked through fulfillment."""
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        PENDING_PAYMENT = "pending_payment", "Pending payment"
+        QUEUED = "queued", "Queued with provider"
+        IN_PROGRESS = "in_progress", "In progress"
+        DELIVERED = "delivered", "Delivered"
+        REJECTED = "rejected", "Rejected"
+        REFUNDED = "refunded", "Refunded"
+        CANCELLED = "cancelled", "Cancelled"
+
+    provider = models.ForeignKey(
+        BacklinkProvider, on_delete=models.PROTECT, related_name="orders"
+    )
+    product = models.ForeignKey(
+        BacklinkProduct, on_delete=models.PROTECT, related_name="orders"
+    )
+    user_email = models.EmailField()
+    analysis_run = models.ForeignKey(
+        AnalysisRun,
+        on_delete=models.CASCADE,
+        related_name="backlink_orders",
+        null=True,
+        blank=True,
+    )
+    prompt_track = models.ForeignKey(
+        PromptTrack,
+        on_delete=models.SET_NULL,
+        related_name="backlink_orders",
+        null=True,
+        blank=True,
+    )
+
+    target_url = models.URLField(max_length=2048)
+    anchor_text = models.CharField(max_length=300)
+    status = models.CharField(
+        max_length=24, choices=Status.choices, default=Status.DRAFT, db_index=True
+    )
+
+    price_cents = models.IntegerField(default=0)
+    currency = models.CharField(max_length=3, default="USD")
+
+    provider_order_id = models.CharField(max_length=120, blank=True, default="")
+    proof_url = models.URLField(max_length=2048, blank=True, default="")
+    notes_for_provider = models.TextField(blank=True, default="")
+    error_message = models.TextField(blank=True, default="")
+
+    payment_intent_id = models.CharField(max_length=120, blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    ordered_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user_email", "status"]),
+            models.Index(fields=["status"]),
+        ]
+
+    def __str__(self):
+        return f"BacklinkOrder<{self.id} {self.status} {self.product.domain}>"
