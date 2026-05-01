@@ -28,7 +28,7 @@ else:
         }
     }
 
-# CORS settings for development
+
 CORS_ALLOW_ALL_ORIGINS = True
 
 # Render/Cloudflare proxy support
