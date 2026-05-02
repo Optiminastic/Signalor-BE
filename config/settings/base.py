@@ -197,6 +197,9 @@ GOOGLE_ANALYTICS_REDIRECT_URI = os.getenv(
 )
 ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY', '')
 
+DATAFORSEO_LOGIN = os.getenv('DATAFORSEO_LOGIN', '')
+DATAFORSEO_PASSWORD = os.getenv('DATAFORSEO_PASSWORD', '')
+
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
 EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))

@@ -34,6 +34,11 @@ from .views import (
     CitationSourcesView,
     RecheckPromptView,
     RecheckAllPromptsView,
+    PromptBacklinksView,
+    PromptOpportunitiesView,
+    PromptOpportunityDetailView,
+    BrandKitView,
+    DomainAnalyticsView,
     PromptDeleteView,
     GeneratePromptsView,
     # New features
@@ -57,6 +62,16 @@ from .views import (
     RankAuditStartView,
     RankAuditDetailView,
     RankAuditRefreshQueryView,
+    PromptRankView,
+    # Backlink marketplace
+    BacklinkCatalogView,
+    BacklinkOrderListCreateView,
+    BacklinkOrderDetailView,
+    BacklinkOrderConfirmPaymentView,
+    # Wikipedia draft generator
+    PromptWikipediaDraftView,
+    # Schema / E-E-A-T generators
+    PromptSchemaView,
 )
 
 app_name = "analyzer"
@@ -76,11 +91,24 @@ urlpatterns = [
         name="prompt-result-detail",
     ),
     path("runs/s/<str:slug>/prompts/<int:track_id>/recheck/", RecheckPromptView.as_view(), name="prompt-recheck"),
+    path("runs/s/<str:slug>/prompts/<int:track_id>/backlinks/", PromptBacklinksView.as_view(), name="prompt-backlinks"),
+    path(
+        "runs/s/<str:slug>/prompts/<int:track_id>/opportunities/",
+        PromptOpportunitiesView.as_view(),
+        name="prompt-opportunities",
+    ),
+    path(
+        "runs/s/<str:slug>/prompts/<int:track_id>/opportunities/<int:opp_id>/",
+        PromptOpportunityDetailView.as_view(),
+        name="prompt-opportunity-detail",
+    ),
     path("runs/s/<str:slug>/prompts/<int:track_id>/", PromptDeleteView.as_view(), name="prompt-delete"),
     path("runs/s/<str:slug>/recheck-all/",                     RecheckAllPromptsView.as_view(),  name="prompt-recheck-all"),
     path("runs/s/<str:slug>/share-of-voice/",                  ShareOfVoiceView.as_view(),       name="share-of-voice"),
     path("runs/s/<str:slug>/citation-trend/",                  CitationTrendView.as_view(),      name="citation-trend"),
     path("runs/s/<str:slug>/citations/",                       CitationSourcesView.as_view(),    name="citation-sources"),
+    path("runs/s/<str:slug>/brand-kit/",                       BrandKitView.as_view(),           name="brand-kit"),
+    path("runs/s/<str:slug>/domain-analytics/",                DomainAnalyticsView.as_view(),    name="domain-analytics"),
     path("runs/s/<str:slug>/geo-improvements/", GeoImprovementsView.as_view(), name="geo-improvements"),
     path("runs/s/<str:slug>/apply-geo-fixes/", ApplyGeoFixesAndReanalyzeView.as_view(), name="apply-geo-fixes"),
     path("runs/s/<str:slug>/competitors/", CompetitorListCreateView.as_view(), name="competitor-list-create"),
@@ -101,6 +129,14 @@ urlpatterns = [
     path("runs/s/<str:slug>/rank/", RankAuditDetailView.as_view(), name="rank-audit-detail"),
     path("runs/s/<str:slug>/rank/start/", RankAuditStartView.as_view(), name="rank-audit-start"),
     path("runs/s/<str:slug>/rank/query/<int:query_id>/refresh/", RankAuditRefreshQueryView.as_view(), name="rank-audit-refresh-query"),
+    path("runs/s/<str:slug>/prompts/<int:track_id>/rank/", PromptRankView.as_view(), name="prompt-rank"),
+    # Backlink marketplace
+    path("runs/s/<str:slug>/backlinks/catalog/", BacklinkCatalogView.as_view(), name="backlink-catalog"),
+    path("runs/s/<str:slug>/backlinks/orders/", BacklinkOrderListCreateView.as_view(), name="backlink-orders"),
+    path("runs/s/<str:slug>/backlinks/orders/<int:order_id>/", BacklinkOrderDetailView.as_view(), name="backlink-order-detail"),
+    path("runs/s/<str:slug>/backlinks/orders/<int:order_id>/confirm-payment/", BacklinkOrderConfirmPaymentView.as_view(), name="backlink-order-confirm-payment"),
+    path("runs/s/<str:slug>/prompts/<int:track_id>/wikipedia/draft/", PromptWikipediaDraftView.as_view(), name="prompt-wikipedia-draft"),
+    path("runs/s/<str:slug>/prompts/<int:track_id>/schema/", PromptSchemaView.as_view(), name="prompt-schema"),
     path("runs/s/<str:slug>/", AnalysisRunBySlugView.as_view(), name="run-by-slug"),
     path("runs/<int:run_id>/status/", AnalysisRunStatusView.as_view(), name="run-status"),
     path("runs/<int:run_id>/export-pdf/", ExportPDFView.as_view(), name="export-pdf"),

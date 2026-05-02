@@ -735,6 +735,85 @@ class PromptCitation(models.Model):
         return f"Citation {self.domain} (brand={self.is_brand}, rival={self.is_competitor})"
 
 
+class BacklinkSnapshot(models.Model):
+    """
+    Cached domain-level backlink metrics fetched from DataForSEO.
+
+    Reused across runs/prompts; refreshed when older than 7 days. Keyed by
+    bare domain (no scheme, no path, no www. prefix) lowercased.
+    """
+    domain = models.CharField(max_length=255, unique=True, db_index=True)
+    referring_domains = models.IntegerField(default=0)
+    backlinks = models.IntegerField(default=0)
+    rank = models.IntegerField(default=0)
+    fetched_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-referring_domains"]
+
+    def __str__(self):
+        return f"BacklinkSnapshot {self.domain} (RD={self.referring_domains})"
+
+
+class BacklinkOpportunity(models.Model):
+    """
+    A site where the user can submit/list/earn a backlink — generated per prompt
+    by the LLM based on the prompt's intent + the brand's profile.
+
+    Drives the per-prompt "Backlink Opportunities" actions panel: each row is
+    something the user can act on (submit a listing, request a review, post in
+    a community, claim a profile).
+    """
+    class Category(models.TextChoices):
+        DIRECTORY = "directory", "Directory"
+        REVIEW = "review", "Review Site"
+        PRESS = "press", "Press / Media"
+        FORUM = "forum", "Community / Forum"
+        RESOURCE = "resource", "Resource Page"
+        OTHER = "other", "Other"
+
+    class Status(models.TextChoices):
+        SUGGESTED = "suggested", "Suggested"
+        SUBMITTED = "submitted", "Submitted"
+        LIVE = "live", "Live"
+        DISMISSED = "dismissed", "Dismissed"
+
+    prompt_track = models.ForeignKey(
+        PromptTrack,
+        on_delete=models.CASCADE,
+        related_name="backlink_opportunities",
+    )
+    name = models.CharField(max_length=200)
+    description = models.CharField(max_length=400, blank=True, default="")
+    rationale = models.CharField(max_length=400, blank=True, default="")
+    submit_url = models.URLField(max_length=2048)
+    category = models.CharField(
+        max_length=20,
+        choices=Category.choices,
+        default=Category.DIRECTORY,
+    )
+    # Lower number = higher priority. 1=high, 2=medium, 3=low.
+    priority = models.IntegerField(default=2)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.SUGGESTED,
+    )
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    live_url = models.URLField(max_length=2048, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["priority", "name"]
+        indexes = [
+            models.Index(fields=["prompt_track", "status"]),
+        ]
+
+    def __str__(self):
+        return f"BacklinkOpportunity {self.name} ({self.status})"
+
+
 class BlogAutomationConfig(models.Model):
     class PublishMode(models.TextChoices):
         AUTO_PUBLISH = "auto_publish", "Auto Publish"
@@ -961,6 +1040,7 @@ class ScheduledAnalysis(models.Model):
 
 class AutoFixJob(models.Model):
     class Status(models.TextChoices):
+        PREVIEW = "preview"
         PENDING = "pending"
         RUNNING = "running"
         SUCCESS = "success"
@@ -1328,3 +1408,248 @@ class RankResult(models.Model):
 
     def __str__(self):
         return f"RankResult<{self.query_id} {self.surface}#{self.position}>"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Backlink marketplace
+# Connects the brand to paid backlink providers (FATJOE, The HOTH, Adsy, …).
+# Catalog is cached locally; orders are placed through the provider's API and
+# tracked here through delivery.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class BacklinkProvider(models.Model):
+    """Configured backlink-as-a-service vendor (one row per integration)."""
+
+    slug = models.SlugField(max_length=40, unique=True)
+    display_name = models.CharField(max_length=120)
+    is_enabled = models.BooleanField(default=True)
+    homepage_url = models.URLField(max_length=500, blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["display_name"]
+
+    def __str__(self):
+        return self.display_name
+
+
+class BacklinkProduct(models.Model):
+    """
+    A single buyable backlink listing — typically a guest post / niche edit
+    on a specific domain. Catalog is refreshed periodically from the provider.
+    """
+
+    class LinkType(models.TextChoices):
+        GUEST_POST = "guest_post", "Guest Post"
+        NICHE_EDIT = "niche_edit", "Niche Edit"
+        SPONSORED = "sponsored", "Sponsored Post"
+        CITATION = "citation", "Citation / Listing"
+        OTHER = "other", "Other"
+
+    provider = models.ForeignKey(
+        BacklinkProvider,
+        on_delete=models.CASCADE,
+        related_name="products",
+    )
+    sku = models.CharField(max_length=120, db_index=True)
+    domain = models.CharField(max_length=255, db_index=True)
+    title = models.CharField(max_length=300, blank=True, default="")
+    link_type = models.CharField(
+        max_length=20, choices=LinkType.choices, default=LinkType.GUEST_POST
+    )
+    domain_authority = models.IntegerField(null=True, blank=True)  # 0–100 scale
+    domain_rank = models.IntegerField(null=True, blank=True)        # 0–1000 scale
+    monthly_traffic = models.IntegerField(null=True, blank=True)
+    niche_tags = models.JSONField(default=list, blank=True)
+    language = models.CharField(max_length=8, default="en")
+    country = models.CharField(max_length=8, blank=True, default="")
+    do_follow = models.BooleanField(default=True)
+
+    # All money in minor units (cents) to avoid float issues.
+    wholesale_price_cents = models.IntegerField(default=0)
+    retail_price_cents = models.IntegerField(default=0)
+    currency = models.CharField(max_length=3, default="USD")
+    lead_time_days = models.IntegerField(default=7)
+
+    extras = models.JSONField(default=dict, blank=True)
+    last_seen_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-domain_authority", "domain"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["provider", "sku"], name="uniq_provider_sku"
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["provider", "domain"]),
+            models.Index(fields=["link_type"]),
+        ]
+
+    def __str__(self):
+        return f"{self.domain} ({self.provider.slug})"
+
+
+class BacklinkOrder(models.Model):
+    """A placed order against a BacklinkProduct, tracked through fulfillment."""
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        PENDING_PAYMENT = "pending_payment", "Pending payment"
+        QUEUED = "queued", "Queued with provider"
+        IN_PROGRESS = "in_progress", "In progress"
+        DELIVERED = "delivered", "Delivered"
+        REJECTED = "rejected", "Rejected"
+        REFUNDED = "refunded", "Refunded"
+        CANCELLED = "cancelled", "Cancelled"
+
+    provider = models.ForeignKey(
+        BacklinkProvider, on_delete=models.PROTECT, related_name="orders"
+    )
+    product = models.ForeignKey(
+        BacklinkProduct, on_delete=models.PROTECT, related_name="orders"
+    )
+    user_email = models.EmailField()
+    analysis_run = models.ForeignKey(
+        AnalysisRun,
+        on_delete=models.CASCADE,
+        related_name="backlink_orders",
+        null=True,
+        blank=True,
+    )
+    prompt_track = models.ForeignKey(
+        PromptTrack,
+        on_delete=models.SET_NULL,
+        related_name="backlink_orders",
+        null=True,
+        blank=True,
+    )
+
+    target_url = models.URLField(max_length=2048)
+    anchor_text = models.CharField(max_length=300)
+    status = models.CharField(
+        max_length=24, choices=Status.choices, default=Status.DRAFT, db_index=True
+    )
+
+    price_cents = models.IntegerField(default=0)
+    currency = models.CharField(max_length=3, default="USD")
+
+    provider_order_id = models.CharField(max_length=120, blank=True, default="")
+    proof_url = models.URLField(max_length=2048, blank=True, default="")
+    notes_for_provider = models.TextField(blank=True, default="")
+    error_message = models.TextField(blank=True, default="")
+
+    payment_intent_id = models.CharField(max_length=120, blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    ordered_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user_email", "status"]),
+            models.Index(fields=["status"]),
+        ]
+
+    def __str__(self):
+        return f"BacklinkOrder<{self.id} {self.status} {self.product.domain}>"
+
+
+class BrandKit(models.Model):
+    """Per-run cached brand submission kit (LLM-generated)."""
+    analysis_run = models.OneToOneField(
+        AnalysisRun, on_delete=models.CASCADE, related_name="brand_kit"
+    )
+    payload = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"BrandKit<run={self.analysis_run_id}>"
+
+
+class PromptWikipediaDraft(models.Model):
+    """Per-prompt cached Wikipedia draft kit (LLM-generated)."""
+    prompt_track = models.OneToOneField(
+        PromptTrack, on_delete=models.CASCADE, related_name="wikipedia_draft"
+    )
+    payload = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"PromptWikipediaDraft<track={self.prompt_track_id}>"
+
+
+class ChatMessage(models.Model):
+    """Persistent AI assistant chat history per analysis run."""
+
+    class Role(models.TextChoices):
+        USER = "user", "User"
+        ASSISTANT = "assistant", "Assistant"
+
+    analysis_run = models.ForeignKey(
+        AnalysisRun, on_delete=models.CASCADE, related_name="chat_messages"
+    )
+    role = models.CharField(max_length=12, choices=Role.choices)
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [models.Index(fields=["analysis_run", "created_at"])]
+
+    def __str__(self):
+        return f"ChatMessage<run={self.analysis_run_id} {self.role} {self.created_at:%Y-%m-%d %H:%M}>"
+
+
+class PromptSchemaArtifact(models.Model):
+    """A saved artifact (answer paragraph or JSON-LD) generated for a prompt."""
+
+    class SchemaType(models.TextChoices):
+        FAQ = "faq", "FAQ"
+        ARTICLE = "article", "Article"
+        PERSON = "person", "Person"
+        ORGANIZATION = "organization", "Organization"
+        ANSWER = "answer", "Direct answer"
+
+    prompt_track = models.ForeignKey(
+        PromptTrack, on_delete=models.CASCADE, related_name="schema_artifacts"
+    )
+    schema_type = models.CharField(max_length=24, choices=SchemaType.choices)
+    output = models.TextField()
+    explanation = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [("prompt_track", "schema_type")]
+        indexes = [models.Index(fields=["prompt_track", "schema_type"])]
+
+    def __str__(self):
+        return f"PromptSchemaArtifact<track={self.prompt_track_id} {self.schema_type}>"
+
+
+class DomainAnalyticsSnapshot(models.Model):
+    """
+    Per-run cached DataForSEO Domain Analytics snapshot — estimated organic
+    traffic, top keywords, top pages, and per-country geographic breakdown.
+    Refreshed on demand; default TTL is 7 days.
+    """
+    analysis_run = models.OneToOneField(
+        AnalysisRun, on_delete=models.CASCADE, related_name="domain_analytics"
+    )
+    overview = models.JSONField(default=dict)
+    top_keywords = models.JSONField(default=list)
+    top_pages = models.JSONField(default=list)
+    geo_distribution = models.JSONField(default=dict)
+    synced_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"DomainAnalyticsSnapshot<run={self.analysis_run_id}>"

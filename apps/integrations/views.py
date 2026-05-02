@@ -127,19 +127,29 @@ def _append_query_params(url: str, extra: dict[str, str]) -> str:
 
 
 def _resolve_org(email: str, org_id: int | None = None):
-    """Resolve org by id (preferred) or fall back to email lookup (auto-creates)."""
+    """
+    Resolve org by id (preferred) or by email.
+
+    If ``org_id`` is given but doesn't match an existing row, return 404 — do
+    NOT silently fall through to email lookup. The previous fallback
+    auto-created a new org for the caller, which produced orphan rows and
+    masked client bugs (e.g. stale org IDs in the URL).
+    """
     email_norm = email.lower().strip()
     if org_id:
         try:
             org = Organization.objects.get(pk=org_id)
-            if (org.owner_email or "").lower().strip() != email_norm:
-                return None, Response(
-                    {"error": "Organization does not belong to this account."},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-            return org, None
         except Organization.DoesNotExist:
-            pass  # fall through to email lookup
+            return None, Response(
+                {"error": "Organization not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if (org.owner_email or "").lower().strip() != email_norm:
+            return None, Response(
+                {"error": "Organization does not belong to this account."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return org, None
     return _get_org_or_400(email)
 
 

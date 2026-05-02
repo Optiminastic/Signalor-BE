@@ -493,7 +493,18 @@ class PromptTrackSerializer(serializers.ModelSerializer):
     def _score_data(self, obj):
         if not hasattr(obj, "_score_cache"):
             from .pipeline.prompt_tracker import compute_prompt_score
-            results = list(obj.results.values("brand_mentioned", "sentiment", "rank_position", "confidence", "engine"))
+            # Read from the prefetched .results manager rather than .values()
+            # — .values() re-queries the DB even when results are prefetched.
+            results = [
+                {
+                    "brand_mentioned": r.brand_mentioned,
+                    "sentiment": r.sentiment,
+                    "rank_position": r.rank_position,
+                    "confidence": r.confidence,
+                    "engine": r.engine,
+                }
+                for r in obj.results.all()
+            ]
             obj._score_cache = compute_prompt_score(results)
         return obj._score_cache
 

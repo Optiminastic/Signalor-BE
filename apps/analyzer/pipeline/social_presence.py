@@ -443,7 +443,7 @@ def _serper_find_social_profiles(brand_name: str) -> dict[str, str | None]:
                 return normalizer(link) if normalizer else link
         except Exception as exc:
             logger.debug("serper social search %s/%s: %s", platform, site, exc)
-        return Nonecal
+        return None
 
     with ThreadPoolExecutor(max_workers=5) as pool:
         futures = {
