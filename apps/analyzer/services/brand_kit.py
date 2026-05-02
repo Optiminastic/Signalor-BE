@@ -45,14 +45,15 @@ class BrandKitError(Exception):
 
 def get_or_generate(run: AnalysisRun, *, force: bool = False) -> dict[str, Any]:
     """
-    Return the cached kit, or generate + cache one. Raises ``BrandKitError``
-    if generation fails AND no cache hit is available.
+    Return the persisted kit, or generate + persist one. Raises
+    ``BrandKitError`` if generation fails AND no saved kit exists.
     """
-    cache_key = f"{CACHE_KEY_PREFIX}:{run.slug}"
+    from apps.analyzer.models import BrandKit
+
     if not force:
-        cached = _safe_cache_get(cache_key)
-        if cached:
-            return cached
+        existing = BrandKit.objects.filter(analysis_run=run).first()
+        if existing and existing.payload:
+            return existing.payload
 
     raw = _ask_llm_for_kit(run)
     parsed = _parse_kit_response(raw)
@@ -60,16 +61,19 @@ def get_or_generate(run: AnalysisRun, *, force: bool = False) -> dict[str, Any]:
         raise BrandKitError("LLM returned an unparseable kit response.")
 
     kit = _normalize_kit(parsed, run)
-    _safe_cache_set(cache_key, kit, CACHE_TTL_SECONDS)
+    BrandKit.objects.update_or_create(
+        analysis_run=run, defaults={"payload": kit}
+    )
     return kit
 
 
 def invalidate(slug: str) -> None:
-    """Drop the cached kit for a workspace."""
+    """Drop the persisted kit for a workspace."""
     if not slug:
         return
+    from apps.analyzer.models import AnalysisRun, BrandKit
     try:
-        cache.delete(f"{CACHE_KEY_PREFIX}:{slug}")
+        BrandKit.objects.filter(analysis_run__slug=slug).delete()
     except Exception:
         logger.warning("brand_kit invalidate failed for %s", slug, exc_info=True)
 

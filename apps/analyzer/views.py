@@ -1454,36 +1454,35 @@ class BlogAutomationGenerateView(APIView):
         )
 
         integration, provider = _resolve_blog_integration(email)
-        save_as_draft = bool(request.data.get("save_as_draft", False))
+        # Always persist generated drafts so users don't lose them on refresh.
         draft_job_payload = None
-        if save_as_draft:
-            config = _get_or_create_blog_config(
-                email=email,
-                run_id=run_id,
-                analyzed_url=analyzed_url,
+        config = _get_or_create_blog_config(
+            email=email,
+            run_id=run_id,
+            analyzed_url=analyzed_url,
+            topic=topic,
+            keywords=keywords,
+            is_active=request.data.get("activate_automation"),
+        )
+        if config:
+            job = BlogAutomationJob.objects.create(
+                config=config,
+                user_email=email,
+                analysis_run=run,
+                scheduled_for=timezone.now(),
+                provider=provider if integration else BlogAutomationConfig.PublishProvider.NONE,
+                mode=config.mode,
+                status=BlogAutomationJob.Status.DRAFT,
                 topic=topic,
                 keywords=keywords,
-                is_active=request.data.get("activate_automation"),
+                title=draft.get("title", ""),
+                slug=draft.get("slug", ""),
+                meta_description=draft.get("meta_description", ""),
+                excerpt=draft.get("excerpt", ""),
+                content_markdown=draft.get("content_markdown", ""),
+                tags=draft.get("tags", []),
             )
-            if config:
-                job = BlogAutomationJob.objects.create(
-                    config=config,
-                    user_email=email,
-                    analysis_run=run,
-                    scheduled_for=timezone.now(),
-                    provider=provider if integration else BlogAutomationConfig.PublishProvider.NONE,
-                    mode=config.mode,
-                    status=BlogAutomationJob.Status.DRAFT,
-                    topic=topic,
-                    keywords=keywords,
-                    title=draft.get("title", ""),
-                    slug=draft.get("slug", ""),
-                    meta_description=draft.get("meta_description", ""),
-                    excerpt=draft.get("excerpt", ""),
-                    content_markdown=draft.get("content_markdown", ""),
-                    tags=draft.get("tags", []),
-                )
-                draft_job_payload = BlogAutomationJobSerializer(job).data
+            draft_job_payload = BlogAutomationJobSerializer(job).data
 
         return Response({
             "submenu_key": "ai-blog-automation",
@@ -2321,6 +2320,47 @@ class BrandKitView(APIView):
             )
 
 
+class DomainAnalyticsView(APIView):
+    """GET/POST /api/analyzer/runs/s/<slug>/domain-analytics/
+
+    SEMrush-style real-world signals (estimated organic traffic, top keywords,
+    top pages) sourced from DataForSEO Labs. No GA connection required.
+
+    GET:  return the cached snapshot, auto-fetch on first call.
+    POST: force a fresh fetch (3 DataForSEO API calls, ~$0.015 / refresh).
+    """
+    permission_classes = [AllowAny]
+
+    def _respond(self, run, *, force: bool):
+        from .services.domain_analytics import get_or_generate, DomainAnalyticsError
+        from apps.integrations.services.dataforseo import DataForSEONotConfigured
+        try:
+            return Response(get_or_generate(run, force=force))
+        except DataForSEONotConfigured:
+            return Response(
+                {
+                    "detail": "DataForSEO is not configured.",
+                    "code": "dataforseo_not_configured",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except DomainAnalyticsError as exc:
+            return Response(
+                {"detail": str(exc), "code": "domain_analytics_failed"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        return self._respond(run, force=False)
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        return self._respond(run, force=True)
+
+
 class CompetitorListCreateView(APIView):
     """GET/POST /api/analyzer/runs/s/<slug>/competitors/"""
     permission_classes = [AllowAny]
@@ -2580,16 +2620,23 @@ class AutoFixView(APIView):
 
 
 class AutoFixPreviewView(APIView):
-    """POST /api/analyzer/runs/s/<slug>/auto-fix/preview/ — generate fix preview without applying."""
+    """POST /api/analyzer/runs/s/<slug>/auto-fix/preview/ — generate fix preview without applying.
+
+    Persists the preview as an AutoFixJob with status='preview'. If a preview
+    already exists for the same (run, recommendation), returns it without
+    re-running the LLM. Pass force=true to regenerate.
+    """
     permission_classes = [AllowAny]
 
     def post(self, request, slug):
         from django.shortcuts import get_object_or_404
         from .auto_fix import generate_fix_preview
+        from .models import AutoFixJob
 
         run = get_object_or_404(AnalysisRun, slug=slug)
         rec_id = request.data.get("recommendation_id")
         email = request.data.get("email", "").lower().strip()
+        force = bool(request.data.get("force"))
 
         if not rec_id or not email:
             return Response({"error": "recommendation_id and email required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -2609,8 +2656,32 @@ class AutoFixPreviewView(APIView):
         except Recommendation.DoesNotExist:
             return Response({"error": "Recommendation not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        if not force:
+            cached = AutoFixJob.objects.filter(
+                analysis_run=run,
+                recommendation=rec,
+                status=AutoFixJob.Status.PREVIEW,
+            ).order_by("-created_at").first()
+            if cached and cached.response_data:
+                return Response({**cached.response_data, "cached": True})
+
         preview = generate_fix_preview(run, integration, rec)
-        return Response(preview)
+        try:
+            AutoFixJob.objects.update_or_create(
+                analysis_run=run,
+                recommendation=rec,
+                status=AutoFixJob.Status.PREVIEW,
+                defaults={
+                    "integration": integration,
+                    "fix_type": preview.get("fix_type", "content"),
+                    "response_data": preview,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "Failed to persist AutoFixJob preview (run=%s rec=%s)", run.id, rec.id
+            )
+        return Response({**preview, "cached": False})
 
 
 class AutoFixApproveView(APIView):
@@ -2732,15 +2803,47 @@ class AutoFixVerifyView(APIView):
 # ── AI Chat (GEO Assistant with analysis context) ────────────────────────────
 
 class AiChatView(APIView):
-    """POST /api/analyzer/runs/s/<slug>/chat/ — AI chat with full analysis context."""
+    """
+    GET  /api/analyzer/runs/s/<slug>/chat/ — return persisted chat history.
+    POST /api/analyzer/runs/s/<slug>/chat/ — send a message; reply persists.
+
+    The backend is the source of truth for chat history — clients no longer
+    need to round-trip the conversation. Sending `history` in the body is
+    ignored unless the run has zero saved messages (legacy migration aid).
+    """
     permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .models import ChatMessage
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        msgs = ChatMessage.objects.filter(analysis_run=run).order_by("created_at")
+        return Response({
+            "messages": [
+                {
+                    "role": m.role,
+                    "content": m.content,
+                    "created_at": m.created_at.isoformat(),
+                }
+                for m in msgs
+            ]
+        })
 
     def post(self, request, slug):
         from django.shortcuts import get_object_or_404
+        from .models import ChatMessage
 
         run = get_object_or_404(AnalysisRun, slug=slug)
         message = request.data.get("message", "").strip()
-        history = request.data.get("history", [])
+        # Pull persisted history; fall back to client-sent on first ever message.
+        persisted = list(
+            ChatMessage.objects.filter(analysis_run=run).order_by("created_at")
+        )
+        if persisted:
+            history = [{"role": m.role, "content": m.content} for m in persisted]
+        else:
+            history = request.data.get("history", []) or []
 
         if not message:
             return Response({"error": "message required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -2877,6 +2980,11 @@ RESPONSE FORMAT RULES:
                 messages.append({"role": h["role"], "content": h["content"]})
         messages.append({"role": "user", "content": message})
 
+        # Persist the user message before invoking the LLM so it survives errors.
+        ChatMessage.objects.create(
+            analysis_run=run, role=ChatMessage.Role.USER, content=message
+        )
+
         # Call Gemini via the LLM pipeline
         try:
             from .pipeline.llm import ask_llm
@@ -2896,10 +3004,18 @@ RESPONSE FORMAT RULES:
             if not reply:
                 reply = "I'm having trouble connecting right now. Please try again in a moment."
 
-            return Response({"reply": reply.strip()})
+            reply_text = reply.strip()
+            ChatMessage.objects.create(
+                analysis_run=run, role=ChatMessage.Role.ASSISTANT, content=reply_text
+            )
+            return Response({"reply": reply_text})
         except Exception as exc:
             logger.warning("AI Chat failed: %s", exc)
-            return Response({"reply": "Sorry, I couldn't process that right now. Please try again."})
+            fallback = "Sorry, I couldn't process that right now. Please try again."
+            ChatMessage.objects.create(
+                analysis_run=run, role=ChatMessage.Role.ASSISTANT, content=fallback
+            )
+            return Response({"reply": fallback})
 
 
 # ── GEO improvements (fix plan + apply) ─────────────────────────────────────
@@ -3688,10 +3804,9 @@ class BacklinkCatalogView(APIView):
         # slug exists keeps the URL shape consistent with the rest of the API.
         get_object_or_404(AnalysisRun, slug=slug)
 
+        # Idempotent — adds any newly-defined providers without touching existing rows.
+        self._seed_default_providers()
         providers = list(BacklinkProvider.objects.filter(is_enabled=True))
-        if not providers:
-            self._seed_default_providers()
-            providers = list(BacklinkProvider.objects.filter(is_enabled=True))
 
         for provider in providers:
             if not provider.products.exists():
@@ -3732,6 +3847,15 @@ class BacklinkCatalogView(APIView):
                 "homepage_url": "https://fatjoe.com",
                 "is_enabled": True,
                 "notes": "Reseller / white-label backlinks marketplace.",
+            },
+        )
+        BacklinkProvider.objects.get_or_create(
+            slug="budget_links",
+            defaults={
+                "display_name": "BudgetLinks",
+                "homepage_url": "",
+                "is_enabled": True,
+                "notes": "Budget-tier reseller — sub-$50 placements, niche guest posts, profile citations.",
             },
         )
 
@@ -3811,7 +3935,6 @@ class BacklinkOrderListCreateView(APIView):
     def post(self, request, slug):
         from django.shortcuts import get_object_or_404
         from .models import BacklinkProduct, BacklinkOrder, PromptTrack
-        from apps.integrations.services.backlink_providers import get_client
 
         run = get_object_or_404(AnalysisRun, slug=slug)
 
@@ -3855,22 +3978,8 @@ class BacklinkOrderListCreateView(APIView):
             except (PromptTrack.DoesNotExist, TypeError, ValueError):
                 prompt_track = None
 
-        # Place order against the provider (mock or live).
-        try:
-            client = get_client(product.provider.slug)
-            result = client.place_order(
-                sku=product.sku,
-                target_url=target_url,
-                anchor_text=anchor_text,
-                notes=notes,
-            )
-        except Exception as exc:
-            logger.exception("Backlink order place_order failed: %s", exc)
-            return Response(
-                {"detail": f"Provider rejected the order: {exc}"},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
-
+        # Order is created in pending_payment — provider only sees it after the
+        # user confirms payment via BacklinkOrderConfirmPaymentView.
         order = BacklinkOrder.objects.create(
             provider=product.provider,
             product=product,
@@ -3879,12 +3988,10 @@ class BacklinkOrderListCreateView(APIView):
             prompt_track=prompt_track,
             target_url=target_url[:2048],
             anchor_text=anchor_text[:300],
-            status=result.status or BacklinkOrder.Status.QUEUED,
+            status=BacklinkOrder.Status.PENDING_PAYMENT,
             price_cents=product.retail_price_cents,
             currency=product.currency,
-            provider_order_id=result.provider_order_id,
             notes_for_provider=notes,
-            ordered_at=timezone.now(),
         )
 
         return Response(_serialize_order(order), status=status.HTTP_201_CREATED)
@@ -3948,6 +4055,62 @@ class BacklinkOrderDetailView(APIView):
         return Response(_serialize_order(order))
 
 
+class BacklinkOrderConfirmPaymentView(APIView):
+    """
+    POST /runs/s/<slug>/backlinks/orders/<int:order_id>/confirm-payment/
+
+    Finalises a pending_payment order. In production this would be called after
+    a successful Stripe payment intent; for now it acts as a mock-checkout
+    confirmation that releases the order to the provider.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug, order_id):
+        from django.shortcuts import get_object_or_404
+        from .models import BacklinkOrder
+        from apps.integrations.services.backlink_providers import get_client
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        order = get_object_or_404(
+            BacklinkOrder.objects.select_related("provider", "product"),
+            id=order_id, analysis_run=run,
+        )
+
+        if order.status != BacklinkOrder.Status.PENDING_PAYMENT:
+            return Response(
+                {"detail": f"Order is already {order.status}; cannot confirm payment."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        payment_intent_id = (request.data.get("payment_intent_id") or "").strip()
+
+        try:
+            client = get_client(order.provider.slug)
+            result = client.place_order(
+                sku=order.product.sku,
+                target_url=order.target_url,
+                anchor_text=order.anchor_text,
+                notes=order.notes_for_provider,
+            )
+        except Exception as exc:
+            logger.exception("Backlink order place_order failed: %s", exc)
+            return Response(
+                {"detail": f"Provider rejected the order: {exc}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        order.status = result.status or BacklinkOrder.Status.QUEUED
+        order.provider_order_id = result.provider_order_id or ""
+        order.ordered_at = timezone.now()
+        if payment_intent_id:
+            order.payment_intent_id = payment_intent_id[:120]
+        order.save(update_fields=[
+            "status", "provider_order_id", "ordered_at", "payment_intent_id"
+        ])
+
+        return Response(_serialize_order(order))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Wikipedia draft generator
 # Helps the user actually post to Wikipedia: assesses notability, generates a
@@ -3957,40 +4120,44 @@ class BacklinkOrderDetailView(APIView):
 
 class PromptWikipediaDraftView(APIView):
     """
-    POST /runs/s/<slug>/prompts/<int:track_id>/wikipedia/draft/
+    GET  /runs/s/<slug>/prompts/<int:track_id>/wikipedia/draft/
+        Returns the saved draft if one exists, else 404.
 
-    Returns:
-      {
-        "notability": {
-          "verdict": "qualifies" | "borderline" | "needs_more_coverage",
-          "score": 0-100,
-          "summary": "...",
-          "missing_evidence": ["...", "..."]
-        },
-        "draft": {
-          "title": "...",
-          "lead": "Markdown intro paragraph.",
-          "sections": [{"heading": "...", "body_markdown": "..."}],
-          "infobox": {...},
-          "references_markdown": "1. ... 2. ..."
-        },
-        "edit_targets": [
-          {"title": "Wikipedia article name", "url": "...", "suggested_edit": "..."}
-        ],
-        "submit_instructions_markdown": "..."
-      }
+    POST /runs/s/<slug>/prompts/<int:track_id>/wikipedia/draft/
+        Body: { "force": bool? }
+        Generates and persists the Wikipedia kit. Returns the cached version
+        if one exists and force is false.
     """
     permission_classes = [AllowAny]
 
+    def get(self, request, slug, track_id):
+        from django.shortcuts import get_object_or_404
+        from .models import PromptTrack, PromptWikipediaDraft
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        track = get_object_or_404(PromptTrack, id=track_id, analysis_run=run)
+        existing = PromptWikipediaDraft.objects.filter(prompt_track=track).first()
+        if not existing:
+            return Response(
+                {"detail": "No saved draft yet."}, status=status.HTTP_404_NOT_FOUND
+            )
+        return Response({**existing.payload, "cached": True})
+
     def post(self, request, slug, track_id):
         from django.shortcuts import get_object_or_404
-        from .models import PromptTrack
+        from .models import PromptTrack, PromptWikipediaDraft
         from .pipeline.llm import ask_llm
         import json
         import re
 
         run = get_object_or_404(AnalysisRun, slug=slug)
         track = get_object_or_404(PromptTrack, id=track_id, analysis_run=run)
+
+        force = bool(request.data.get("force"))
+        if not force:
+            existing = PromptWikipediaDraft.objects.filter(prompt_track=track).first()
+            if existing and existing.payload:
+                return Response({**existing.payload, "cached": True})
 
         brand = (run.brand_name or "").strip() or "the brand"
         url = (run.url or "").strip()
@@ -4087,23 +4254,51 @@ Return ONLY valid JSON. No markdown fences. Schema:
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        return Response(payload)
+        PromptWikipediaDraft.objects.update_or_create(
+            prompt_track=track, defaults={"payload": payload}
+        )
+
+        return Response({**payload, "cached": False})
 
 
 class PromptSchemaView(APIView):
     """
-    POST /runs/s/<slug>/prompts/<int:track_id>/schema/
+    GET  /runs/s/<slug>/prompts/<int:track_id>/schema/
+        Returns all previously-generated artifacts for this prompt.
 
-    Generate per-prompt JSON-LD or copy-ready content. Body:
-      { "schema_type": "faq" | "article" | "person" | "organization" | "answer" }
+    POST /runs/s/<slug>/prompts/<int:track_id>/schema/
+        Body: { "schema_type": "faq"|"article"|"person"|"organization"|"answer",
+                "force": bool? }
+        If an artifact for this (prompt, schema_type) already exists and force is
+        false, it is returned without re-calling the LLM. Set force=true to
+        regenerate.
     """
     permission_classes = [AllowAny]
 
     SCHEMA_TYPES = {"faq", "article", "person", "organization", "answer"}
 
+    def get(self, request, slug, track_id):
+        from django.shortcuts import get_object_or_404
+        from .models import PromptTrack, PromptSchemaArtifact
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        track = get_object_or_404(PromptTrack, id=track_id, analysis_run=run)
+        artifacts = PromptSchemaArtifact.objects.filter(prompt_track=track)
+        return Response({
+            "artifacts": [
+                {
+                    "schema_type": a.schema_type,
+                    "output": a.output,
+                    "explanation": a.explanation,
+                    "updated_at": a.updated_at.isoformat() if a.updated_at else None,
+                }
+                for a in artifacts
+            ]
+        })
+
     def post(self, request, slug, track_id):
         from django.shortcuts import get_object_or_404
-        from .models import PromptTrack
+        from .models import PromptTrack, PromptSchemaArtifact
         from .pipeline.llm import ask_llm
         import re
 
@@ -4116,6 +4311,19 @@ class PromptSchemaView(APIView):
                 {"detail": f"schema_type must be one of {sorted(self.SCHEMA_TYPES)}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        force = bool(request.data.get("force"))
+        if not force:
+            cached = PromptSchemaArtifact.objects.filter(
+                prompt_track=track, schema_type=schema_type
+            ).first()
+            if cached:
+                return Response({
+                    "schema_type": cached.schema_type,
+                    "output": cached.output,
+                    "explanation": cached.explanation,
+                    "cached": True,
+                })
 
         brand = (run.brand_name or "").strip() or "the brand"
         url = (run.url or "").strip() or "https://example.com"
@@ -4147,7 +4355,12 @@ class PromptSchemaView(APIView):
             "answer": (
                 "Do NOT output JSON-LD. Output a 2-paragraph direct answer to the user prompt, written in the "
                 "brand's voice. Each paragraph 2-3 sentences. Neutral, factual, useful — no marketing words. "
-                "End with a one-sentence call-to-action mentioning the brand naturally."
+                f"REQUIRED: mention '{brand}' by name in BOTH paragraphs (at least twice total), framed as a "
+                f"credible source/practitioner — e.g. 'According to {brand}…', \"{brand}'s formulations…\", "
+                f"'In {brand}'s experience…', '{brand} recommends…'. {brand} must read as a domain authority on "
+                "this topic, not as a sponsor or marketer. Open with a direct factual answer to the prompt; "
+                "use the brand mentions to ground specific claims. End with one practical action the reader can take "
+                "(no sales CTA)."
             ),
         }[schema_type]
 
@@ -4190,8 +4403,17 @@ CRITICAL:
             "answer": "Paste this paragraph directly on the page targeting this prompt — ideally near the top, with the prompt text as an H2 above it. AI engines often lift this verbatim.",
         }
 
+        explanation = explanation_map[schema_type]
+
+        PromptSchemaArtifact.objects.update_or_create(
+            prompt_track=track,
+            schema_type=schema_type,
+            defaults={"output": cleaned, "explanation": explanation},
+        )
+
         return Response({
             "schema_type": schema_type,
             "output": cleaned,
-            "explanation": explanation_map[schema_type],
+            "explanation": explanation,
+            "cached": False,
         })

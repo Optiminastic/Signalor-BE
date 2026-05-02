@@ -1040,6 +1040,7 @@ class ScheduledAnalysis(models.Model):
 
 class AutoFixJob(models.Model):
     class Status(models.TextChoices):
+        PREVIEW = "preview"
         PENDING = "pending"
         RUNNING = "running"
         SUCCESS = "success"
@@ -1557,3 +1558,98 @@ class BacklinkOrder(models.Model):
 
     def __str__(self):
         return f"BacklinkOrder<{self.id} {self.status} {self.product.domain}>"
+
+
+class BrandKit(models.Model):
+    """Per-run cached brand submission kit (LLM-generated)."""
+    analysis_run = models.OneToOneField(
+        AnalysisRun, on_delete=models.CASCADE, related_name="brand_kit"
+    )
+    payload = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"BrandKit<run={self.analysis_run_id}>"
+
+
+class PromptWikipediaDraft(models.Model):
+    """Per-prompt cached Wikipedia draft kit (LLM-generated)."""
+    prompt_track = models.OneToOneField(
+        PromptTrack, on_delete=models.CASCADE, related_name="wikipedia_draft"
+    )
+    payload = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"PromptWikipediaDraft<track={self.prompt_track_id}>"
+
+
+class ChatMessage(models.Model):
+    """Persistent AI assistant chat history per analysis run."""
+
+    class Role(models.TextChoices):
+        USER = "user", "User"
+        ASSISTANT = "assistant", "Assistant"
+
+    analysis_run = models.ForeignKey(
+        AnalysisRun, on_delete=models.CASCADE, related_name="chat_messages"
+    )
+    role = models.CharField(max_length=12, choices=Role.choices)
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [models.Index(fields=["analysis_run", "created_at"])]
+
+    def __str__(self):
+        return f"ChatMessage<run={self.analysis_run_id} {self.role} {self.created_at:%Y-%m-%d %H:%M}>"
+
+
+class PromptSchemaArtifact(models.Model):
+    """A saved artifact (answer paragraph or JSON-LD) generated for a prompt."""
+
+    class SchemaType(models.TextChoices):
+        FAQ = "faq", "FAQ"
+        ARTICLE = "article", "Article"
+        PERSON = "person", "Person"
+        ORGANIZATION = "organization", "Organization"
+        ANSWER = "answer", "Direct answer"
+
+    prompt_track = models.ForeignKey(
+        PromptTrack, on_delete=models.CASCADE, related_name="schema_artifacts"
+    )
+    schema_type = models.CharField(max_length=24, choices=SchemaType.choices)
+    output = models.TextField()
+    explanation = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [("prompt_track", "schema_type")]
+        indexes = [models.Index(fields=["prompt_track", "schema_type"])]
+
+    def __str__(self):
+        return f"PromptSchemaArtifact<track={self.prompt_track_id} {self.schema_type}>"
+
+
+class DomainAnalyticsSnapshot(models.Model):
+    """
+    Per-run cached DataForSEO Domain Analytics snapshot — estimated organic
+    traffic, top keywords, top pages, and per-country geographic breakdown.
+    Refreshed on demand; default TTL is 7 days.
+    """
+    analysis_run = models.OneToOneField(
+        AnalysisRun, on_delete=models.CASCADE, related_name="domain_analytics"
+    )
+    overview = models.JSONField(default=dict)
+    top_keywords = models.JSONField(default=list)
+    top_pages = models.JSONField(default=list)
+    geo_distribution = models.JSONField(default=dict)
+    synced_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"DomainAnalyticsSnapshot<run={self.analysis_run_id}>"

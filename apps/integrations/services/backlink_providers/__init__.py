@@ -79,12 +79,12 @@ def register(cls: type[BacklinkProviderClient]) -> type[BacklinkProviderClient]:
 def get_client(slug: str) -> BacklinkProviderClient:
     if slug not in _REGISTRY:
         # Lazy import so providers self-register on first use.
-        from . import fatjoe  # noqa: F401
+        from . import fatjoe, budget_links  # noqa: F401
     if slug not in _REGISTRY:
         raise KeyError(f"No backlink provider registered for slug={slug!r}")
     return _REGISTRY[slug]()
 
 
 def all_provider_slugs() -> list[str]:
-    from . import fatjoe  # noqa: F401
+    from . import fatjoe, budget_links  # noqa: F401
     return sorted(_REGISTRY.keys())
