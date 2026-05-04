@@ -762,6 +762,9 @@ class AnalysisRunListView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Heavy JSONFields (llm_logs, onboarding_prompts) aren't in the list
+        # serializer — defer them so we don't ship hundreds of KB per row.
+        runs = runs.defer("llm_logs", "onboarding_prompts").order_by("-created_at")
         serializer = AnalysisRunListSerializer(runs, many=True)
         return Response(serializer.data)
 
@@ -771,8 +774,32 @@ class AnalysisRunDetailView(APIView):
     throttle_classes = []  # frequently loaded by analyzer pages
 
     def get(self, request, run_id):
+        from django.db.models import Prefetch
         try:
-            run = AnalysisRun.objects.get(pk=run_id)
+            # Pre-load every related collection the serializer touches so the
+            # response is one batch of queries instead of five sequential
+            # cross-region round trips. brand_visibility is a OneToOne —
+            # select_related. Reverse-FKs use prefetch_related.
+            #
+            # RecommendationSerializer.get_can_auto_fix() reads obj.analysis_run.url,
+            # so we chain a select_related to avoid one query per recommendation.
+            # We also defer llm_logs (~128 KB JSONField) on that join.
+            recs_qs = (
+                Recommendation.objects
+                .select_related("analysis_run")
+                .defer("analysis_run__llm_logs", "analysis_run__onboarding_prompts")
+            )
+            run = (
+                AnalysisRun.objects
+                .select_related("brand_visibility", "organization")
+                .prefetch_related(
+                    "page_scores",
+                    "competitors",
+                    Prefetch("recommendations", queryset=recs_qs),
+                    "ai_probes",
+                )
+                .get(pk=run_id)
+            )
         except AnalysisRun.DoesNotExist:
             return Response(
                 {"error": "Analysis run not found."},
@@ -1427,36 +1454,35 @@ class BlogAutomationGenerateView(APIView):
         )
 
         integration, provider = _resolve_blog_integration(email)
-        save_as_draft = bool(request.data.get("save_as_draft", False))
+        # Always persist generated drafts so users don't lose them on refresh.
         draft_job_payload = None
-        if save_as_draft:
-            config = _get_or_create_blog_config(
-                email=email,
-                run_id=run_id,
-                analyzed_url=analyzed_url,
+        config = _get_or_create_blog_config(
+            email=email,
+            run_id=run_id,
+            analyzed_url=analyzed_url,
+            topic=topic,
+            keywords=keywords,
+            is_active=request.data.get("activate_automation"),
+        )
+        if config:
+            job = BlogAutomationJob.objects.create(
+                config=config,
+                user_email=email,
+                analysis_run=run,
+                scheduled_for=timezone.now(),
+                provider=provider if integration else BlogAutomationConfig.PublishProvider.NONE,
+                mode=config.mode,
+                status=BlogAutomationJob.Status.DRAFT,
                 topic=topic,
                 keywords=keywords,
-                is_active=request.data.get("activate_automation"),
+                title=draft.get("title", ""),
+                slug=draft.get("slug", ""),
+                meta_description=draft.get("meta_description", ""),
+                excerpt=draft.get("excerpt", ""),
+                content_markdown=draft.get("content_markdown", ""),
+                tags=draft.get("tags", []),
             )
-            if config:
-                job = BlogAutomationJob.objects.create(
-                    config=config,
-                    user_email=email,
-                    analysis_run=run,
-                    scheduled_for=timezone.now(),
-                    provider=provider if integration else BlogAutomationConfig.PublishProvider.NONE,
-                    mode=config.mode,
-                    status=BlogAutomationJob.Status.DRAFT,
-                    topic=topic,
-                    keywords=keywords,
-                    title=draft.get("title", ""),
-                    slug=draft.get("slug", ""),
-                    meta_description=draft.get("meta_description", ""),
-                    excerpt=draft.get("excerpt", ""),
-                    content_markdown=draft.get("content_markdown", ""),
-                    tags=draft.get("tags", []),
-                )
-                draft_job_payload = BlogAutomationJobSerializer(job).data
+            draft_job_payload = BlogAutomationJobSerializer(job).data
 
         return Response({
             "submenu_key": "ai-blog-automation",
@@ -1808,6 +1834,8 @@ def _fire_and_save_prompt(track: PromptTrack, brand_name: str, brand_url: str):
             "score", "authority_score", "content_quality_score",
             "structural_score", "semantic_score", "third_party_score",
         ])
+        from ._cache import invalidate_run_aggregates
+        invalidate_run_aggregates(track.analysis_run.slug)
     except Exception as exc:
         logger.warning("PromptTrack #%d fire failed: %s", track.pk, exc)
 
@@ -1822,7 +1850,10 @@ class PromptListCreateView(APIView):
             run.prompt_tracks
                .filter(deleted_at__isnull=True)
                .select_related("analysis_run")
-               .prefetch_related("results")
+               # AnalysisRun.llm_logs / onboarding_prompts are large JSONField
+               # blobs we don't need here — defer them to keep the join cheap.
+               .defer("analysis_run__llm_logs", "analysis_run__onboarding_prompts")
+               .prefetch_related("results", "results__citations")
                .order_by("-score", "-created_at")
         )
         serializer = PromptTrackSerializer(tracks, many=True)
@@ -1910,6 +1941,99 @@ class RecheckPromptView(APIView):
         return Response({"status": "rechecking"}, status=status.HTTP_202_ACCEPTED)
 
 
+class PromptBacklinksView(APIView):
+    """GET /runs/s/<slug>/prompts/<track_id>/backlinks/ — Citation Authority panel.
+
+    Thin HTTP layer — delegates all work to ``BacklinkAuthorityService``.
+    Translates ``ProviderNotConfigured`` into a structured 503 the frontend
+    can recognize and surface as "Backlink provider not configured".
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug, track_id):
+        from django.shortcuts import get_object_or_404
+        from .services.backlink_authority import (
+            BacklinkAuthorityService,
+            ProviderNotConfigured,
+        )
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        track = get_object_or_404(
+            PromptTrack, pk=track_id, analysis_run=run, deleted_at__isnull=True,
+        )
+
+        try:
+            payload = BacklinkAuthorityService(track=track).build()
+        except ProviderNotConfigured as exc:
+            return Response(
+                {"detail": str(exc), "code": "dataforseo_not_configured"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response(payload)
+
+
+class PromptOpportunitiesView(APIView):
+    """GET / POST /runs/s/<slug>/prompts/<track_id>/opportunities/
+
+    Thin HTTP layer — delegates to ``OpportunityService`` for all logic.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug, track_id):
+        service = _opportunity_service(slug, track_id)
+        return Response(service.list())
+
+    def post(self, request, slug, track_id):
+        service = _opportunity_service(slug, track_id)
+        from .services.opportunities import OpportunityServiceError
+        try:
+            return Response(service.regenerate())
+        except OpportunityServiceError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+
+class PromptOpportunityDetailView(APIView):
+    """PATCH / DELETE /runs/s/<slug>/prompts/<track_id>/opportunities/<opp_id>/"""
+    permission_classes = [AllowAny]
+
+    def patch(self, request, slug, track_id, opp_id):
+        service = _opportunity_service(slug, track_id)
+        from .services.opportunities import OpportunityServiceError
+        try:
+            payload = service.update_status(
+                opp_id,
+                new_status=request.data.get("status"),
+                live_url=request.data.get("live_url"),
+            )
+        except OpportunityServiceError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(payload)
+
+    def delete(self, request, slug, track_id, opp_id):
+        service = _opportunity_service(slug, track_id)
+        from .services.opportunities import OpportunityServiceError
+        try:
+            service.delete(opp_id)
+        except OpportunityServiceError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _opportunity_service(slug: str, track_id: int):
+    """Resolve the run+track and return an OpportunityService bound to it."""
+    from django.shortcuts import get_object_or_404
+    from .services.opportunities import OpportunityService
+
+    run = get_object_or_404(AnalysisRun, slug=slug)
+    track = get_object_or_404(
+        PromptTrack, pk=track_id, analysis_run=run, deleted_at__isnull=True,
+    )
+    return OpportunityService(track=track)
+
+
 class PromptDeleteView(APIView):
     """DELETE /runs/s/<slug>/prompts/<track_id>/ — soft-delete a tracked prompt.
 
@@ -1929,6 +2053,8 @@ class PromptDeleteView(APIView):
         )
         track.deleted_at = timezone.now()
         track.save(update_fields=["deleted_at"])
+        from ._cache import invalidate_run_aggregates
+        invalidate_run_aggregates(slug)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -1971,21 +2097,33 @@ class ShareOfVoiceView(APIView):
     def get(self, request, slug):
         from django.shortcuts import get_object_or_404
         from django.db.models import Count, Q
+        from ._cache import cached_or_compute
 
         run = get_object_or_404(AnalysisRun, slug=slug)
-        em = (run.email or "").strip()
-        valid_engine_keys = {e[0] for e in PromptResult.Engine.choices}
-        if is_plan_limits_enforcement_enabled() and em:
-            engines = [e for e in get_plan_limits(em)["engines"] if e in valid_engine_keys]
-        else:
-            engines = [e[0] for e in PromptResult.Engine.choices]
-        data = []
-        for engine in engines:
-            qs = PromptResult.objects.filter(prompt_track__analysis_run=run, engine=engine)
-            total = qs.count()
-            mentioned = qs.filter(brand_mentioned=True).count()
-            sov_pct = round((mentioned / total * 100), 1) if total > 0 else 0.0
-            data.append({"engine": engine, "total": total, "mentioned": mentioned, "sov_pct": sov_pct})
+
+        def _compute():
+            em = (run.email or "").strip()
+            valid_engine_keys = {e[0] for e in PromptResult.Engine.choices}
+            if is_plan_limits_enforcement_enabled() and em:
+                engines = [e for e in get_plan_limits(em)["engines"] if e in valid_engine_keys]
+            else:
+                engines = [e[0] for e in PromptResult.Engine.choices]
+            # One aggregation query per engine -> engines * 2 round trips. Cached
+            # for 10 min so the dashboard's first paint amortizes the work.
+            data = []
+            for engine in engines:
+                qs = PromptResult.objects.filter(prompt_track__analysis_run=run, engine=engine)
+                agg = qs.aggregate(
+                    total=Count("id"),
+                    mentioned=Count("id", filter=Q(brand_mentioned=True)),
+                )
+                total = agg["total"] or 0
+                mentioned = agg["mentioned"] or 0
+                sov_pct = round((mentioned / total * 100), 1) if total > 0 else 0.0
+                data.append({"engine": engine, "total": total, "mentioned": mentioned, "sov_pct": sov_pct})
+            return data
+
+        data = cached_or_compute(f"sov:{slug}", 600, _compute)
         return Response(ShareOfVoiceSerializer(data, many=True).data)
 
 
@@ -1996,38 +2134,45 @@ class CitationTrendView(APIView):
         from django.shortcuts import get_object_or_404
         from django.db.models.functions import TruncWeek
         from django.db.models import Count, Q
+        from ._cache import cached_or_compute
         run = get_object_or_404(AnalysisRun, slug=slug)
 
-        em = (run.email or "").strip()
-        valid_engine_keys = {e[0] for e in PromptResult.Engine.choices}
-        if is_plan_limits_enforcement_enabled() and em:
-            allowed = [e for e in get_plan_limits(em)["engines"] if e in valid_engine_keys]
-        else:
-            allowed = None
+        def _compute():
+            em = (run.email or "").strip()
+            valid_engine_keys = {e[0] for e in PromptResult.Engine.choices}
+            if is_plan_limits_enforcement_enabled() and em:
+                allowed = [e for e in get_plan_limits(em)["engines"] if e in valid_engine_keys]
+            else:
+                allowed = None
 
-        base = PromptResult.objects.filter(prompt_track__analysis_run=run)
-        if allowed is not None:
-            base = base.filter(engine__in=allowed)
-        qs = (
-            base
-            .annotate(week_start=TruncWeek("checked_at"))
-            .values("week_start", "engine")
-            .annotate(
-                total=Count("id"),
-                mentioned=Count("id", filter=Q(brand_mentioned=True)),
+            base = PromptResult.objects.filter(prompt_track__analysis_run=run)
+            if allowed is not None:
+                base = base.filter(engine__in=allowed)
+            qs = (
+                base
+                .annotate(week_start=TruncWeek("checked_at"))
+                .values("week_start", "engine")
+                .annotate(
+                    total=Count("id"),
+                    mentioned=Count("id", filter=Q(brand_mentioned=True)),
+                )
+                .order_by("week_start", "engine")
             )
-            .order_by("week_start", "engine")
-        )
 
-        data = []
-        for row in qs:
-            total = row["total"]
-            mentioned = row["mentioned"]
-            data.append({
-                "week_start": row["week_start"].date() if row["week_start"] else None,
-                "engine": row["engine"],
-                "rate_pct": round((mentioned / total * 100), 1) if total > 0 else 0.0,
-            })
+            data = []
+            for row in qs:
+                total = row["total"]
+                mentioned = row["mentioned"]
+                data.append({
+                    # Stored as ISO string so Redis serialization round-trips
+                    # cleanly (date objects don't pickle through JSON cache).
+                    "week_start": row["week_start"].date().isoformat() if row["week_start"] else None,
+                    "engine": row["engine"],
+                    "rate_pct": round((mentioned / total * 100), 1) if total > 0 else 0.0,
+                })
+            return data
+
+        data = cached_or_compute(f"trend:{slug}", 300, _compute)
         return Response(CitationTrendPointSerializer(data, many=True).data)
 
 
@@ -2042,83 +2187,178 @@ class CitationSourcesView(APIView):
 
     def get(self, request, slug):
         from django.shortcuts import get_object_or_404
-        from django.db.models import Count
+        from django.db.models import Count, Q
         from collections import defaultdict
         from .models import PromptCitation
+        from ._cache import cached_or_compute
 
         run = get_object_or_404(AnalysisRun, slug=slug)
 
-        qs = PromptCitation.objects.filter(
-            prompt_result__prompt_track__analysis_run=run,
-            prompt_result__prompt_track__deleted_at__isnull=True,
-        ).exclude(domain="")
+        def _compute():
+            qs = PromptCitation.objects.filter(
+                prompt_result__prompt_track__analysis_run=run,
+                prompt_result__prompt_track__deleted_at__isnull=True,
+            ).exclude(domain="")
 
-        # Domain roll-up
-        domain_rows = (
-            qs.values("domain")
-            .annotate(total=Count("id"))
-            .order_by("-total")[:40]
-        )
-        # Pull flags for each domain (is_brand / is_competitor) separately so
-        # we don't double-count or collapse mixed values.
-        flag_map: dict[str, dict] = {}
-        for c in qs.values("domain", "is_brand", "is_competitor"):
-            f = flag_map.setdefault(c["domain"], {"is_brand": False, "is_competitor": False})
-            if c["is_brand"]:
-                f["is_brand"] = True
-            if c["is_competitor"]:
-                f["is_competitor"] = True
+            # One aggregate for the three count totals — was 3 round trips.
+            counts = qs.aggregate(
+                total=Count("id"),
+                brand=Count("id", filter=Q(is_brand=True)),
+                rival=Count("id", filter=Q(is_competitor=True)),
+            )
 
-        # Per-engine breakdown for top domains
-        engine_rows = (
-            qs.filter(domain__in=[r["domain"] for r in domain_rows])
-            .values("domain", "prompt_result__engine")
-            .annotate(total=Count("id"))
-        )
-        by_engine: dict[str, dict] = defaultdict(dict)
-        for r in engine_rows:
-            by_engine[r["domain"]][r["prompt_result__engine"]] = r["total"]
+            # Domain roll-up
+            domain_rows = list(
+                qs.values("domain")
+                .annotate(total=Count("id"))
+                .order_by("-total")[:40]
+            )
+            top_domains = [r["domain"] for r in domain_rows]
 
-        # Sample URL for each top domain
-        sample_map: dict[str, str] = {}
-        for c in qs.filter(domain__in=[r["domain"] for r in domain_rows]).values("domain", "url", "title")[:500]:
-            sample_map.setdefault(c["domain"], c["url"])
+            # Flags per domain (is_brand / is_competitor) — restricted to the
+            # top-N we'll actually return so we don't iterate all citations.
+            flag_map: dict[str, dict] = {}
+            if top_domains:
+                for c in qs.filter(domain__in=top_domains).values("domain", "is_brand", "is_competitor"):
+                    f = flag_map.setdefault(c["domain"], {"is_brand": False, "is_competitor": False})
+                    if c["is_brand"]:
+                        f["is_brand"] = True
+                    if c["is_competitor"]:
+                        f["is_competitor"] = True
 
-        domains = []
-        for row in domain_rows:
-            d = row["domain"]
-            flags = flag_map.get(d, {"is_brand": False, "is_competitor": False})
-            domains.append({
-                "domain": d,
-                "total": row["total"],
-                "is_brand": flags["is_brand"],
-                "is_competitor": flags["is_competitor"],
-                "by_engine": by_engine.get(d, {}),
-                "sample_url": sample_map.get(d, ""),
-            })
+            # Per-engine breakdown for top domains
+            by_engine: dict[str, dict] = defaultdict(dict)
+            if top_domains:
+                engine_rows = (
+                    qs.filter(domain__in=top_domains)
+                    .values("domain", "prompt_result__engine")
+                    .annotate(total=Count("id"))
+                )
+                for r in engine_rows:
+                    by_engine[r["domain"]][r["prompt_result__engine"]] = r["total"]
 
-        # Your top-cited pages
-        your_pages = (
-            qs.filter(is_brand=True)
-            .values("url", "title")
-            .annotate(mentions=Count("id"))
-            .order_by("-mentions")[:10]
-        )
-        rival_pages = (
-            qs.filter(is_competitor=True)
-            .values("url", "title", "domain")
-            .annotate(mentions=Count("id"))
-            .order_by("-mentions")[:10]
-        )
+            # Sample URL for each top domain
+            sample_map: dict[str, str] = {}
+            if top_domains:
+                for c in qs.filter(domain__in=top_domains).values("domain", "url")[:500]:
+                    sample_map.setdefault(c["domain"], c["url"])
 
-        return Response({
-            "total_citations": qs.count(),
-            "brand_citations": qs.filter(is_brand=True).count(),
-            "competitor_citations": qs.filter(is_competitor=True).count(),
-            "domains": domains,
-            "your_pages": list(your_pages),
-            "rival_pages": list(rival_pages),
-        })
+            domains = []
+            for row in domain_rows:
+                d = row["domain"]
+                flags = flag_map.get(d, {"is_brand": False, "is_competitor": False})
+                domains.append({
+                    "domain": d,
+                    "total": row["total"],
+                    "is_brand": flags["is_brand"],
+                    "is_competitor": flags["is_competitor"],
+                    "by_engine": dict(by_engine.get(d, {})),
+                    "sample_url": sample_map.get(d, ""),
+                })
+
+            your_pages = list(
+                qs.filter(is_brand=True)
+                .values("url", "title")
+                .annotate(mentions=Count("id"))
+                .order_by("-mentions")[:10]
+            )
+            rival_pages = list(
+                qs.filter(is_competitor=True)
+                .values("url", "title", "domain")
+                .annotate(mentions=Count("id"))
+                .order_by("-mentions")[:10]
+            )
+
+            return {
+                "total_citations": counts["total"] or 0,
+                "brand_citations": counts["brand"] or 0,
+                "competitor_citations": counts["rival"] or 0,
+                "domains": domains,
+                "your_pages": your_pages,
+                "rival_pages": rival_pages,
+            }
+
+        return Response(cached_or_compute(f"cite:{slug}", 600, _compute))
+
+
+class BrandKitView(APIView):
+    """GET/POST /api/analyzer/runs/s/<slug>/brand-kit/
+
+    GET:  return the cached submission kit; auto-generate on first call.
+    POST: force a fresh regeneration (drops cache, re-runs the LLM).
+
+    The kit is the user's "click-to-copy" payload for filling out directory
+    and review-site submission forms. It's a thin wrapper around
+    ``services.brand_kit.get_or_generate``.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .services.brand_kit import get_or_generate, BrandKitError
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        try:
+            return Response({"kit": get_or_generate(run)})
+        except BrandKitError as exc:
+            return Response(
+                {"detail": str(exc), "code": "kit_generation_failed"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .services.brand_kit import get_or_generate, BrandKitError
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        try:
+            return Response({"kit": get_or_generate(run, force=True)})
+        except BrandKitError as exc:
+            return Response(
+                {"detail": str(exc), "code": "kit_generation_failed"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+
+class DomainAnalyticsView(APIView):
+    """GET/POST /api/analyzer/runs/s/<slug>/domain-analytics/
+
+    SEMrush-style real-world signals (estimated organic traffic, top keywords,
+    top pages) sourced from DataForSEO Labs. No GA connection required.
+
+    GET:  return the cached snapshot, auto-fetch on first call.
+    POST: force a fresh fetch (3 DataForSEO API calls, ~$0.015 / refresh).
+    """
+    permission_classes = [AllowAny]
+
+    def _respond(self, run, *, force: bool):
+        from .services.domain_analytics import get_or_generate, DomainAnalyticsError
+        from apps.integrations.services.dataforseo import DataForSEONotConfigured
+        try:
+            return Response(get_or_generate(run, force=force))
+        except DataForSEONotConfigured:
+            return Response(
+                {
+                    "detail": "DataForSEO is not configured.",
+                    "code": "dataforseo_not_configured",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except DomainAnalyticsError as exc:
+            return Response(
+                {"detail": str(exc), "code": "domain_analytics_failed"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        return self._respond(run, force=False)
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        return self._respond(run, force=True)
 
 
 class CompetitorListCreateView(APIView):
@@ -2379,16 +2619,23 @@ class AutoFixView(APIView):
 
 
 class AutoFixPreviewView(APIView):
-    """POST /api/analyzer/runs/s/<slug>/auto-fix/preview/ — generate fix preview without applying."""
+    """POST /api/analyzer/runs/s/<slug>/auto-fix/preview/ — generate fix preview without applying.
+
+    Persists the preview as an AutoFixJob with status='preview'. If a preview
+    already exists for the same (run, recommendation), returns it without
+    re-running the LLM. Pass force=true to regenerate.
+    """
     permission_classes = [AllowAny]
 
     def post(self, request, slug):
         from django.shortcuts import get_object_or_404
         from .auto_fix import generate_fix_preview
+        from .models import AutoFixJob
 
         run = get_object_or_404(AnalysisRun, slug=slug)
         rec_id = request.data.get("recommendation_id")
         email = request.data.get("email", "").lower().strip()
+        force = bool(request.data.get("force"))
 
         if not rec_id or not email:
             return Response({"error": "recommendation_id and email required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -2408,8 +2655,32 @@ class AutoFixPreviewView(APIView):
         except Recommendation.DoesNotExist:
             return Response({"error": "Recommendation not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        if not force:
+            cached = AutoFixJob.objects.filter(
+                analysis_run=run,
+                recommendation=rec,
+                status=AutoFixJob.Status.PREVIEW,
+            ).order_by("-created_at").first()
+            if cached and cached.response_data:
+                return Response({**cached.response_data, "cached": True})
+
         preview = generate_fix_preview(run, integration, rec)
-        return Response(preview)
+        try:
+            AutoFixJob.objects.update_or_create(
+                analysis_run=run,
+                recommendation=rec,
+                status=AutoFixJob.Status.PREVIEW,
+                defaults={
+                    "integration": integration,
+                    "fix_type": preview.get("fix_type", "content"),
+                    "response_data": preview,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "Failed to persist AutoFixJob preview (run=%s rec=%s)", run.id, rec.id
+            )
+        return Response({**preview, "cached": False})
 
 
 class AutoFixApproveView(APIView):
@@ -2531,15 +2802,47 @@ class AutoFixVerifyView(APIView):
 # ── AI Chat (GEO Assistant with analysis context) ────────────────────────────
 
 class AiChatView(APIView):
-    """POST /api/analyzer/runs/s/<slug>/chat/ — AI chat with full analysis context."""
+    """
+    GET  /api/analyzer/runs/s/<slug>/chat/ — return persisted chat history.
+    POST /api/analyzer/runs/s/<slug>/chat/ — send a message; reply persists.
+
+    The backend is the source of truth for chat history — clients no longer
+    need to round-trip the conversation. Sending `history` in the body is
+    ignored unless the run has zero saved messages (legacy migration aid).
+    """
     permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .models import ChatMessage
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        msgs = ChatMessage.objects.filter(analysis_run=run).order_by("created_at")
+        return Response({
+            "messages": [
+                {
+                    "role": m.role,
+                    "content": m.content,
+                    "created_at": m.created_at.isoformat(),
+                }
+                for m in msgs
+            ]
+        })
 
     def post(self, request, slug):
         from django.shortcuts import get_object_or_404
+        from .models import ChatMessage
 
         run = get_object_or_404(AnalysisRun, slug=slug)
         message = request.data.get("message", "").strip()
-        history = request.data.get("history", [])
+        # Pull persisted history; fall back to client-sent on first ever message.
+        persisted = list(
+            ChatMessage.objects.filter(analysis_run=run).order_by("created_at")
+        )
+        if persisted:
+            history = [{"role": m.role, "content": m.content} for m in persisted]
+        else:
+            history = request.data.get("history", []) or []
 
         if not message:
             return Response({"error": "message required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -2676,6 +2979,11 @@ RESPONSE FORMAT RULES:
                 messages.append({"role": h["role"], "content": h["content"]})
         messages.append({"role": "user", "content": message})
 
+        # Persist the user message before invoking the LLM so it survives errors.
+        ChatMessage.objects.create(
+            analysis_run=run, role=ChatMessage.Role.USER, content=message
+        )
+
         # Call Gemini via the LLM pipeline
         try:
             from .pipeline.llm import ask_llm
@@ -2695,10 +3003,18 @@ RESPONSE FORMAT RULES:
             if not reply:
                 reply = "I'm having trouble connecting right now. Please try again in a moment."
 
-            return Response({"reply": reply.strip()})
+            reply_text = reply.strip()
+            ChatMessage.objects.create(
+                analysis_run=run, role=ChatMessage.Role.ASSISTANT, content=reply_text
+            )
+            return Response({"reply": reply_text})
         except Exception as exc:
             logger.warning("AI Chat failed: %s", exc)
-            return Response({"reply": "Sorry, I couldn't process that right now. Please try again."})
+            fallback = "Sorry, I couldn't process that right now. Please try again."
+            ChatMessage.objects.create(
+                analysis_run=run, role=ChatMessage.Role.ASSISTANT, content=fallback
+            )
+            return Response({"reply": fallback})
 
 
 # ── GEO improvements (fix plan + apply) ─────────────────────────────────────
@@ -2820,14 +3136,15 @@ class SitemapAuditStartView(APIView):
             crawl_limit=HARD_URL_CAP,
         )
 
-        def _do(aid):
-            try:
-                close_old_connections()
-                run_sitemap_audit(aid)
-            except Exception:
-                logger.exception("run_sitemap_audit thread failed")
-
-        threading.Thread(target=_do, args=(audit.id,), daemon=True).start()
+        from ._thread_safety import run_in_background_with_status
+        run_in_background_with_status(
+            model_cls=SitemapAudit,
+            instance_id=audit.id,
+            status_field="status",
+            failure_value=SitemapAudit.Status.FAILED,
+            work=lambda: run_sitemap_audit(audit.id),
+            log_label="run_sitemap_audit",
+        )
 
         return Response(
             SitemapAuditSerializer(audit).data,
@@ -2941,14 +3258,15 @@ class SchemaWatchStartView(APIView):
             status=SchemaWatch.Status.QUEUED,
         )
 
-        def _do(wid):
-            try:
-                close_old_connections()
-                run_schema_watch(wid)
-            except Exception:
-                logger.exception("run_schema_watch thread failed")
-
-        threading.Thread(target=_do, args=(watch.id,), daemon=True).start()
+        from ._thread_safety import run_in_background_with_status
+        run_in_background_with_status(
+            model_cls=SchemaWatch,
+            instance_id=watch.id,
+            status_field="status",
+            failure_value=SchemaWatch.Status.FAILED,
+            work=lambda: run_schema_watch(watch.id),
+            log_label="run_schema_watch",
+        )
 
         return Response(
             SchemaWatchSerializer(watch).data,
@@ -3036,14 +3354,15 @@ class RankAuditStartView(APIView):
             status=RankAudit.Status.QUEUED,
         )
 
-        def _do(aid):
-            try:
-                close_old_connections()
-                run_rank_audit(aid)
-            except Exception:
-                logger.exception("run_rank_audit thread failed")
-
-        threading.Thread(target=_do, args=(audit.id,), daemon=True).start()
+        from ._thread_safety import run_in_background_with_status
+        run_in_background_with_status(
+            model_cls=RankAudit,
+            instance_id=audit.id,
+            status_field="status",
+            failure_value=RankAudit.Status.FAILED,
+            work=lambda: run_rank_audit(audit.id),
+            log_label="run_rank_audit",
+        )
 
         return Response(
             RankAuditSerializer(audit).data,
@@ -3176,15 +3495,924 @@ class RankAuditRefreshQueryView(APIView):
             competitor_names = []
         gl = (_derive_geo(run).get("gl") or "")
 
-        def _do(qid):
-            close_old_connections()
-            try:
-                from .models import RankQuery as _RQ
-                q = _RQ.objects.get(pk=qid)
-                audit_query(q, brand_names, competitor_names, brand_domain=brand_domain, gl=gl)
-            except Exception:
-                logger.exception("refresh rank query thread failed")
+        from ._thread_safety import run_in_background_with_status
+        from .models import RankQuery as _RQ
 
-        threading.Thread(target=_do, args=(query.id,), daemon=True).start()
+        def _refresh():
+            q = _RQ.objects.get(pk=query.id)
+            audit_query(q, brand_names, competitor_names, brand_domain=brand_domain, gl=gl)
+
+        run_in_background_with_status(
+            model_cls=_RQ,
+            instance_id=query.id,
+            status_field="status",
+            failure_value=_RQ.Status.FAILED,
+            work=_refresh,
+            log_label="refresh_rank_query",
+        )
 
         return Response(RankQuerySerializer(query).data, status=status.HTTP_202_ACCEPTED)
+
+
+class PromptRankView(APIView):
+    """
+    GET/POST /runs/s/<slug>/prompts/<int:track_id>/rank/
+
+    Returns top-3 web ranking (Google / Reddit / Quora) for the tracked
+    prompt's text. Lazily creates a RankQuery on the latest audit and runs
+    only the web-surface fetchers synchronously so the prompt expands with
+    real data the first time it's opened.
+    """
+    permission_classes = [AllowAny]
+
+    def _serialize(self, query):
+        results = list(
+            query.results.filter(surface__in=["google", "reddit", "quora"])
+            .order_by("surface", "position")
+        )
+        return {
+            "id": query.id,
+            "prompt_text": query.prompt_text,
+            "rank": query.rank,
+            "brand_mention_count": query.brand_mention_count,
+            "status": query.status,
+            "error_message": query.error_message,
+            "results": [
+                {
+                    "id": r.id,
+                    "surface": r.surface,
+                    "position": r.position,
+                    "url": r.url,
+                    "domain": r.domain,
+                    "title": r.title,
+                    "snippet": r.snippet,
+                    "engine": r.engine,
+                    "response_text": r.response_text,
+                    "sentiment": r.sentiment,
+                    "is_brand_mentioned": r.is_brand_mentioned,
+                    "competitors_mentioned": r.competitors_mentioned,
+                    "upvotes": r.upvotes,
+                    "subreddit": r.subreddit,
+                    "checked_at": r.checked_at.isoformat() if r.checked_at else None,
+                }
+                for r in results
+            ],
+        }
+
+    def _ensure_audit(self, run):
+        from .models import RankAudit
+        audit = (
+            RankAudit.objects.filter(analysis_run=run)
+            .order_by("-created_at")
+            .first()
+        )
+        if audit is None:
+            audit = RankAudit.objects.create(
+                analysis_run=run,
+                status=RankAudit.Status.COMPLETE,
+            )
+        return audit
+
+    def _get_or_create_query(self, audit, prompt_text):
+        from django.db.models import Max
+        from .models import RankQuery
+        query = (
+            RankQuery.objects.filter(audit=audit, prompt_text=prompt_text)
+            .order_by("-id")
+            .first()
+        )
+        if query is None:
+            next_rank = (
+                (RankQuery.objects.filter(audit=audit).aggregate(
+                    m=Max("rank")
+                )["m"] or 0) + 1
+            )
+            query = RankQuery.objects.create(
+                audit=audit,
+                prompt_text=prompt_text,
+                rank=next_rank,
+                status=RankQuery.Status.QUEUED,
+            )
+        return query
+
+    def _run_web_fetch(self, query, run):
+        from urllib.parse import urlparse as _urlparse
+        from .pipeline.rank_tracker import (
+            fetch_serper,
+            fetch_reddit,
+            fetch_quora,
+            detect_brand_mentions,
+            compute_sentiment,
+            _derive_geo,
+        )
+        from .models import RankResult, RankQuery
+
+        brand_names = [n for n in (run.brand_name,) if n]
+        try:
+            brand_domain = _urlparse(run.url or "").netloc.lower().replace("www.", "")
+        except Exception:
+            brand_domain = ""
+        if brand_domain:
+            brand_names.append(brand_domain)
+        try:
+            competitor_names = [
+                c for c in run.competitors.values_list("name", flat=True) if c
+            ]
+        except Exception:
+            competitor_names = []
+        gl = (_derive_geo(run).get("gl") or "")
+
+        # Clear any prior web-surface results so re-runs don't pile up.
+        RankResult.objects.filter(
+            query=query, surface__in=["google", "reddit", "quora"]
+        ).delete()
+
+        fetchers = (
+            ("google", lambda q: fetch_serper(q, gl=gl)),
+            ("reddit", lambda q: fetch_reddit(q, gl=gl)),
+            ("quora", lambda q: fetch_quora(q, gl=gl)),
+        )
+
+        to_create = []
+        brand_hits = 0
+        for surface, fn in fetchers:
+            try:
+                rows = fn(query.prompt_text) or []
+            except Exception as exc:
+                logger.warning(
+                    "PromptRankView surface=%s prompt=%r error: %s",
+                    surface, query.prompt_text[:80], exc,
+                )
+                rows = []
+            # Keep only the top 3 per surface — that's all we display.
+            rows = rows[:3]
+            for row in rows:
+                snippet = row.get("snippet", "") or ""
+                is_brand, comps = detect_brand_mentions(
+                    row.get("title", ""),
+                    snippet,
+                    brand_names,
+                    competitor_names,
+                    result_domain=row.get("domain", ""),
+                    result_url=row.get("url", ""),
+                    brand_domain=brand_domain,
+                )
+                if is_brand:
+                    brand_hits += 1
+                sentiment = compute_sentiment(
+                    f"{row.get('title') or ''} {snippet}"
+                )
+                to_create.append(
+                    RankResult(
+                        query=query,
+                        surface=surface,
+                        position=int(row.get("position") or 0),
+                        url=(row.get("url") or "")[:2048],
+                        domain=(row.get("domain") or "")[:255],
+                        title=(row.get("title") or "")[:300],
+                        snippet=(row.get("snippet") or "")[:4000],
+                        engine="",
+                        response_text="",
+                        sentiment=sentiment,
+                        is_brand_mentioned=is_brand,
+                        competitors_mentioned=comps,
+                        upvotes=row.get("upvotes"),
+                        subreddit=(row.get("subreddit") or "")[:120],
+                    )
+                )
+
+        if to_create:
+            RankResult.objects.bulk_create(to_create)
+
+        query.brand_mention_count = brand_hits
+        query.status = RankQuery.Status.DONE
+        query.error_message = ""
+        query.save(update_fields=["brand_mention_count", "status", "error_message"])
+
+    def _resolve(self, slug, track_id, *, force_refresh=False):
+        from django.shortcuts import get_object_or_404
+        from .models import PromptTrack
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        track = get_object_or_404(PromptTrack, id=track_id, analysis_run=run)
+
+        prompt_text = (track.prompt_text or "").strip()
+        if not prompt_text:
+            return None, Response(
+                {"detail": "Prompt has no text."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        audit = self._ensure_audit(run)
+        query = self._get_or_create_query(audit, prompt_text)
+
+        has_web_results = query.results.filter(
+            surface__in=["google", "reddit", "quora"]
+        ).exists()
+
+        if force_refresh or not has_web_results:
+            try:
+                self._run_web_fetch(query, run)
+            except Exception as exc:
+                logger.exception("PromptRankView fetch failed: %s", exc)
+                query.status = "failed"
+                query.error_message = str(exc)[:500]
+                query.save(update_fields=["status", "error_message"])
+
+        # Re-load to reflect any saved results.
+        query.refresh_from_db()
+        return query, None
+
+    def get(self, request, slug, track_id):
+        query, err = self._resolve(slug, track_id, force_refresh=False)
+        if err is not None:
+            return err
+        return Response(self._serialize(query))
+
+    def post(self, request, slug, track_id):
+        force = str(request.data.get("refresh", "")).lower() in ("1", "true", "yes")
+        query, err = self._resolve(slug, track_id, force_refresh=force)
+        if err is not None:
+            return err
+        return Response(self._serialize(query))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Backlink marketplace
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _serialize_product(p):
+    return {
+        "id": p.id,
+        "provider": p.provider.slug,
+        "provider_name": p.provider.display_name,
+        "sku": p.sku,
+        "domain": p.domain,
+        "title": p.title,
+        "link_type": p.link_type,
+        "domain_authority": p.domain_authority,
+        "domain_rank": p.domain_rank,
+        "monthly_traffic": p.monthly_traffic,
+        "niche_tags": p.niche_tags or [],
+        "language": p.language,
+        "country": p.country,
+        "do_follow": p.do_follow,
+        "price_cents": p.retail_price_cents,
+        "currency": p.currency,
+        "lead_time_days": p.lead_time_days,
+    }
+
+
+def _serialize_order(o):
+    return {
+        "id": o.id,
+        "status": o.status,
+        "provider": o.provider.slug,
+        "provider_name": o.provider.display_name,
+        "domain": o.product.domain,
+        "title": o.product.title,
+        "target_url": o.target_url,
+        "anchor_text": o.anchor_text,
+        "price_cents": o.price_cents,
+        "currency": o.currency,
+        "proof_url": o.proof_url,
+        "error_message": o.error_message,
+        "prompt_track_id": o.prompt_track_id,
+        "created_at": o.created_at.isoformat() if o.created_at else None,
+        "ordered_at": o.ordered_at.isoformat() if o.ordered_at else None,
+        "delivered_at": o.delivered_at.isoformat() if o.delivered_at else None,
+    }
+
+
+class BacklinkCatalogView(APIView):
+    """
+    GET /runs/s/<slug>/backlinks/catalog/
+
+    Returns the cached catalog for all enabled providers. Refreshes from each
+    provider on first call (when the cache is empty) so the UI never sees an
+    empty list.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .models import BacklinkProvider, BacklinkProduct
+
+        # We don't strictly need the run — catalog is global — but checking the
+        # slug exists keeps the URL shape consistent with the rest of the API.
+        get_object_or_404(AnalysisRun, slug=slug)
+
+        # Idempotent — adds any newly-defined providers without touching existing rows.
+        self._seed_default_providers()
+        providers = list(BacklinkProvider.objects.filter(is_enabled=True))
+
+        for provider in providers:
+            if not provider.products.exists():
+                self._refresh_provider_catalog(provider)
+
+        # Optional filters: ?link_type=guest_post&min_da=70&niche=tech
+        qs = BacklinkProduct.objects.select_related("provider").filter(
+            provider__is_enabled=True
+        )
+        link_type = request.GET.get("link_type")
+        if link_type:
+            qs = qs.filter(link_type=link_type)
+        try:
+            min_da = int(request.GET.get("min_da") or 0)
+        except (TypeError, ValueError):
+            min_da = 0
+        if min_da > 0:
+            qs = qs.filter(domain_authority__gte=min_da)
+        niche = (request.GET.get("niche") or "").strip().lower()
+        if niche:
+            qs = qs.filter(niche_tags__contains=[niche])
+
+        return Response({
+            "providers": [
+                {"slug": p.slug, "display_name": p.display_name}
+                for p in providers
+            ],
+            "products": [_serialize_product(p) for p in qs[:200]],
+        })
+
+    @staticmethod
+    def _seed_default_providers():
+        from .models import BacklinkProvider
+        BacklinkProvider.objects.get_or_create(
+            slug="fatjoe",
+            defaults={
+                "display_name": "FATJOE",
+                "homepage_url": "https://fatjoe.com",
+                "is_enabled": True,
+                "notes": "Reseller / white-label backlinks marketplace.",
+            },
+        )
+        BacklinkProvider.objects.get_or_create(
+            slug="budget_links",
+            defaults={
+                "display_name": "BudgetLinks",
+                "homepage_url": "",
+                "is_enabled": True,
+                "notes": "Budget-tier reseller — sub-$50 placements, niche guest posts, profile citations.",
+            },
+        )
+
+    @staticmethod
+    def _refresh_provider_catalog(provider):
+        """Pull current catalog from the provider and upsert into BacklinkProduct."""
+        from apps.integrations.services.backlink_providers import get_client
+        from .models import BacklinkProduct
+
+        try:
+            client = get_client(provider.slug)
+            rows = client.list_products()
+        except Exception as exc:
+            logger.warning(
+                "BacklinkCatalogView: failed to refresh %s catalog: %s",
+                provider.slug, exc,
+            )
+            return
+
+        for row in rows:
+            BacklinkProduct.objects.update_or_create(
+                provider=provider,
+                sku=row.sku,
+                defaults={
+                    "domain": row.domain,
+                    "title": row.title,
+                    "link_type": row.link_type,
+                    "domain_authority": row.domain_authority,
+                    "domain_rank": row.domain_rank,
+                    "monthly_traffic": row.monthly_traffic,
+                    "niche_tags": row.niche_tags,
+                    "language": row.language,
+                    "country": row.country,
+                    "do_follow": row.do_follow,
+                    "wholesale_price_cents": row.wholesale_price_cents,
+                    "retail_price_cents": row.retail_price_cents,
+                    "currency": row.currency,
+                    "lead_time_days": row.lead_time_days,
+                    "extras": row.extras,
+                },
+            )
+
+
+class BacklinkOrderListCreateView(APIView):
+    """
+    GET  /runs/s/<slug>/backlinks/orders/         — list orders for this run
+    POST /runs/s/<slug>/backlinks/orders/         — place an order
+
+    POST body:
+      {
+        "product_id": int,
+        "target_url": str,
+        "anchor_text": str,
+        "track_id": int | null,    // optional, link the order to a prompt
+        "notes": str | null,
+        "user_email": str
+      }
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .models import BacklinkOrder
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        qs = (
+            BacklinkOrder.objects
+            .filter(analysis_run=run)
+            .select_related("provider", "product")
+            .order_by("-created_at")
+        )
+        email = (request.GET.get("user_email") or "").strip().lower()
+        if email:
+            qs = qs.filter(user_email__iexact=email)
+        return Response({"orders": [_serialize_order(o) for o in qs]})
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .models import BacklinkProduct, BacklinkOrder, PromptTrack
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+
+        product_id = request.data.get("product_id")
+        target_url = (request.data.get("target_url") or "").strip()
+        anchor_text = (request.data.get("anchor_text") or "").strip()
+        user_email = (request.data.get("user_email") or "").strip().lower()
+        track_id = request.data.get("track_id")
+        notes = (request.data.get("notes") or "").strip()
+
+        missing = [
+            field for field, value in [
+                ("product_id", product_id),
+                ("target_url", target_url),
+                ("anchor_text", anchor_text),
+                ("user_email", user_email),
+            ] if not value
+        ]
+        if missing:
+            return Response(
+                {"detail": f"Missing required fields: {', '.join(missing)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            product = BacklinkProduct.objects.select_related("provider").get(
+                id=int(product_id)
+            )
+        except (BacklinkProduct.DoesNotExist, TypeError, ValueError):
+            return Response(
+                {"detail": "Unknown product_id."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        prompt_track = None
+        if track_id is not None:
+            try:
+                prompt_track = PromptTrack.objects.get(
+                    id=int(track_id), analysis_run=run
+                )
+            except (PromptTrack.DoesNotExist, TypeError, ValueError):
+                prompt_track = None
+
+        # Order is created in pending_payment — provider only sees it after the
+        # user confirms payment via BacklinkOrderConfirmPaymentView.
+        order = BacklinkOrder.objects.create(
+            provider=product.provider,
+            product=product,
+            user_email=user_email,
+            analysis_run=run,
+            prompt_track=prompt_track,
+            target_url=target_url[:2048],
+            anchor_text=anchor_text[:300],
+            status=BacklinkOrder.Status.PENDING_PAYMENT,
+            price_cents=product.retail_price_cents,
+            currency=product.currency,
+            notes_for_provider=notes,
+        )
+
+        return Response(_serialize_order(order), status=status.HTTP_201_CREATED)
+
+
+class BacklinkOrderDetailView(APIView):
+    """
+    GET  /runs/s/<slug>/backlinks/orders/<int:order_id>/  — refresh status
+    POST /runs/s/<slug>/backlinks/orders/<int:order_id>/  — manual sync poll
+    """
+    permission_classes = [AllowAny]
+
+    def _get_order(self, slug, order_id):
+        from django.shortcuts import get_object_or_404
+        from .models import BacklinkOrder
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        return get_object_or_404(
+            BacklinkOrder.objects.select_related("provider", "product"),
+            id=order_id, analysis_run=run,
+        )
+
+    def _poll(self, order):
+        from apps.integrations.services.backlink_providers import get_client
+        from .models import BacklinkOrder
+
+        if not order.provider_order_id:
+            return order
+        try:
+            client = get_client(order.provider.slug)
+            res = client.get_status(provider_order_id=order.provider_order_id)
+        except Exception as exc:
+            logger.warning("Backlink order poll failed (%s): %s", order.id, exc)
+            return order
+
+        # Map provider statuses to our enum.
+        new_status = (res.status or "").lower() or order.status
+        if new_status not in BacklinkOrder.Status.values:
+            return order
+
+        if new_status != order.status:
+            order.status = new_status
+            if res.proof_url:
+                order.proof_url = res.proof_url[:2048]
+            if new_status == BacklinkOrder.Status.DELIVERED and not order.delivered_at:
+                order.delivered_at = timezone.now()
+            if res.error_message:
+                order.error_message = res.error_message[:1000]
+            order.save(update_fields=[
+                "status", "proof_url", "delivered_at", "error_message"
+            ])
+        return order
+
+    def get(self, request, slug, order_id):
+        order = self._get_order(slug, order_id)
+        return Response(_serialize_order(order))
+
+    def post(self, request, slug, order_id):
+        order = self._get_order(slug, order_id)
+        order = self._poll(order)
+        return Response(_serialize_order(order))
+
+
+class BacklinkOrderConfirmPaymentView(APIView):
+    """
+    POST /runs/s/<slug>/backlinks/orders/<int:order_id>/confirm-payment/
+
+    Finalises a pending_payment order. In production this would be called after
+    a successful Stripe payment intent; for now it acts as a mock-checkout
+    confirmation that releases the order to the provider.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug, order_id):
+        from django.shortcuts import get_object_or_404
+        from .models import BacklinkOrder
+        from apps.integrations.services.backlink_providers import get_client
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        order = get_object_or_404(
+            BacklinkOrder.objects.select_related("provider", "product"),
+            id=order_id, analysis_run=run,
+        )
+
+        if order.status != BacklinkOrder.Status.PENDING_PAYMENT:
+            return Response(
+                {"detail": f"Order is already {order.status}; cannot confirm payment."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        payment_intent_id = (request.data.get("payment_intent_id") or "").strip()
+
+        try:
+            client = get_client(order.provider.slug)
+            result = client.place_order(
+                sku=order.product.sku,
+                target_url=order.target_url,
+                anchor_text=order.anchor_text,
+                notes=order.notes_for_provider,
+            )
+        except Exception as exc:
+            logger.exception("Backlink order place_order failed: %s", exc)
+            return Response(
+                {"detail": f"Provider rejected the order: {exc}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        order.status = result.status or BacklinkOrder.Status.QUEUED
+        order.provider_order_id = result.provider_order_id or ""
+        order.ordered_at = timezone.now()
+        if payment_intent_id:
+            order.payment_intent_id = payment_intent_id[:120]
+        order.save(update_fields=[
+            "status", "provider_order_id", "ordered_at", "payment_intent_id"
+        ])
+
+        return Response(_serialize_order(order))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Wikipedia draft generator
+# Helps the user actually post to Wikipedia: assesses notability, generates a
+# neutral encyclopedic draft with citations, lists related articles to edit.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class PromptWikipediaDraftView(APIView):
+    """
+    GET  /runs/s/<slug>/prompts/<int:track_id>/wikipedia/draft/
+        Returns the saved draft if one exists, else 404.
+
+    POST /runs/s/<slug>/prompts/<int:track_id>/wikipedia/draft/
+        Body: { "force": bool? }
+        Generates and persists the Wikipedia kit. Returns the cached version
+        if one exists and force is false.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug, track_id):
+        from django.shortcuts import get_object_or_404
+        from .models import PromptTrack, PromptWikipediaDraft
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        track = get_object_or_404(PromptTrack, id=track_id, analysis_run=run)
+        existing = PromptWikipediaDraft.objects.filter(prompt_track=track).first()
+        if not existing:
+            return Response(
+                {"detail": "No saved draft yet."}, status=status.HTTP_404_NOT_FOUND
+            )
+        return Response({**existing.payload, "cached": True})
+
+    def post(self, request, slug, track_id):
+        from django.shortcuts import get_object_or_404
+        from .models import PromptTrack, PromptWikipediaDraft
+        from .pipeline.llm import ask_llm
+        import json
+        import re
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        track = get_object_or_404(PromptTrack, id=track_id, analysis_run=run)
+
+        force = bool(request.data.get("force"))
+        if not force:
+            existing = PromptWikipediaDraft.objects.filter(prompt_track=track).first()
+            if existing and existing.payload:
+                return Response({**existing.payload, "cached": True})
+
+        brand = (run.brand_name or "").strip() or "the brand"
+        url = (run.url or "").strip()
+        prompt_text = (track.prompt_text or "").strip()
+
+        # Pull a few signals from existing data the LLM can ground the draft on.
+        try:
+            competitors = list(
+                run.competitors.values_list("name", flat=True)[:5]
+            )
+        except Exception:
+            competitors = []
+
+        prompt = f"""You are an experienced Wikipedia editor helping a brand build a notable, neutral, well-sourced presence on Wikipedia.
+
+BRAND NAME: {brand}
+BRAND URL: {url or "(none)"}
+USER QUERY (the prompt they want to be cited for): {prompt_text}
+KNOWN COMPETITORS: {", ".join(competitors) or "(none)"}
+
+Produce a JSON object that helps the user actually post to Wikipedia. Cover three things:
+
+1) Notability verdict — does this brand currently meet Wikipedia's notability bar (significant, sustained, independent secondary sources)?
+2) A draft article — neutral encyclopedic tone, no marketing language, with placeholder citations as [1], [2], etc.
+3) Edit targets — 3-5 EXISTING Wikipedia articles where this brand could plausibly be added as a relevant citation, with the exact one-sentence edit to suggest.
+
+CRITICAL CONSTRAINTS:
+- Tone must be neutral, encyclopedic, factual. NEVER use words like "leading", "innovative", "best", "trusted", "premier", "cutting-edge".
+- Every claim of fact must reference a citation [n]. References list real, plausible source types (TechCrunch article, Forbes profile, peer-reviewed paper, government registry).
+- If the brand likely lacks notability, say so honestly in the verdict — don't fabricate.
+- Sections should follow Wikipedia conventions: Lead, History, Products / Services, Reception, References.
+- Edit targets must be real existing Wikipedia article titles related to the BRAND or the USER QUERY topic.
+
+Return ONLY valid JSON. No markdown fences. Schema:
+{{
+  "notability": {{
+    "verdict": "qualifies" | "borderline" | "needs_more_coverage",
+    "score": <0 to 100>,
+    "summary": "Two-sentence summary of why.",
+    "missing_evidence": ["Specific gap 1", "Specific gap 2"]
+  }},
+  "draft": {{
+    "title": "Article title",
+    "lead": "Markdown lead paragraph (2-4 sentences) with [1] style citations.",
+    "sections": [
+      {{"heading": "History", "body_markdown": "..."}},
+      {{"heading": "Products and services", "body_markdown": "..."}},
+      {{"heading": "Reception", "body_markdown": "..."}}
+    ],
+    "infobox": {{
+      "type": "Company",
+      "founded": "Year if known, else 'TBD'",
+      "headquarters": "City, Country if known",
+      "industry": "Industry name",
+      "website": "{url or 'TBD'}"
+    }},
+    "references_markdown": "1. Citation 1 source.\\n2. Citation 2 source.\\n3. ..."
+  }},
+  "edit_targets": [
+    {{
+      "title": "Existing Wikipedia article title",
+      "url": "https://en.wikipedia.org/wiki/Article_Title",
+      "suggested_edit": "One sentence to add at a specific section, with [citation needed] placeholder"
+    }}
+  ],
+  "submit_instructions_markdown": "Step-by-step markdown instructions for submitting via Articles for Creation, including the exact AfC link and what to do if the article gets declined."
+}}"""
+
+        raw = ask_llm(
+            prompt,
+            max_tokens=4096,
+            temperature=0.2,
+            purpose="Wikipedia draft generator",
+        )
+        if not raw:
+            return Response(
+                {"detail": "LLM did not respond. Try again in a moment."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        # Strip code fences and parse.
+        cleaned = raw.strip()
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+        try:
+            payload = json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            logger.warning("Wikipedia draft JSON parse failed: %s", exc)
+            return Response(
+                {
+                    "detail": "Couldn't parse the LLM response. Please retry.",
+                    "raw_excerpt": cleaned[:500],
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        PromptWikipediaDraft.objects.update_or_create(
+            prompt_track=track, defaults={"payload": payload}
+        )
+
+        return Response({**payload, "cached": False})
+
+
+class PromptSchemaView(APIView):
+    """
+    GET  /runs/s/<slug>/prompts/<int:track_id>/schema/
+        Returns all previously-generated artifacts for this prompt.
+
+    POST /runs/s/<slug>/prompts/<int:track_id>/schema/
+        Body: { "schema_type": "faq"|"article"|"person"|"organization"|"answer",
+                "force": bool? }
+        If an artifact for this (prompt, schema_type) already exists and force is
+        false, it is returned without re-calling the LLM. Set force=true to
+        regenerate.
+    """
+    permission_classes = [AllowAny]
+
+    SCHEMA_TYPES = {"faq", "article", "person", "organization", "answer"}
+
+    def get(self, request, slug, track_id):
+        from django.shortcuts import get_object_or_404
+        from .models import PromptTrack, PromptSchemaArtifact
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        track = get_object_or_404(PromptTrack, id=track_id, analysis_run=run)
+        artifacts = PromptSchemaArtifact.objects.filter(prompt_track=track)
+        return Response({
+            "artifacts": [
+                {
+                    "schema_type": a.schema_type,
+                    "output": a.output,
+                    "explanation": a.explanation,
+                    "updated_at": a.updated_at.isoformat() if a.updated_at else None,
+                }
+                for a in artifacts
+            ]
+        })
+
+    def post(self, request, slug, track_id):
+        from django.shortcuts import get_object_or_404
+        from .models import PromptTrack, PromptSchemaArtifact
+        from .pipeline.llm import ask_llm
+        import re
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        track = get_object_or_404(PromptTrack, id=track_id, analysis_run=run)
+
+        schema_type = (request.data.get("schema_type") or "").strip().lower()
+        if schema_type not in self.SCHEMA_TYPES:
+            return Response(
+                {"detail": f"schema_type must be one of {sorted(self.SCHEMA_TYPES)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        force = bool(request.data.get("force"))
+        if not force:
+            cached = PromptSchemaArtifact.objects.filter(
+                prompt_track=track, schema_type=schema_type
+            ).first()
+            if cached:
+                return Response({
+                    "schema_type": cached.schema_type,
+                    "output": cached.output,
+                    "explanation": cached.explanation,
+                    "cached": True,
+                })
+
+        brand = (run.brand_name or "").strip() or "the brand"
+        url = (run.url or "").strip() or "https://example.com"
+        prompt_text = (track.prompt_text or "").strip()
+
+        instructions = {
+            "faq": (
+                "Output ONLY a single FAQPage JSON-LD with one Question whose `name` is the user prompt verbatim, "
+                "and an Answer in 2-4 sentences in a neutral, brand voice. Do not invent statistics. "
+                "Wrap in `mainEntity` correctly per schema.org."
+            ),
+            "article": (
+                "Output ONLY an Article JSON-LD for a hypothetical page on the brand's domain that answers "
+                "the user prompt. Include headline, description, datePublished (today), dateModified (today), "
+                "author (Person stub), publisher (Organization with the brand name and logo URL placeholder), "
+                "mainEntityOfPage with a plausible URL slug derived from the prompt."
+            ),
+            "person": (
+                "Output ONLY a Person JSON-LD for an author writing about the user prompt's topic for this brand. "
+                "Include name (placeholder 'Author Name'), jobTitle, worksFor (the brand), description with their "
+                "domain expertise tied to the prompt's topic, sameAs array with placeholder LinkedIn / Twitter "
+                "URLs, and knowsAbout array of 3-5 topics relevant to the prompt."
+            ),
+            "organization": (
+                "Output ONLY an Organization JSON-LD for the brand. Include name, url, logo URL placeholder, "
+                "description tied to the prompt's topic so the brand reads as a primary source for it, "
+                "knowsAbout array, sameAs array with placeholder profile URLs."
+            ),
+            "answer": (
+                "Do NOT output JSON-LD. Output a 2-paragraph direct answer to the user prompt, written in the "
+                "brand's voice. Each paragraph 2-3 sentences. Neutral, factual, useful — no marketing words. "
+                f"REQUIRED: mention '{brand}' by name in BOTH paragraphs (at least twice total), framed as a "
+                f"credible source/practitioner — e.g. 'According to {brand}…', \"{brand}'s formulations…\", "
+                f"'In {brand}'s experience…', '{brand} recommends…'. {brand} must read as a domain authority on "
+                "this topic, not as a sponsor or marketer. Open with a direct factual answer to the prompt; "
+                "use the brand mentions to ground specific claims. End with one practical action the reader can take "
+                "(no sales CTA)."
+            ),
+        }[schema_type]
+
+        prompt = f"""You are generating production-ready content for a brand to paste into their website.
+
+BRAND: {brand}
+BRAND URL: {url}
+USER PROMPT (the AI search query they want to rank for): {prompt_text}
+
+TASK: {instructions}
+
+CRITICAL:
+- For schema types: output ONLY valid JSON-LD wrapped in <script type="application/ld+json">…</script>. No prose.
+- For 'answer': output ONLY the 2-paragraph answer. No headings, no bullets, no JSON.
+- Use the brand name and URL as given. Use placeholder URLs for logo / images / sameAs profiles.
+- Stay neutral. Never use the words "leading", "best", "innovative", "premier", "trusted".
+"""
+
+        raw = ask_llm(
+            prompt,
+            max_tokens=2048,
+            temperature=0.2,
+            purpose=f"Per-prompt schema generator ({schema_type})",
+        )
+        if not raw:
+            return Response(
+                {"detail": "LLM did not respond. Try again in a moment."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        cleaned = raw.strip()
+        cleaned = re.sub(r"^```(?:json|html|markdown)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+
+        explanation_map = {
+            "faq": "Paste this inside the <head> or near the relevant Q&A on the page targeting this prompt. AI engines lift verbatim Q→A pairs at the highest extraction rate.",
+            "article": "Paste this inside the <head> of the article page that targets this prompt. Replace placeholder URLs and the author stub with real values.",
+            "person": "Paste this on the author's profile page (e.g. /author/<slug>). Fill in real name, photo URL, LinkedIn, and credentials. Person schema is a direct E-E-A-T signal.",
+            "organization": "Paste this in the <head> of your homepage. Replace placeholder logo and sameAs URLs. Organization schema makes you the canonical source for queries about your brand.",
+            "answer": "Paste this paragraph directly on the page targeting this prompt — ideally near the top, with the prompt text as an H2 above it. AI engines often lift this verbatim.",
+        }
+
+        explanation = explanation_map[schema_type]
+
+        PromptSchemaArtifact.objects.update_or_create(
+            prompt_track=track,
+            schema_type=schema_type,
+            defaults={"output": cleaned, "explanation": explanation},
+        )
+
+        return Response({
+            "schema_type": schema_type,
+            "output": cleaned,
+            "explanation": explanation,
+            "cached": False,
+        })

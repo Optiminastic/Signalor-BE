@@ -314,11 +314,14 @@ def _post_serper(
         body["gl"] = gl
         body["hl"] = "en"
     try:
-        resp = requests.post(
+        from apps.integrations._http import request_with_retry
+        resp = request_with_retry(
+            "POST",
             SERPER_ENDPOINT,
             headers={"X-API-KEY": key, "Content-Type": "application/json"},
             json=body,
             timeout=SERPER_TIMEOUT,
+            max_retries=2,
         )
         if not resp.ok:
             logger.warning("Serper non-OK for %r: %d", query, resp.status_code)

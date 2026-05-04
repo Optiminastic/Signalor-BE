@@ -584,7 +584,14 @@ def fetch_psi_vitals(url: str) -> dict[str, Any]:
     if api_key:
         params["key"] = api_key
     try:
-        resp = requests.get(endpoint, params=params, timeout=PSI_TIMEOUT)
+        from apps.integrations._http import request_with_retry
+        resp = request_with_retry(
+            "GET",
+            endpoint,
+            params=params,
+            timeout=PSI_TIMEOUT,
+            max_retries=2,
+        )
     except requests.RequestException as exc:
         logger.debug("psi: %s failed: %s", url, exc)
         return {}
