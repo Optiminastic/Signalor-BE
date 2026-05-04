@@ -72,6 +72,12 @@ from .views import (
     PromptWikipediaDraftView,
     # Schema / E-E-A-T generators
     PromptSchemaView,
+    # Content optimisation (Cursor-style edit + save)
+    ContentPagesView,
+    ContentPageFieldsView,
+    ContentSuggestionsView,
+    ContentSuggestionDismissView,
+    ContentSaveView,
 )
 
 app_name = "analyzer"
@@ -137,6 +143,12 @@ urlpatterns = [
     path("runs/s/<str:slug>/backlinks/orders/<int:order_id>/confirm-payment/", BacklinkOrderConfirmPaymentView.as_view(), name="backlink-order-confirm-payment"),
     path("runs/s/<str:slug>/prompts/<int:track_id>/wikipedia/draft/", PromptWikipediaDraftView.as_view(), name="prompt-wikipedia-draft"),
     path("runs/s/<str:slug>/prompts/<int:track_id>/schema/", PromptSchemaView.as_view(), name="prompt-schema"),
+    # Content optimisation
+    path("runs/s/<str:slug>/content/pages/", ContentPagesView.as_view(), name="content-pages"),
+    path("runs/s/<str:slug>/content/page/", ContentPageFieldsView.as_view(), name="content-page-fields"),
+    path("runs/s/<str:slug>/content/suggestions/", ContentSuggestionsView.as_view(), name="content-suggestions"),
+    path("runs/s/<str:slug>/content/suggestions/<int:suggestion_id>/dismiss/", ContentSuggestionDismissView.as_view(), name="content-suggestion-dismiss"),
+    path("runs/s/<str:slug>/content/save/", ContentSaveView.as_view(), name="content-save"),
     path("runs/s/<str:slug>/", AnalysisRunBySlugView.as_view(), name="run-by-slug"),
     path("runs/<int:run_id>/status/", AnalysisRunStatusView.as_view(), name="run-status"),
     path("runs/<int:run_id>/export-pdf/", ExportPDFView.as_view(), name="export-pdf"),

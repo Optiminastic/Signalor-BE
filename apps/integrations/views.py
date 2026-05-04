@@ -23,6 +23,7 @@ from apps.accounts.subscription_utils import (
     plan_limit_error_response_dict,
     project_limit_reached,
 )
+from core.throttling import PollingThrottle
 from apps.organizations.models import Organization
 
 from .models import (
@@ -362,7 +363,7 @@ class GACallbackView(APIView):
 class IntegrationStatusView(APIView):
     """GET /api/integrations/status/?email=&org_id="""
     permission_classes = [AllowAny]
-    throttle_classes = []  # high-frequency read for dashboard/sidebar state
+    throttle_classes = [PollingThrottle]  # high-frequency read for dashboard/sidebar state
 
     def get(self, request):
         email = request.query_params.get("email", "").lower().strip()

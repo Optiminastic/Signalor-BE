@@ -1,0 +1,523 @@
+"""
+Content Optimisation service.
+
+Powers the in-app, Cursor-style content editor:
+- list pages on the run's domain (sitemap audit > crawled internal links > root URL)
+- fetch one page's editable fields (title, meta, body HTML, schema) preferring
+  the connected plugin's /get-content for source-of-truth body, and parsing
+  the public HTML for meta and embedded JSON-LD
+- generate AI suggestions per page (stored as ContentSuggestion rows)
+- save edits via the existing _send_to_plugin pipeline (fix_type: meta/content/schema)
+
+Reuses, never duplicates:
+- apps/analyzer/auto_fix.py: _send_to_plugin, _call_llm, _normalize_plugin_status
+- apps/analyzer/integration_resolve.py: resolve_store_integration_for_run
+"""
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import logging
+import re
+from urllib.parse import urlparse
+
+import requests
+
+from apps.analyzer.auto_fix import (
+    _call_llm,
+    _normalize_plugin_status,
+    _send_to_plugin,
+)
+from apps.analyzer.integration_resolve import resolve_store_integration_for_run
+from apps.analyzer.models import (
+    AnalysisRun,
+    ContentSuggestion,
+    SitemapAudit,
+    SitemapAuditPage,
+)
+from django.utils import timezone
+
+logger = logging.getLogger("apps")
+
+# Editor field constants — must match ContentSuggestion.TARGET_FIELD_CHOICES
+FIELD_TITLE = "title"
+FIELD_META = "meta_description"
+FIELD_BODY = "body_html"
+FIELD_SCHEMA = "schema_jsonld"
+ALL_FIELDS = (FIELD_TITLE, FIELD_META, FIELD_BODY, FIELD_SCHEMA)
+
+# Plugin fix_type per editor field
+_FIELD_TO_FIX_TYPE = {
+    FIELD_TITLE: "meta",   # meta fix takes seo_title
+    FIELD_META: "meta",    # same — packed together
+    FIELD_BODY: "content",
+    FIELD_SCHEMA: "schema",
+}
+
+
+class ContentOptimisationError(Exception):
+    """Raised on unrecoverable failures (no plugin + no public HTML, etc.)."""
+
+
+# ── Page list ────────────────────────────────────────────────────────────
+
+def list_pages_for_run(run: AnalysisRun) -> list[dict]:
+    """Return [{url, path, title, last_audited_at}] for the run.
+
+    Priority: SitemapAudit pages > root URL only. We don't run a fresh crawl
+    here — that's an explicit user action via the Sitemap audit panel.
+    """
+    audit = (
+        SitemapAudit.objects.filter(analysis_run=run)
+        .order_by("-id")
+        .first()
+    )
+    if audit:
+        rows = (
+            SitemapAuditPage.objects
+            .filter(audit=audit)
+            .exclude(state=SitemapAuditPage.State.FAILED)
+            .order_by("path", "url")
+            .values("url", "path", "title")
+        )
+        out = [
+            {
+                "url": r["url"],
+                "path": r["path"] or _path_of(r["url"]),
+                "title": r["title"] or "",
+                "last_audited_at": audit.updated_at.isoformat() if audit.updated_at else None,
+            }
+            for r in rows
+        ]
+        if out:
+            return out
+
+    if run.url:
+        return [
+            {
+                "url": run.url,
+                "path": _path_of(run.url) or "/",
+                "title": run.brand_name or "",
+                "last_audited_at": None,
+            }
+        ]
+    return []
+
+
+# ── Field fetch ──────────────────────────────────────────────────────────
+
+def fetch_page_fields(run: AnalysisRun, url: str) -> dict:
+    """Return editable fields for one page.
+
+    Strategy:
+      1. Always parse the public HTML for title, meta, embedded JSON-LD,
+         and the rendered preview HTML.
+      2. If a plugin integration is connected, additionally hit /get-content
+         to override `body_html` with the raw post_content / page body
+         (which is what the plugin will actually update on save).
+    """
+    if not url:
+        raise ContentOptimisationError("url is required")
+
+    integration = (
+        resolve_store_integration_for_run(run.organization, url)
+        if run.organization_id
+        else None
+    )
+
+    public_html, public_text = _fetch_public_html(url)
+    fields = _extract_fields_from_html(public_html, url)
+
+    plugin_body, plugin_title, plugin_post_id = "", "", None
+    if integration:
+        plugin_body, plugin_title, plugin_post_id = _fetch_via_plugin(integration, url)
+        if plugin_body:
+            fields["body_html"] = plugin_body
+        if plugin_title and not fields.get("title"):
+            fields["title"] = plugin_title
+
+    fields["url"] = url
+    fields["preview_html"] = _rewrite_preview_html(public_html, url)
+    fields["source"] = "plugin" if plugin_body else ("public" if public_html else "empty")
+    fields["plugin_connected"] = bool(integration)
+    fields["plugin_provider"] = integration.provider if integration else ""
+    return fields
+
+
+def _fetch_public_html(url: str) -> tuple[str, str]:
+    """Fetch the raw HTML at url. Returns (html, text). Empty strings on error."""
+    try:
+        resp = requests.get(
+            url,
+            timeout=15,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; SignalorBot/1.0)"},
+        )
+        if resp.ok:
+            return resp.text, resp.text
+    except Exception as exc:
+        logger.debug("content_optimisation public fetch failed for %s: %s", url, exc)
+    return "", ""
+
+
+def _extract_fields_from_html(html: str, url: str) -> dict[str, str]:
+    """Extract title, meta_description, body_html, schema_jsonld from raw HTML.
+
+    Body extraction is a best-effort grab of <body>...</body>; for plugin-connected
+    sites we override this with the source-of-truth post_content.
+    """
+    if not html:
+        return {
+            "title": "",
+            "meta_description": "",
+            "body_html": "",
+            "schema_jsonld": "",
+        }
+
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.DOTALL | re.IGNORECASE)
+    title = (title_match.group(1).strip() if title_match else "")[:255]
+
+    meta_desc = ""
+    meta_match = re.search(
+        r'<meta[^>]+name=[\'"]description[\'"][^>]+content=[\'"]([^\'"]*)[\'"]',
+        html,
+        re.IGNORECASE,
+    )
+    if meta_match:
+        meta_desc = meta_match.group(1).strip()
+    else:
+        meta_match = re.search(
+            r'<meta[^>]+content=[\'"]([^\'"]*)[\'"][^>]+name=[\'"]description[\'"]',
+            html,
+            re.IGNORECASE,
+        )
+        if meta_match:
+            meta_desc = meta_match.group(1).strip()
+
+    body_match = re.search(r"<body[^>]*>(.*?)</body>", html, re.DOTALL | re.IGNORECASE)
+    body_html = body_match.group(1)[:20000] if body_match else html[:20000]
+
+    schema_jsonld = _extract_first_jsonld(html)
+
+    return {
+        "title": title,
+        "meta_description": meta_desc,
+        "body_html": body_html,
+        "schema_jsonld": schema_jsonld,
+    }
+
+
+def _extract_first_jsonld(html: str) -> str:
+    """Return the first <script type='application/ld+json'> body, pretty-printed."""
+    match = re.search(
+        r'<script[^>]+type=[\'"]application/ld\+json[\'"][^>]*>(.*?)</script>',
+        html,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    raw = match.group(1).strip()
+    try:
+        return json.dumps(json.loads(raw), indent=2)
+    except (ValueError, TypeError):
+        return raw[:8000]
+
+
+def _rewrite_preview_html(html: str, url: str) -> str:
+    """Sandbox-friendly HTML for the iframe preview.
+
+    Inject <base> so relative URLs (CSS, images, lazy-loaded JS) resolve
+    against the user's origin. Scripts are kept — modern themes (Shopify,
+    Webflow, etc.) hydrate hero/product/grid sections client-side, so
+    stripping them leaves only the static header skeleton. The iframe is
+    sandboxed with `allow-scripts` only (no allow-same-origin), so the
+    embedded JS runs in a unique origin and cannot reach the parent.
+    """
+    if not html:
+        return ""
+    parsed = urlparse(url)
+    origin = f"{parsed.scheme}://{parsed.netloc}/"
+
+    base_tag = f'<base href="{origin}">'
+    if re.search(r"<head\b[^>]*>", html, re.IGNORECASE):
+        return re.sub(
+            r"(<head\b[^>]*>)",
+            r"\1" + base_tag,
+            html,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+    return f"<head>{base_tag}</head>" + html
+
+
+def _fetch_via_plugin(integration, url: str) -> tuple[str, str, int | None]:
+    """Call the plugin's /get-content. Returns (body, title, post_id)."""
+    provider = integration.provider
+    try:
+        if provider == "wordpress":
+            site_url = integration.metadata.get("site_url", "")
+            api_key = integration.metadata.get("signalor_api_key", "")
+            if not site_url or not api_key:
+                return "", "", None
+            resp = requests.post(
+                f"{site_url.rstrip('/')}/wp-json/signalor/v1/get-content",
+                headers={"X-Signalor-Key": api_key, "Content-Type": "application/json"},
+                json={"url": url},
+                timeout=15,
+            )
+            if not resp.ok:
+                return "", "", None
+            data = resp.json()
+            return data.get("content", "") or "", data.get("title", "") or "", data.get("post_id")
+
+        if provider == "shopify":
+            app_url = integration.metadata.get("signalor_app_url", "").rstrip("/")
+            hmac_secret = integration.metadata.get("signalor_hmac_secret", "")
+            shop = integration.metadata.get("shop_domain", "")
+            if not app_url or not hmac_secret:
+                return "", "", None
+            payload = {"url": url, "shop": shop}
+            body = json.dumps(payload).encode("utf-8")
+            signature = hmac.new(hmac_secret.encode(), body, hashlib.sha256).hexdigest()
+            resp = requests.post(
+                f"{app_url}/api/get-content",
+                headers={
+                    "X-Signalor-Signature": signature,
+                    "X-Signalor-Shop": shop,
+                    "Content-Type": "application/json",
+                },
+                data=body,
+                timeout=20,
+            )
+            if not resp.ok:
+                return "", "", None
+            data = resp.json()
+            return data.get("content", "") or "", data.get("title", "") or "", None
+    except Exception as exc:
+        logger.debug("content_optimisation plugin fetch failed: %s", exc)
+    return "", "", None
+
+
+# ── AI Suggestions ───────────────────────────────────────────────────────
+
+_SUGGEST_PROMPT = """You are an AI search optimisation expert. Given a webpage, suggest 4-7 concrete edits that will make it more discoverable and quotable by AI search engines (ChatGPT, Perplexity, Gemini, Claude).
+
+Each suggestion must target ONE editor field:
+- "title" — page <title>
+- "meta_description" — meta description
+- "body_html" — main content HTML
+- "schema_jsonld" — JSON-LD structured data block
+
+For body_html and schema_jsonld, prefer additive suggestions (add a FAQ section, add summary paragraph, add Article schema, add HowTo schema) rather than full rewrites.
+
+Return STRICT JSON — an array of objects, no surrounding text:
+[
+  {{
+    "title": "Short label, e.g. 'Add FAQ schema'",
+    "rationale": "One sentence explaining why this helps AI search.",
+    "target_field": "title|meta_description|body_html|schema_jsonld",
+    "current_excerpt": "What's there now (truncated, can be empty if adding new)",
+    "proposed_value": "The exact value to write — full title, full meta, full body HTML, or full JSON-LD"
+  }}
+]
+
+PAGE URL: {url}
+CURRENT TITLE: {title}
+CURRENT META: {meta}
+CURRENT SCHEMA (first 1000 chars): {schema}
+CURRENT BODY (first 4000 chars): {body}
+"""
+
+
+def generate_suggestions(run: AnalysisRun, url: str, fields: dict | None = None) -> list[ContentSuggestion]:
+    """Generate fresh AI suggestions for a page. Old PROPOSED rows on the
+    same (run, url) are dismissed so the UI shows only the latest set."""
+    if fields is None:
+        fields = fetch_page_fields(run, url)
+
+    prompt = _SUGGEST_PROMPT.format(
+        url=url,
+        title=(fields.get("title") or "")[:200],
+        meta=(fields.get("meta_description") or "")[:300],
+        schema=(fields.get("schema_jsonld") or "")[:1000],
+        body=(fields.get("body_html") or "")[:4000],
+    )
+
+    raw = _call_llm(prompt, purpose="content-optimisation-suggest")
+    parsed = _parse_suggestions_json(raw)
+    if not parsed:
+        return []
+
+    # Dismiss prior proposed-but-unused rows on this page
+    ContentSuggestion.objects.filter(
+        analysis_run=run,
+        url=url,
+        status=ContentSuggestion.PROPOSED,
+    ).update(status=ContentSuggestion.DISMISSED)
+
+    created: list[ContentSuggestion] = []
+    valid_targets = set(ALL_FIELDS)
+    for item in parsed[:10]:
+        target = (item.get("target_field") or "").strip()
+        if target not in valid_targets:
+            continue
+        proposed = (item.get("proposed_value") or "").strip()
+        if not proposed:
+            continue
+        suggestion = ContentSuggestion.objects.create(
+            analysis_run=run,
+            url=url,
+            title=(item.get("title") or "")[:255] or "Suggested edit",
+            rationale=(item.get("rationale") or "")[:1000],
+            target_field=target,
+            current_excerpt=(item.get("current_excerpt") or "")[:2000],
+            proposed_value=proposed[:20000],
+        )
+        created.append(suggestion)
+    return created
+
+
+def _parse_suggestions_json(raw: str) -> list[dict]:
+    """LLMs often wrap JSON in markdown fences. Strip and parse leniently."""
+    if not raw:
+        return []
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    # Find first [ ... last ] to be robust to leading/trailing prose
+    start = cleaned.find("[")
+    end = cleaned.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        return []
+    try:
+        data = json.loads(cleaned[start : end + 1])
+        return [d for d in data if isinstance(d, dict)]
+    except (ValueError, TypeError):
+        logger.warning("content_optimisation: failed to parse LLM JSON")
+        return []
+
+
+def list_active_suggestions(run: AnalysisRun, url: str) -> list[ContentSuggestion]:
+    return list(
+        ContentSuggestion.objects
+        .filter(analysis_run=run, url=url, status=ContentSuggestion.PROPOSED)
+        .order_by("-created_at")
+    )
+
+
+def dismiss_suggestion(run: AnalysisRun, suggestion_id: int) -> ContentSuggestion | None:
+    try:
+        s = ContentSuggestion.objects.get(id=suggestion_id, analysis_run=run)
+    except ContentSuggestion.DoesNotExist:
+        return None
+    if s.status == ContentSuggestion.PROPOSED:
+        s.status = ContentSuggestion.DISMISSED
+        s.save(update_fields=["status"])
+    return s
+
+
+# ── Save (push to plugin) ────────────────────────────────────────────────
+
+def save_page_edits(run: AnalysisRun, url: str, edits: dict[str, str]) -> dict:
+    """Push the edited fields to the connected plugin.
+
+    `edits` is a partial map of editor field -> new value. Only non-None values
+    are pushed. Returns:
+      {
+        saved: [field, ...],
+        failed: [{field, message}, ...],
+        plugin_responses: {field: response_dict},
+      }
+    """
+    integration = (
+        resolve_store_integration_for_run(run.organization, url)
+        if run.organization_id
+        else None
+    )
+    if not integration:
+        raise ContentOptimisationError(
+            "No active WordPress or Shopify integration. Connect one in Settings → Integrations."
+        )
+
+    saved: list[str] = []
+    failed: list[dict] = []
+    responses: dict[str, dict] = {}
+
+    # Title + meta share the plugin's `meta` fix_type — pack them together.
+    title = edits.get(FIELD_TITLE)
+    meta = edits.get(FIELD_META)
+    if title is not None or meta is not None:
+        meta_payload = json.dumps({
+            "seo_title": title or "",
+            "seo_description": meta or "",
+        })
+        result = _push_one(run, integration, url, "meta", meta_payload)
+        applied_fields = [
+            f for f in (FIELD_TITLE, FIELD_META) if edits.get(f) is not None
+        ]
+        if result.get("normalized_status") == "success":
+            saved.extend(applied_fields)
+        else:
+            for f in applied_fields:
+                failed.append({"field": f, "message": result.get("message", "Plugin error")})
+        for f in applied_fields:
+            responses[f] = result
+
+    body = edits.get(FIELD_BODY)
+    if body is not None:
+        result = _push_one(run, integration, url, "content", body)
+        if result.get("normalized_status") == "success":
+            saved.append(FIELD_BODY)
+        else:
+            failed.append({"field": FIELD_BODY, "message": result.get("message", "Plugin error")})
+        responses[FIELD_BODY] = result
+
+    schema = edits.get(FIELD_SCHEMA)
+    if schema is not None:
+        result = _push_one(run, integration, url, "schema", schema)
+        if result.get("normalized_status") == "success":
+            saved.append(FIELD_SCHEMA)
+        else:
+            failed.append({"field": FIELD_SCHEMA, "message": result.get("message", "Plugin error")})
+        responses[FIELD_SCHEMA] = result
+
+    return {"saved": saved, "failed": failed, "plugin_responses": responses}
+
+
+def _push_one(run: AnalysisRun, integration, url: str, fix_type: str, content: str) -> dict:
+    """Call _send_to_plugin. Returns the response with `normalized_status` added.
+
+    `_send_to_plugin` reads run.url as the target page. We temporarily override
+    it so the plugin targets the page being edited, not the run's home URL.
+    """
+    original_url = run.url
+    try:
+        run.url = url
+        result = _send_to_plugin(integration, run, fix_type, content) or {}
+    finally:
+        run.url = original_url
+
+    result["normalized_status"] = _normalize_plugin_status(result.get("status"))
+    return result
+
+
+def mark_suggestion_used(run: AnalysisRun, suggestion_id: int) -> ContentSuggestion | None:
+    try:
+        s = ContentSuggestion.objects.get(id=suggestion_id, analysis_run=run)
+    except ContentSuggestion.DoesNotExist:
+        return None
+    s.status = ContentSuggestion.USED
+    s.used_at = timezone.now()
+    s.save(update_fields=["status", "used_at"])
+    return s
+
+
+# ── helpers ──────────────────────────────────────────────────────────────
+
+def _path_of(url: str) -> str:
+    try:
+        p = urlparse(url).path or "/"
+        return p
+    except Exception:
+        return ""

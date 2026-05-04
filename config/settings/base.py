@@ -125,11 +125,28 @@ REST_FRAMEWORK = {
     'PAGE_SIZE': 20,
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
-        'rest_framework.throttling.UserRateThrottle'
+        'rest_framework.throttling.UserRateThrottle',
     ],
+    # Global ceilings act as defense-in-depth. Per-route limits are applied
+    # via ScopedRateThrottle on the views themselves — see scopes below.
     'DEFAULT_THROTTLE_RATES': {
         'anon': '100/hour',
-        'user': '1000/hour'
+        'user': '1000/hour',
+        # Cost-incurring routes (LLM, full re-analysis, auto-fix, blog gen).
+        'expensive': '10/minute',
+        # AI chat — per-message Gemini cost; allow burst for normal convo.
+        'ai_chat': '30/minute',
+        # DataForSEO-backed routes (domain analytics, citation enrich,
+        # audit starts that hit the vendor). Bounds vendor credit burn.
+        'dataforseo': '20/minute',
+        # Audit "start" endpoints — kick off background tasks, expensive
+        # to spawn but not as costly as full analyze.
+        'audit_start': '15/minute',
+        # Status / list / detail polls. High enough that legit clients
+        # never hit it; low enough that a runaway frontend loop is capped.
+        'polling': '120/minute',
+        # Auth-adjacent: email/OTP sends, password resets. Per-IP.
+        'auth_send': '10/minute',
     },
     'EXCEPTION_HANDLER': 'core.exceptions.custom_exception_handler',
 }

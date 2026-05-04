@@ -1653,3 +1653,57 @@ class DomainAnalyticsSnapshot(models.Model):
 
     def __str__(self):
         return f"DomainAnalyticsSnapshot<run={self.analysis_run_id}>"
+
+
+class ContentSuggestion(models.Model):
+    """AI-proposed content edit for a single page in the Optimisation tab.
+
+    A suggestion targets one editor field (title, meta_description, body_html,
+    schema_jsonld). The user can `Use this` (stages it into the editor draft)
+    or `Dismiss`. The actual save to the live site goes through the existing
+    plugin pipeline and is logged separately as an AutoFixJob.
+    """
+
+    PROPOSED = "proposed"
+    USED = "used"
+    DISMISSED = "dismissed"
+    STATUS_CHOICES = [
+        (PROPOSED, "proposed"),
+        (USED, "used"),
+        (DISMISSED, "dismissed"),
+    ]
+
+    TARGET_TITLE = "title"
+    TARGET_META = "meta_description"
+    TARGET_BODY = "body_html"
+    TARGET_SCHEMA = "schema_jsonld"
+    TARGET_FIELD_CHOICES = [
+        (TARGET_TITLE, "title"),
+        (TARGET_META, "meta_description"),
+        (TARGET_BODY, "body_html"),
+        (TARGET_SCHEMA, "schema_jsonld"),
+    ]
+
+    analysis_run = models.ForeignKey(
+        AnalysisRun,
+        on_delete=models.CASCADE,
+        related_name="content_suggestions",
+    )
+    url = models.CharField(max_length=2048)
+    title = models.CharField(max_length=255)
+    rationale = models.TextField()
+    target_field = models.CharField(max_length=32, choices=TARGET_FIELD_CHOICES)
+    current_excerpt = models.TextField(blank=True)
+    proposed_value = models.TextField()
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=PROPOSED)
+    created_at = models.DateTimeField(auto_now_add=True)
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["analysis_run", "url", "status"]),
+        ]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"ContentSuggestion<{self.target_field} {self.url}>"

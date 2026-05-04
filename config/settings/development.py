@@ -48,9 +48,20 @@ CACHES = {
     }
 }
 
-# Disable throttling in development
+# Disable throttling in development. Each scope is set to None so that
+# view-level scoped throttles (PollingThrottle, ExpensiveThrottle, etc.)
+# still resolve their key but DRF treats `None` as no rate limit.
 REST_FRAMEWORK = {
     **globals().get('REST_FRAMEWORK', {}),
     'DEFAULT_THROTTLE_CLASSES': [],
-    'DEFAULT_THROTTLE_RATES': {},
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': None,
+        'user': None,
+        'expensive': None,
+        'ai_chat': None,
+        'dataforseo': None,
+        'audit_start': None,
+        'polling': None,
+        'auth_send': None,
+    },
 }

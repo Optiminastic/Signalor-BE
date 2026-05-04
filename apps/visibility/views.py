@@ -12,12 +12,14 @@ from .serializers import (
     VisibilityCheckListSerializer,
 )
 from .tasks import start_visibility_task
+from core.throttling import ExpensiveThrottle, PollingThrottle
 
 logger = logging.getLogger("apps")
 
 
 class StartVisibilityCheckView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
 
     def post(self, request):
         serializer = StartVisibilityCheckSerializer(data=request.data)
@@ -79,7 +81,7 @@ class VisibilityCheckDetailView(APIView):
 
 class VisibilityCheckStatusView(APIView):
     permission_classes = [AllowAny]
-    throttle_classes = []  # No throttling — polling endpoint
+    throttle_classes = [PollingThrottle]  # No throttling — polling endpoint
 
     def get(self, request, check_id):
         try:

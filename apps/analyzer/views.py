@@ -13,6 +13,14 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.throttling import (
+    AiChatThrottle,
+    AuditStartThrottle,
+    DataForSEOThrottle,
+    ExpensiveThrottle,
+    PollingThrottle,
+)
+
 from apps.accounts.subscription_utils import (
     analysis_allowed_for_email,
     get_plan_limits,
@@ -602,7 +610,7 @@ def _process_due_blog_jobs(config: BlogAutomationConfig, limit: int = 20) -> int
 
 class HealthCheckView(APIView):
     permission_classes = [AllowAny]
-    throttle_classes = []  
+    throttle_classes = [PollingThrottle]  
 
     def get(self, request):
         from django.db import connection
@@ -633,6 +641,7 @@ class HealthCheckView(APIView):
 
 class StartAnalysisView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
 
     def post(self, request):
         serializer = StartAnalysisSerializer(data=request.data)
@@ -730,7 +739,7 @@ class StartAnalysisView(APIView):
 
 class AnalysisRunBySlugView(APIView):
     permission_classes = [AllowAny]
-    throttle_classes = []
+    throttle_classes = [PollingThrottle]
 
     def get(self, request, slug):
         try:
@@ -771,7 +780,7 @@ class AnalysisRunListView(APIView):
 
 class AnalysisRunDetailView(APIView):
     permission_classes = [AllowAny]
-    throttle_classes = []  # frequently loaded by analyzer pages
+    throttle_classes = [PollingThrottle]  # frequently loaded by analyzer pages
 
     def get(self, request, run_id):
         from django.db.models import Prefetch
@@ -812,7 +821,7 @@ class AnalysisRunDetailView(APIView):
 
 class AnalysisRunStatusView(APIView):
     permission_classes = [AllowAny]
-    throttle_classes = []  # No throttling — this is a polling endpoint
+    throttle_classes = [PollingThrottle]  # No throttling — this is a polling endpoint
 
     def get(self, request, run_id):
         try:
@@ -981,7 +990,7 @@ class AchievementsView(APIView):
 class UserActionListView(APIView):
     """List user's actions"""
     permission_classes = [AllowAny]
-    throttle_classes = []  # used by sidebar/actions dashboard refreshes
+    throttle_classes = [PollingThrottle]  # used by sidebar/actions dashboard refreshes
 
     def get(self, request):
         email = request.query_params.get("email", "").lower().strip()
@@ -1190,7 +1199,7 @@ class ActionStatsView(APIView):
 class CrawlEssentialsStatusView(APIView):
     """Get llms.txt/robots.txt/sitemap.xml status for Actions submenu."""
     permission_classes = [AllowAny]
-    throttle_classes = []  # sidebar/actions open frequently
+    throttle_classes = [PollingThrottle]  # sidebar/actions open frequently
 
     def get(self, request):
         email = request.query_params.get("email", "").lower().strip()
@@ -1278,7 +1287,7 @@ class CrawlEssentialsStatusView(APIView):
 class BlogAutomationConfigView(APIView):
     """Create/update automation settings and queue scheduled jobs."""
     permission_classes = [AllowAny]
-    throttle_classes = []
+    throttle_classes = [PollingThrottle]
 
     def get(self, request):
         email = request.query_params.get("email", "").lower().strip()
@@ -1348,7 +1357,7 @@ class BlogAutomationConfigView(APIView):
 class BlogAutomationCalendarView(APIView):
     """Calendar/list view for scheduled and published automated blogs."""
     permission_classes = [AllowAny]
-    throttle_classes = []
+    throttle_classes = [PollingThrottle]
 
     def get(self, request):
         email = request.query_params.get("email", "").lower().strip()
@@ -1385,7 +1394,7 @@ class BlogAutomationCalendarView(APIView):
 class BlogAutomationProcessDueView(APIView):
     """Process due scheduled blogs: auto-publish or move to review queue."""
     permission_classes = [AllowAny]
-    throttle_classes = []
+    throttle_classes = [PollingThrottle]
 
     def post(self, request):
         email = request.data.get("email", "").lower().strip()
@@ -1404,7 +1413,7 @@ class BlogAutomationProcessDueView(APIView):
 class BlogAutomationGenerateView(APIView):
     """Generate AI blog draft for Actions submenu."""
     permission_classes = [AllowAny]
-    throttle_classes = []
+    throttle_classes = [ExpensiveThrottle]
 
     def post(self, request):
         email = request.data.get("email", "").lower().strip()
@@ -1751,6 +1760,7 @@ class BulkCreateUserActionView(APIView):
 class GeneratePromptsView(APIView):
     """POST /api/analyzer/generate-prompts/ — AI-generate brand-relevant prompts for onboarding."""
     permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
 
     def post(self, request):
         brand_name = request.data.get("brand_name", "").strip()
@@ -2061,6 +2071,7 @@ class PromptDeleteView(APIView):
 class RecheckAllPromptsView(APIView):
     """POST /runs/s/<slug>/recheck-all/ — re-fire every prompt for this run."""
     permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
 
     def post(self, request, slug):
         from django.shortcuts import get_object_or_404
@@ -2330,6 +2341,7 @@ class DomainAnalyticsView(APIView):
     POST: force a fresh fetch (3 DataForSEO API calls, ~$0.015 / refresh).
     """
     permission_classes = [AllowAny]
+    throttle_classes = [DataForSEOThrottle]
 
     def _respond(self, run, *, force: bool):
         from .services.domain_analytics import get_or_generate, DomainAnalyticsError
@@ -2538,6 +2550,7 @@ class ScheduledAnalysisView(APIView):
 class AutoFixView(APIView):
     """GET/POST /api/analyzer/runs/s/<slug>/auto-fix/"""
     permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
 
     def get(self, request, slug):
         """Return fix status for all recommendations in this run, including cross-run fixes."""
@@ -2626,6 +2639,7 @@ class AutoFixPreviewView(APIView):
     re-running the LLM. Pass force=true to regenerate.
     """
     permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
 
     def post(self, request, slug):
         from django.shortcuts import get_object_or_404
@@ -2686,6 +2700,7 @@ class AutoFixPreviewView(APIView):
 class AutoFixApproveView(APIView):
     """POST /api/analyzer/runs/s/<slug>/auto-fix/approve/ — apply a previewed fix via plugin."""
     permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
 
     def post(self, request, slug):
         from django.shortcuts import get_object_or_404
@@ -2749,6 +2764,7 @@ class AutoFixApproveView(APIView):
 class AutoFixVerifyView(APIView):
     """POST /api/analyzer/runs/s/<slug>/auto-fix/verify/ — re-fetch the page and verify the fix heuristically."""
     permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
 
     def post(self, request, slug):
         from django.shortcuts import get_object_or_404
@@ -2811,6 +2827,7 @@ class AiChatView(APIView):
     ignored unless the run has zero saved messages (legacy migration aid).
     """
     permission_classes = [AllowAny]
+    throttle_classes = [AiChatThrottle]
 
     def get(self, request, slug):
         from django.shortcuts import get_object_or_404
@@ -3067,6 +3084,7 @@ class ApplyGeoFixesAndReanalyzeView(APIView):
     """POST /api/analyzer/runs/s/<slug>/apply-geo-fixes/"""
 
     permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
 
     def post(self, request, slug):
         from django.shortcuts import get_object_or_404
@@ -3121,6 +3139,7 @@ class ApplyGeoFixesAndReanalyzeView(APIView):
 class SitemapAuditStartView(APIView):
     """POST /runs/s/<slug>/sitemap/  — kick off an async sitemap audit."""
     permission_classes = [AllowAny]
+    throttle_classes = [AuditStartThrottle]
 
     def post(self, request, slug):
         import threading
@@ -3244,6 +3263,7 @@ class AgentLogView(APIView):
 class SchemaWatchStartView(APIView):
     """POST /runs/s/<slug>/schema-watch/  — kick off a schema validation run."""
     permission_classes = [AllowAny]
+    throttle_classes = [AuditStartThrottle]
 
     def post(self, request, slug):
         import threading
@@ -3327,6 +3347,7 @@ class SchemaWatchDetailView(APIView):
 class RankAuditStartView(APIView):
     """POST /runs/s/<slug>/rank/start/ — kick off an async rank audit."""
     permission_classes = [AllowAny]
+    throttle_classes = [AuditStartThrottle]
 
     def post(self, request, slug):
         import threading
@@ -3455,6 +3476,7 @@ class RankAuditDetailView(APIView):
 class RankAuditRefreshQueryView(APIView):
     """POST /runs/s/<slug>/rank/query/<query_id>/refresh/ — re-fetch one query across all surfaces."""
     permission_classes = [AllowAny]
+    throttle_classes = [AuditStartThrottle]
 
     def post(self, request, slug, query_id):
         import threading
@@ -4416,3 +4438,155 @@ CRITICAL:
             "explanation": explanation,
             "cached": False,
         })
+
+
+# ── Content Optimisation (Cursor-style edit + save) ──────────────────────
+
+class ContentPagesView(APIView):
+    """GET /api/analyzer/runs/s/<slug>/content/pages/
+
+    Returns the list of pages the user can open in the content editor —
+    sourced from the latest sitemap audit, with a fallback to the run's
+    root URL.
+    """
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .services import content_optimisation as co
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        return Response({"pages": co.list_pages_for_run(run)})
+
+
+class ContentPageFieldsView(APIView):
+    """GET /api/analyzer/runs/s/<slug>/content/page/?url=...
+
+    Returns editable fields + a sandbox-friendly preview HTML for one page.
+    """
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .services import content_optimisation as co
+
+        url = (request.query_params.get("url") or "").strip()
+        if not url:
+            return Response({"detail": "url query param required"}, status=400)
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        try:
+            fields = co.fetch_page_fields(run, url)
+        except co.ContentOptimisationError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        # Existing AI suggestions on this page (so a refresh restores them)
+        suggestions = [
+            _serialize_content_suggestion(s)
+            for s in co.list_active_suggestions(run, url)
+        ]
+        return Response({**fields, "suggestions": suggestions})
+
+
+class ContentSuggestionsView(APIView):
+    """POST /api/analyzer/runs/s/<slug>/content/suggestions/  body: {url}
+
+    Generates fresh AI suggestions for a page. Persists ContentSuggestion rows
+    and returns them. Old PROPOSED suggestions for the same page are dismissed.
+    """
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .services import content_optimisation as co
+
+        url = (request.data.get("url") or "").strip()
+        if not url:
+            return Response({"detail": "url is required"}, status=400)
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        try:
+            suggestions = co.generate_suggestions(run, url)
+        except co.ContentOptimisationError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response({
+            "suggestions": [_serialize_content_suggestion(s) for s in suggestions],
+        })
+
+
+class ContentSuggestionDismissView(APIView):
+    """POST /api/analyzer/runs/s/<slug>/content/suggestions/<id>/dismiss/"""
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def post(self, request, slug, suggestion_id):
+        from django.shortcuts import get_object_or_404
+        from .services import content_optimisation as co
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        s = co.dismiss_suggestion(run, suggestion_id)
+        if not s:
+            return Response({"detail": "suggestion not found"}, status=404)
+        return Response({"ok": True, "id": s.id, "status": s.status})
+
+
+class ContentSaveView(APIView):
+    """POST /api/analyzer/runs/s/<slug>/content/save/
+
+    Body: {url, fields: {title?, meta_description?, body_html?, schema_jsonld?},
+           used_suggestion_ids?: [int, ...]}
+
+    Pushes each provided field to the connected plugin (WP/Shopify) and
+    marks any used suggestions as USED. 503 if no integration is connected.
+    """
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .services import content_optimisation as co
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        url = (request.data.get("url") or "").strip()
+        fields = request.data.get("fields") or {}
+        used_ids = request.data.get("used_suggestion_ids") or []
+
+        if not url:
+            return Response({"detail": "url is required"}, status=400)
+        if not isinstance(fields, dict) or not any(
+            fields.get(f) is not None for f in co.ALL_FIELDS
+        ):
+            return Response({"detail": "fields must include at least one editable field"}, status=400)
+
+        # Filter to known fields only
+        edits = {f: fields[f] for f in co.ALL_FIELDS if fields.get(f) is not None}
+
+        try:
+            result = co.save_page_edits(run, url, edits)
+        except co.ContentOptimisationError as exc:
+            return Response(
+                {"detail": str(exc), "code": "no_integration"},
+                status=503,
+            )
+
+        if isinstance(used_ids, list):
+            for sid in used_ids:
+                try:
+                    co.mark_suggestion_used(run, int(sid))
+                except (TypeError, ValueError):
+                    continue
+
+        return Response(result)
+
+
+def _serialize_content_suggestion(s):
+    return {
+        "id": s.id,
+        "title": s.title,
+        "rationale": s.rationale,
+        "target_field": s.target_field,
+        "current_excerpt": s.current_excerpt,
+        "proposed_value": s.proposed_value,
+        "status": s.status,
+        "created_at": s.created_at.isoformat() if s.created_at else None,
+    }
