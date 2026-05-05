@@ -1,3 +1,5 @@
+from django.core.validators import URLValidator
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from .models import (
@@ -173,8 +175,10 @@ class AnalysisRunDetailSerializer(serializers.ModelSerializer):
         return visibility_brand_label(getattr(obj, "url", "") or "", getattr(obj, "brand_name", "") or "")
 
 
+_url_validator = URLValidator(schemes=["http", "https"])
+
 class StartAnalysisSerializer(serializers.Serializer):
-    url = serializers.URLField(max_length=2048)
+    url = serializers.CharField(max_length=2048)
     run_type = serializers.ChoiceField(
         choices=AnalysisRun.RunType.choices,
         default=AnalysisRun.RunType.SINGLE_PAGE,
@@ -199,6 +203,10 @@ class StartAnalysisSerializer(serializers.Serializer):
         value = value.strip()
         if not value.startswith(("http://", "https://")):
             value = f"https://{value}"
+        try:
+            _url_validator(value)
+        except DjangoValidationError:
+            raise serializers.ValidationError("Enter a valid URL.")
         return value
 
     def validate_email(self, value):

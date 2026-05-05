@@ -66,6 +66,7 @@ from .views import (
     # Backlink marketplace
     BacklinkCatalogView,
     BacklinkOrderListCreateView,
+    RunBacklinkFreeView,
     BacklinkOrderDetailView,
     BacklinkOrderConfirmPaymentView,
     # Wikipedia draft generator
@@ -78,6 +79,8 @@ from .views import (
     ContentSuggestionsView,
     ContentSuggestionDismissView,
     ContentSaveView,
+    ContentRewriteElementView,
+    ContentApplyElementView,
 )
 
 app_name = "analyzer"
@@ -137,6 +140,7 @@ urlpatterns = [
     path("runs/s/<str:slug>/rank/query/<int:query_id>/refresh/", RankAuditRefreshQueryView.as_view(), name="rank-audit-refresh-query"),
     path("runs/s/<str:slug>/prompts/<int:track_id>/rank/", PromptRankView.as_view(), name="prompt-rank"),
     # Backlink marketplace
+    path("runs/s/<str:slug>/backlinks/free/", RunBacklinkFreeView.as_view(), name="backlink-free"),
     path("runs/s/<str:slug>/backlinks/catalog/", BacklinkCatalogView.as_view(), name="backlink-catalog"),
     path("runs/s/<str:slug>/backlinks/orders/", BacklinkOrderListCreateView.as_view(), name="backlink-orders"),
     path("runs/s/<str:slug>/backlinks/orders/<int:order_id>/", BacklinkOrderDetailView.as_view(), name="backlink-order-detail"),
@@ -149,6 +153,8 @@ urlpatterns = [
     path("runs/s/<str:slug>/content/suggestions/", ContentSuggestionsView.as_view(), name="content-suggestions"),
     path("runs/s/<str:slug>/content/suggestions/<int:suggestion_id>/dismiss/", ContentSuggestionDismissView.as_view(), name="content-suggestion-dismiss"),
     path("runs/s/<str:slug>/content/save/", ContentSaveView.as_view(), name="content-save"),
+    path("runs/s/<str:slug>/content/rewrite-element/", ContentRewriteElementView.as_view(), name="content-rewrite-element"),
+    path("runs/s/<str:slug>/content/apply-element/", ContentApplyElementView.as_view(), name="content-apply-element"),
     path("runs/s/<str:slug>/", AnalysisRunBySlugView.as_view(), name="run-by-slug"),
     path("runs/<int:run_id>/status/", AnalysisRunStatusView.as_view(), name="run-status"),
     path("runs/<int:run_id>/export-pdf/", ExportPDFView.as_view(), name="export-pdf"),

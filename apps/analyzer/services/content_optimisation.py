@@ -15,6 +15,7 @@ Reuses, never duplicates:
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -86,7 +87,7 @@ def list_pages_for_run(run: AnalysisRun) -> list[dict]:
                 "url": r["url"],
                 "path": r["path"] or _path_of(r["url"]),
                 "title": r["title"] or "",
-                "last_audited_at": audit.updated_at.isoformat() if audit.updated_at else None,
+                "last_audited_at": audit.created_at.isoformat() if audit.created_at else None,
             }
             for r in rows
         ]
@@ -138,7 +139,10 @@ def fetch_page_fields(run: AnalysisRun, url: str) -> dict:
             fields["title"] = plugin_title
 
     fields["url"] = url
-    fields["preview_html"] = _rewrite_preview_html(public_html, url)
+    render = _capture_page_render(url)
+    fields["preview_image"] = render["image"]
+    fields["preview_elements"] = render["elements"]
+    fields["preview_viewport_width"] = render["viewport_width"]
     fields["source"] = "plugin" if plugin_body else ("public" if public_html else "empty")
     fields["plugin_connected"] = bool(integration)
     fields["plugin_provider"] = integration.provider if integration else ""
@@ -223,31 +227,106 @@ def _extract_first_jsonld(html: str) -> str:
         return raw[:8000]
 
 
-def _rewrite_preview_html(html: str, url: str) -> str:
-    """Sandbox-friendly HTML for the iframe preview.
+# Headless Chromium render via Playwright. We tried client-side iframe rendering
+# of rewritten HTML, but modern themes (Shopify Dawn, lazy hydration, CSS-bg
+# heroes set via JS) don't lay out without their own scripts running. A real
+# browser screenshot is the only reliable preview.
+_SCREENSHOT_VIEWPORT = {"width": 1440, "height": 900}
+_SCREENSHOT_TIMEOUT_MS = 25000
 
-    Inject <base> so relative URLs (CSS, images, lazy-loaded JS) resolve
-    against the user's origin. Scripts are kept — modern themes (Shopify,
-    Webflow, etc.) hydrate hero/product/grid sections client-side, so
-    stripping them leaves only the static header skeleton. The iframe is
-    sandboxed with `allow-scripts` only (no allow-same-origin), so the
-    embedded JS runs in a unique origin and cannot reach the parent.
+# Tags worth letting the user click on. We deliberately exclude container
+# tags (div, section, main) — too many overlapping bboxes makes the picker
+# unusable. Text-bearing leaf elements only.
+_PICKABLE_SELECTOR = (
+    "h1,h2,h3,h4,h5,h6,p,li,blockquote,figcaption,"
+    "button,a,span[role='button']"
+)
+
+# Run inside the page after navigation. Returns a list of element bboxes.
+# Coordinates are in CSS pixels relative to (0,0) at the document top, which
+# matches the full-page screenshot's pixel grid (devicePixelRatio is 1 by
+# default in Playwright).
+_COLLECT_ELEMENTS_JS = """
+(selector) => {
+    const out = [];
+    const seen = new Set();
+    document.querySelectorAll(selector).forEach((el) => {
+        const text = (el.innerText || el.textContent || '').trim();
+        if (!text || text.length < 2) return;
+        // Skip elements whose text is just their child elements' text duplicated.
+        const dedupe = `${el.tagName}::${text.slice(0, 80)}`;
+        if (seen.has(dedupe)) return;
+        seen.add(dedupe);
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 20 || rect.height < 8) return;
+        if (rect.bottom < 0 || rect.right < 0) return;
+        out.push({
+            tag: el.tagName.toLowerCase(),
+            text: text.length > 600 ? text.slice(0, 600) : text,
+            bbox: {
+                x: Math.round(rect.left + window.scrollX),
+                y: Math.round(rect.top + window.scrollY),
+                w: Math.round(rect.width),
+                h: Math.round(rect.height),
+            },
+        });
+    });
+    return out;
+}
+"""
+
+
+def _capture_page_render(url: str) -> dict:
+    """Render the page in headless Chromium. Returns:
+        {
+            image: data-URL JPEG (full-page screenshot),
+            elements: [{id, tag, text, bbox: {x,y,w,h}}],  # text-bearing leaves
+            viewport_width: int,                           # CSS px width of the image
+        }
+
+    Returns empty fields on any failure — caller falls back gracefully.
     """
-    if not html:
-        return ""
-    parsed = urlparse(url)
-    origin = f"{parsed.scheme}://{parsed.netloc}/"
+    empty = {"image": "", "elements": [], "viewport_width": _SCREENSHOT_VIEWPORT["width"]}
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        logger.warning("playwright not installed; preview disabled")
+        return empty
 
-    base_tag = f'<base href="{origin}">'
-    if re.search(r"<head\b[^>]*>", html, re.IGNORECASE):
-        return re.sub(
-            r"(<head\b[^>]*>)",
-            r"\1" + base_tag,
-            html,
-            count=1,
-            flags=re.IGNORECASE,
-        )
-    return f"<head>{base_tag}</head>" + html
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                context = browser.new_context(
+                    viewport=_SCREENSHOT_VIEWPORT,
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                )
+                page = context.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=_SCREENSHOT_TIMEOUT_MS)
+                page.wait_for_timeout(1500)
+
+                # Capture elements first so DOM hasn't been disturbed by scroll.
+                raw_elements = page.evaluate(_COLLECT_ELEMENTS_JS, _PICKABLE_SELECTOR)
+                png = page.screenshot(full_page=True, type="jpeg", quality=80)
+            finally:
+                browser.close()
+
+        elements = [
+            {"id": idx, **el}
+            for idx, el in enumerate(raw_elements or [])
+        ]
+        return {
+            "image": f"data:image/jpeg;base64,{base64.b64encode(png).decode('ascii')}",
+            "elements": elements,
+            "viewport_width": _SCREENSHOT_VIEWPORT["width"],
+        }
+    except Exception as exc:
+        logger.warning("playwright capture failed for %s: %s", url, exc)
+        return empty
 
 
 def _fetch_via_plugin(integration, url: str) -> tuple[str, str, int | None]:
@@ -511,6 +590,102 @@ def mark_suggestion_used(run: AnalysisRun, suggestion_id: int) -> ContentSuggest
     s.used_at = timezone.now()
     s.save(update_fields=["status", "used_at"])
     return s
+
+
+# ── Element-level edit (Cursor-style click → rewrite → apply) ────────────
+
+_REWRITE_ELEMENT_PROMPT = """You are a content editor optimizing a page for AI search engines (ChatGPT, Perplexity, Gemini, Claude).
+
+Rewrite the following text element. Keep roughly the same length unless the instruction says otherwise. Make it clearer, more specific, and easier for AI engines to quote. Keep the same tone and language.
+
+ELEMENT TYPE: {tag}
+ORIGINAL TEXT:
+{text}
+
+{instruction_block}
+Return ONLY the rewritten text. No quotes, no markdown, no explanation."""
+
+
+def rewrite_element_text(tag: str, text: str, instruction: str = "") -> str:
+    """Ask the LLM to rewrite one element's text. Returns the new text, or
+    the original if the call fails."""
+    text = (text or "").strip()
+    if not text:
+        return ""
+    instruction_block = (
+        f"INSTRUCTION FROM USER: {instruction.strip()}\n"
+        if instruction.strip() else ""
+    )
+    prompt = _REWRITE_ELEMENT_PROMPT.format(
+        tag=tag or "p",
+        text=text,
+        instruction_block=instruction_block,
+    )
+    raw = _call_llm(prompt, purpose="content-optimisation-rewrite-element") or ""
+    cleaned = raw.strip()
+    # Strip surrounding quote chars some models add despite the instruction.
+    if len(cleaned) >= 2 and cleaned[0] in "\"'“‘" and cleaned[-1] in "\"'”’":
+        cleaned = cleaned[1:-1].strip()
+    return cleaned or text
+
+
+def apply_element_edit(
+    run: AnalysisRun,
+    url: str,
+    original_text: str,
+    new_text: str,
+) -> dict:
+    """Replace `original_text` inside the page's body_html with `new_text`,
+    then push the updated body_html through the connected plugin.
+
+    First-occurrence replacement — fragile when the same text appears multiple
+    times, but acceptable for v1 since most landing pages have unique copy.
+    Raises ContentOptimisationError if no plugin is connected or text isn't
+    found.
+    """
+    original_text = (original_text or "").strip()
+    new_text = (new_text or "").strip()
+    if not original_text or not new_text:
+        raise ContentOptimisationError("original and new text are required")
+    if original_text == new_text:
+        return {"saved": [], "failed": [], "plugin_responses": {}, "noop": True}
+
+    fields = fetch_page_fields(run, url)
+    body_html = fields.get("body_html") or ""
+    if not body_html:
+        raise ContentOptimisationError("Page has no editable body content.")
+
+    new_body, replaced = _replace_first_text_in_html(body_html, original_text, new_text)
+    if not replaced:
+        raise ContentOptimisationError(
+            "Couldn't locate that text in the page body — it may be rendered by JavaScript "
+            "and not present in the HTML the plugin sees. Try editing via Generate suggestions."
+        )
+
+    return save_page_edits(run, url, {FIELD_BODY: new_body})
+
+
+def _replace_first_text_in_html(html: str, needle: str, replacement: str) -> tuple[str, bool]:
+    """Replace the first occurrence of `needle` (text content, ignoring
+    surrounding tags/whitespace) with `replacement`. Returns (new_html, ok).
+
+    Strategy: try a direct substring replace first; if the needle has internal
+    whitespace, also try a whitespace-flexible regex match before giving up.
+    """
+    if not needle or not html:
+        return html, False
+    if needle in html:
+        return html.replace(needle, replacement, 1), True
+
+    # Whitespace-flexible match: collapse runs of whitespace in the needle into
+    # `\s+`. Catches cases where the rendered text has single spaces but the
+    # source HTML has newlines / multiple spaces.
+    flexible = re.escape(needle)
+    flexible = re.sub(r"\\\s+", r"\\s+", flexible)
+    match = re.search(flexible, html, flags=re.IGNORECASE)
+    if not match:
+        return html, False
+    return html[: match.start()] + replacement + html[match.end() :], True
 
 
 # ── helpers ──────────────────────────────────────────────────────────────

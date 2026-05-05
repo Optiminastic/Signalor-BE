@@ -661,13 +661,15 @@ class StartAnalysisView(APIView):
         if not allowed:
             return Response({"error": sub_err}, status=status.HTTP_403_FORBIDDEN)
 
-        # Plan cap: each completed analysis adds up to 10 prompt tracks
-        batch_exceeds, batch_msg = prompt_batch_would_exceed(email, 10)
-        if batch_exceeds:
-            return Response(
-                plan_limit_error_response_dict(batch_msg),
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        # Plan cap: each completed analysis adds up to 10 prompt tracks.
+        # Anonymous (no email) requests are free-tool scans — no account to cap.
+        if email:
+            batch_exceeds, batch_msg = prompt_batch_would_exceed(email, 10)
+            if batch_exceeds:
+                return Response(
+                    plan_limit_error_response_dict(batch_msg),
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
         # Block duplicate submissions: same URL still pending/running for the same org (or user)
         submitted_url = data["url"]
@@ -4075,6 +4077,38 @@ class BacklinkOrderDetailView(APIView):
         order = self._poll(order)
         return Response(_serialize_order(order))
 
+    def delete(self, request, slug, order_id):
+        """Cancel/remove an order.
+
+        Hard-delete for draft / pending_payment / cancelled / rejected / refunded
+        — these never reached the provider or have already settled. For queued /
+        in_progress we soft-delete by flipping status to cancelled, since the
+        provider may have started work. Delivered orders refuse deletion (the
+        user has already received the link).
+        """
+        from .models import BacklinkOrder
+
+        order = self._get_order(slug, order_id)
+        terminal_safe = {
+            BacklinkOrder.Status.DRAFT,
+            BacklinkOrder.Status.PENDING_PAYMENT,
+            BacklinkOrder.Status.CANCELLED,
+            BacklinkOrder.Status.REJECTED,
+            BacklinkOrder.Status.REFUNDED,
+        }
+        if order.status == BacklinkOrder.Status.DELIVERED:
+            return Response(
+                {"detail": "Delivered orders can't be deleted — they've already been placed."},
+                status=400,
+            )
+        if order.status in terminal_safe:
+            order.delete()
+            return Response({"deleted": True, "id": order_id})
+        # queued / in_progress — soft-cancel.
+        order.status = BacklinkOrder.Status.CANCELLED
+        order.save(update_fields=["status"])
+        return Response(_serialize_order(order))
+
 
 class BacklinkOrderConfirmPaymentView(APIView):
     """
@@ -4590,3 +4624,111 @@ def _serialize_content_suggestion(s):
         "status": s.status,
         "created_at": s.created_at.isoformat() if s.created_at else None,
     }
+
+
+class RunBacklinkFreeView(APIView):
+    """Site-level free backlink opportunities (no prompt required).
+
+    GET  /runs/s/<slug>/backlinks/free/   — return cached list (generates on
+                                            first call if cache empty).
+    POST /runs/s/<slug>/backlinks/free/   — force-regenerate via LLM.
+
+    Results are cached in `BrandKit.payload['site_backlink_opportunities']`
+    so reload doesn't re-LLM. The LLM call itself is ~5-15 s; users hit POST
+    when they want fresh suggestions.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .models import BrandKit
+        from .pipeline.site_backlink_opportunities import generate_for_run
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        kit, _ = BrandKit.objects.get_or_create(analysis_run=run, defaults={"payload": {}})
+        cached = (kit.payload or {}).get("site_backlink_opportunities")
+        if cached:
+            return Response({"rows": cached, "has_generated": True})
+        rows = generate_for_run(run)
+        if rows:
+            kit.payload = {**(kit.payload or {}), "site_backlink_opportunities": rows}
+            kit.save(update_fields=["payload", "updated_at"])
+        return Response({"rows": rows, "has_generated": bool(rows)})
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .models import BrandKit
+        from .pipeline.site_backlink_opportunities import generate_for_run
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        rows = generate_for_run(run)
+        if not rows:
+            return Response(
+                {"detail": "Generation failed. Try again in a moment."},
+                status=502,
+            )
+        kit, _ = BrandKit.objects.get_or_create(analysis_run=run, defaults={"payload": {}})
+        kit.payload = {**(kit.payload or {}), "site_backlink_opportunities": rows}
+        kit.save(update_fields=["payload", "updated_at"])
+        return Response({"rows": rows, "has_generated": True})
+
+
+class ContentRewriteElementView(APIView):
+    """POST /api/analyzer/runs/s/<slug>/content/rewrite-element/
+
+    Body: {tag, text, instruction?} — ask the LLM to rewrite one element.
+    Returns: {new_text}.
+    """
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .services import content_optimisation as co
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        tag = (request.data.get("tag") or "p").strip()
+        text = (request.data.get("text") or "").strip()
+        instruction = (request.data.get("instruction") or "").strip()
+        if not text:
+            return Response({"detail": "text is required"}, status=400)
+        # Suppress unused-arg warning — `run` is here for future per-run telemetry.
+        _ = run
+        new_text = co.rewrite_element_text(tag, text, instruction)
+        return Response({"new_text": new_text})
+
+
+class ContentApplyElementView(APIView):
+    """POST /api/analyzer/runs/s/<slug>/content/apply-element/
+
+    Body: {url, original_text, new_text} — replace the first occurrence of
+    `original_text` in the page's body_html with `new_text` and push the new
+    body via the connected plugin.
+
+    Returns the same shape as ContentSaveView: {saved, failed, plugin_responses}.
+    503 if no plugin is connected. 400 if the text can't be located.
+    """
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from .services import content_optimisation as co
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        url = (request.data.get("url") or "").strip()
+        original_text = (request.data.get("original_text") or "").strip()
+        new_text = (request.data.get("new_text") or "").strip()
+        if not url or not original_text or not new_text:
+            return Response(
+                {"detail": "url, original_text, and new_text are required"},
+                status=400,
+            )
+
+        try:
+            result = co.apply_element_edit(run, url, original_text, new_text)
+        except co.ContentOptimisationError as exc:
+            msg = str(exc)
+            status_code = 503 if "integration" in msg.lower() else 400
+            return Response({"detail": msg}, status=status_code)
+        return Response(result)
