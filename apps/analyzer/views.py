@@ -661,13 +661,15 @@ class StartAnalysisView(APIView):
         if not allowed:
             return Response({"error": sub_err}, status=status.HTTP_403_FORBIDDEN)
 
-        # Plan cap: each completed analysis adds up to 10 prompt tracks
-        batch_exceeds, batch_msg = prompt_batch_would_exceed(email, 10)
-        if batch_exceeds:
-            return Response(
-                plan_limit_error_response_dict(batch_msg),
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        # Plan cap: each completed analysis adds up to 10 prompt tracks.
+        # Anonymous (no email) requests are free-tool scans — no account to cap.
+        if email:
+            batch_exceeds, batch_msg = prompt_batch_would_exceed(email, 10)
+            if batch_exceeds:
+                return Response(
+                    plan_limit_error_response_dict(batch_msg),
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
         # Block duplicate submissions: same URL still pending/running for the same org (or user)
         submitted_url = data["url"]
