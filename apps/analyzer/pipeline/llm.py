@@ -20,14 +20,14 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODELS = {
     "gpt": "openai/gpt-4o-mini",
     "claude": "anthropic/claude-3.5-haiku",
-    "gemini": "google/gemini-2.0-flash-001",
+    "gemini": "google/gemini-2.0-flash",
     "perplexity": "perplexity/sonar",
 }
 
 MODEL_LABELS = {
     "openai/gpt-4o-mini": "GPT-4o Mini",
     "anthropic/claude-3.5-haiku": "Claude 3.5 Haiku",
-    "google/gemini-2.0-flash-001": "Gemini 2.0 Flash",
+    "google/gemini-2.0-flash": "Gemini 2.0 Flash",
     "perplexity/sonar": "Perplexity Sonar",
     "gemini-direct": "Gemini 2.0 Flash (Direct)",
 }
@@ -120,8 +120,8 @@ def _pick_model(preferred: str | None = None) -> str:
 def is_available() -> bool:
     """Check if any LLM is available."""
     global _availability_cache
-    if _availability_cache is not None:
-        return _availability_cache
+    if _availability_cache:
+        return True
 
     if _get_openrouter_key():
         _availability_cache = True
@@ -131,7 +131,6 @@ def is_available() -> bool:
         _availability_cache = True
         return True
 
-    _availability_cache = False
     logger.warning("No LLM API key found. Set OPENROUTER_API_KEY or GOOGLE_API_KEY in .env")
     return False
 

@@ -4293,18 +4293,28 @@ Return ONLY valid JSON. No markdown fences. Schema:
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        # Strip code fences and parse.
+        # Strip code fences and parse. Try progressively looser extraction.
         cleaned = raw.strip()
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned.strip())
+
+        payload = None
         try:
             payload = json.loads(cleaned)
-        except json.JSONDecodeError as exc:
-            logger.warning("Wikipedia draft JSON parse failed: %s", exc)
+        except json.JSONDecodeError:
+            # LLM may have added prose before/after the JSON object — extract first {...}
+            m = re.search(r"\{.*\}", cleaned, re.DOTALL)
+            if m:
+                try:
+                    payload = json.loads(m.group())
+                except json.JSONDecodeError:
+                    pass
+
+        if payload is None:
+            logger.warning("Wikipedia draft JSON parse failed for slug=%s track=%s. Raw: %s", slug, track_id, cleaned[:300])
             return Response(
                 {
-                    "detail": "Couldn't parse the LLM response. Please retry.",
-                    "raw_excerpt": cleaned[:500],
+                    "detail": "The AI returned an unexpected response. Please retry.",
                 },
                 status=status.HTTP_502_BAD_GATEWAY,
             )
