@@ -6,12 +6,12 @@ PLAN_LIMITS = {
     "starter": {
         "label": "Starter",
         "price_gbp": 19.99,
-        "max_projects": 1,
+        "max_projects": 2,
         "max_prompts": 25,
         # Gemini + Google SERP only — no ChatGPT / Perplexity / Claude (Pro+)
         "engines": ["gemini", "google", "bing"],
         "features": [
-            "1 project",
+            "2 projects",
             "Up to 25 prompts",
             "Gemini & Google prompt visibility",
             "GEO analysis & scoring",

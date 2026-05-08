@@ -1,20 +1,33 @@
 """
-High-level referral flow used by views and webhooks. Pure orchestration —
-delegates the data layer to models and the payment side to dodo_discounts.
+High-level referral flow used by views and webhooks.
+
+Reward model (post-Dodo-SDK reality check):
+- Referee side (10% off first payment): handled at checkout via Dodo's
+  ``checkout_sessions.create(discount_code=...)`` — see CreateCheckoutSessionView.
+  ``link_referee`` just records the relationship.
+- Referrer side (tiered discount, refund-on-renewal): we cannot attach
+  discounts to an existing Dodo subscription via SDK. Instead, each successful
+  referee payment queues a PENDING ReferralReward. On each
+  ``subscription.renewed`` webhook for the referrer, we count all queued
+  rewards, derive a tier %, and issue ONE partial refund on the just-charged
+  renewal via ``refunds.create``. All consumed rewards are marked APPLIED.
+  No carryover — any unused PENDING rewards are consumed at the next renewal.
+
+  Tier table (per billing cycle):
+      1-4 referrals  →  20% off
+      5-9 referrals  →  40% off
+      10+ referrals  →  60% off (cap)
 """
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 from typing import Optional
 
 from django.utils import timezone
 
 from .models import Referral, ReferralCode, ReferralReward
-from .dodo_discounts import (
-    create_referee_discount,
-    create_referrer_discount,
-    revoke_discount,
-)
+from .dodo_discounts import create_referee_discount
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +38,7 @@ def get_or_create_code(email: str) -> ReferralCode:
 
 
 def link_referee(code: str, referee_email: str) -> Optional[Referral]:
-    """Called at sign-up when ?ref=CODE is present. Idempotent.
-
-    Returns the Referral row (existing or new) or None if the code is invalid
-    or the referee is the same person as the referrer.
-    """
+    """Called at sign-up when ?ref=CODE is present. Idempotent."""
     code = (code or "").strip().upper()
     if not code or not referee_email:
         return None
@@ -45,7 +54,7 @@ def link_referee(code: str, referee_email: str) -> Optional[Referral]:
 
     existing = Referral.objects.filter(referee_email=referee_email).first()
     if existing:
-        return existing  # already linked — don't re-link to a different referrer
+        return existing
 
     referral = Referral.objects.create(
         referrer_email=code_row.owner_email,
@@ -54,7 +63,6 @@ def link_referee(code: str, referee_email: str) -> Optional[Referral]:
         status=Referral.Status.PENDING,
     )
 
-    # Stage the referee-side 10% discount so the next checkout can apply it.
     discount_id = create_referee_discount(referee_email)
     if discount_id:
         referral.referee_discount_id = discount_id
@@ -67,11 +75,12 @@ def link_referee(code: str, referee_email: str) -> Optional[Referral]:
     return referral
 
 
-def on_referee_first_payment(referee_email: str, referrer_subscription_id: str = "") -> None:
+def on_referee_first_payment(referee_email: str, **_unused) -> None:
     """Webhook hook: the referee's first paid invoice cleared.
 
-    Marks the Referral as `paid` and stages the 20% off-one-cycle reward for
-    the referrer. No-op if the referee wasn't referred or already triggered.
+    Marks the Referral as PAID and queues a 20% reward for the referrer.
+    Stacking is allowed — each successful referral creates a fresh queued
+    reward, consumed one-per-renewal by ``on_referrer_renewal``.
     """
     referral = Referral.objects.filter(referee_email=referee_email).first()
     if not referral or referral.status != Referral.Status.PENDING:
@@ -81,43 +90,27 @@ def on_referee_first_payment(referee_email: str, referrer_subscription_id: str =
     referral.paid_at = timezone.now()
     referral.save(update_fields=["status", "paid_at"])
 
-    # No stacking — if referrer already has a pending reward, leave it alone.
-    if ReferralReward.objects.filter(
-        referrer_email=referral.referrer_email,
-        status=ReferralReward.Status.PENDING,
-    ).exists():
-        logger.info(
-            "referrals: referrer=%s already has pending reward — skipping new one",
-            referral.referrer_email,
-        )
-        return
-
-    discount_id = create_referrer_discount(
-        referral.referrer_email, subscription_id=referrer_subscription_id
-    )
-
     ReferralReward.objects.create(
         referral=referral,
         referrer_email=referral.referrer_email,
         percent_off=20,
-        dodo_discount_id=discount_id or "",
     )
-    if discount_id:
-        referral.referrer_discount_id = discount_id
-        referral.save(update_fields=["referrer_discount_id"])
 
     logger.info(
-        "referrals: staged 20%% reward referrer=%s from referee=%s",
-        referral.referrer_email, referee_email,
+        "referrals: queued 20%% reward referrer=%s from referee=%s (queue len=%d)",
+        referral.referrer_email,
+        referee_email,
+        ReferralReward.objects.filter(
+            referrer_email=referral.referrer_email,
+            status=ReferralReward.Status.PENDING,
+        ).count(),
     )
 
 
 def on_referee_cancelled(referee_email: str) -> None:
-    """Webhook hook: the referee cancelled.
-
-    If the referrer's reward is still PENDING (i.e. their next renewal hasn't
-    fired yet), revoke it. If it's already APPLIED, leave it — we don't claw
-    back applied discounts.
+    """Webhook hook: the referee cancelled before the renewal that would have
+    consumed their reward. Revoke the corresponding PENDING reward (if any).
+    Already-APPLIED rewards stay applied — we don't claw back issued refunds.
     """
     referral = Referral.objects.filter(referee_email=referee_email).first()
     if not referral:
@@ -130,33 +123,199 @@ def on_referee_cancelled(referee_email: str) -> None:
     if not reward or reward.status != ReferralReward.Status.PENDING:
         return
 
-    revoke_discount(reward.dodo_discount_id)
     reward.status = ReferralReward.Status.REVOKED
     reward.revoked_at = timezone.now()
     reward.save(update_fields=["status", "revoked_at"])
 
     logger.info(
-        "referrals: revoked pending reward for referrer=%s (referee %s cancelled)",
+        "referrals: revoked queued reward for referrer=%s (referee %s cancelled)",
         referral.referrer_email, referee_email,
     )
 
 
-def on_referrer_renewal(referrer_email: str) -> None:
+MAX_REFUND_ATTEMPTS = 3
+
+
+def tier_percent_for(count: int) -> int:
+    """Map referral-count-this-cycle to discount %.
+    1-4 → 20, 5-9 → 40, 10+ → 60 (cap), 0 → 0.
+    """
+    if count >= 10:
+        return 60
+    if count >= 5:
+        return 40
+    if count >= 1:
+        return 20
+    return 0
+
+
+def on_referrer_renewal(referrer_email: str, webhook_data: Optional[dict] = None) -> None:
     """Webhook hook: the referrer's renewal invoice was processed.
 
-    If a PENDING reward exists, mark it APPLIED — it has now been used and
-    can't be re-applied (one cycle only).
+    Counts queued PENDING ReferralRewards, derives the tier %, and issues a
+    single partial refund on the just-charged renewal. All counted rewards are
+    marked APPLIED — no carryover. If the refund call fails, the rewards are
+    left PENDING for retry on the next renewal.
     """
-    reward = (
+    pending = list(
         ReferralReward.objects
         .filter(referrer_email=referrer_email, status=ReferralReward.Status.PENDING)
         .order_by("created_at")
-        .first()
     )
-    if not reward:
+    if not pending:
         return
 
-    reward.status = ReferralReward.Status.APPLIED
-    reward.applied_at = timezone.now()
-    reward.save(update_fields=["status", "applied_at"])
-    logger.info("referrals: applied reward for referrer=%s", referrer_email)
+    count = len(pending)
+    tier = tier_percent_for(count)
+    if tier == 0:
+        return
+
+    payment_id, charged_amount, currency = _extract_renewal_charge(webhook_data or {})
+    if not payment_id:
+        logger.info(
+            "referrals: skipping refund for referrer=%s — no payment_id in webhook",
+            referrer_email,
+        )
+        return
+    if charged_amount <= 0:
+        logger.info(
+            "referrals: skipping refund for referrer=%s payment=%s — amount missing/zero",
+            referrer_email, payment_id,
+        )
+        return
+
+    refund_amount = _round_currency_units(charged_amount * Decimal(tier) / Decimal(100))
+
+    refund_id = _create_partial_refund(
+        payment_id=payment_id,
+        amount=refund_amount,
+        currency=currency,
+        referrer_email=referrer_email,
+        tier_percent=tier,
+        reward_count=count,
+    )
+    if not refund_id:
+        # Refund call failed. Bump attempt counters; rewards that exceed the
+        # max attempt cap get REVOKED so they don't keep blocking future
+        # renewals' tier counts. Surviving rewards stay PENDING for retry.
+        now = timezone.now()
+        revoked = []
+        retried = []
+        for r in pending:
+            r.refund_attempts = (r.refund_attempts or 0) + 1
+            if r.refund_attempts >= MAX_REFUND_ATTEMPTS:
+                r.status = ReferralReward.Status.REVOKED
+                r.revoked_at = now
+                revoked.append(r)
+            else:
+                retried.append(r)
+        ReferralReward.objects.bulk_update(
+            pending, ["refund_attempts", "status", "revoked_at"]
+        )
+        logger.warning(
+            "referrals: refund failed referrer=%s payment=%s — %d rewards retrying, %d REVOKED (attempt cap)",
+            referrer_email, payment_id, len(retried), len(revoked),
+        )
+        return
+
+    now = timezone.now()
+    for r in pending:
+        r.status = ReferralReward.Status.APPLIED
+        r.applied_at = now
+        r.dodo_discount_id = refund_id  # repurposed: stores Dodo refund ID
+    ReferralReward.objects.bulk_update(
+        pending, ["status", "applied_at", "dodo_discount_id"]
+    )
+
+    logger.info(
+        "referrals: applied tier=%s%% (%d referrals) referrer=%s payment=%s refund=%s amount=%s %s",
+        tier, count, referrer_email, payment_id, refund_id, refund_amount, currency,
+    )
+
+
+# ── webhook payload helpers ──────────────────────────────────────────────────
+
+def _extract_renewal_charge(data: dict) -> tuple[str, Decimal, str]:
+    """Pull (payment_id, amount, currency) from a Dodo subscription.renewed
+    payload. Dodo amounts are in **minor units** (paise/cents) — we keep them
+    that way so the refund call mirrors what was charged.
+
+    We prefer the post-tax total ("what the user actually paid this cycle")
+    over the pre-tax amount, so the refund matches the user's mental model
+    of "20% off next payment". Falls back to pre-tax if total is missing.
+    """
+    payment_id = ""
+    for key in ("payment_id", "paymentId"):
+        v = data.get(key)
+        if isinstance(v, str) and v.strip():
+            payment_id = v.strip()
+            break
+
+    amount_raw = (
+        data.get("total_amount")
+        or data.get("amount")
+        or data.get("recurring_pre_tax_amount")
+        or 0
+    )
+    try:
+        amount = Decimal(str(amount_raw))
+    except Exception:
+        amount = Decimal(0)
+
+    currency = (data.get("currency") or "USD").upper()
+    return payment_id, amount, currency
+
+
+def _round_currency_units(amount: Decimal) -> Decimal:
+    """Round to integer minor units (paise/cents) — Dodo amounts have no decimals."""
+    return amount.quantize(Decimal("1"))
+
+
+def _create_partial_refund(
+    *,
+    payment_id: str,
+    amount: Decimal,
+    currency: str,
+    referrer_email: str,
+    tier_percent: int,
+    reward_count: int,
+) -> str:
+    """Call Dodo's refunds.create with a single partial-refund item.
+
+    Returns the Dodo refund_id on success, "" on failure (caller leaves the
+    rewards PENDING for retry on the next renewal).
+    """
+    from apps.accounts.dodo_env import dodo_live_mode_enabled, normalized_dodo_api_key
+    try:
+        from dodopayments import DodoPayments
+    except ImportError:
+        logger.error("referrals: dodopayments SDK not installed — refund skipped")
+        return ""
+
+    key = normalized_dodo_api_key()
+    if not key:
+        logger.warning("referrals: no Dodo API key — refund skipped")
+        return ""
+
+    environment = "live_mode" if dodo_live_mode_enabled() else "test_mode"
+    client = DodoPayments(bearer_token=key, environment=environment)
+
+    try:
+        refund = client.refunds.create(
+            payment_id=payment_id,
+            items=[{"amount": int(amount), "item_id": "referral_reward"}],
+            reason=f"Referral reward — {reward_count} referral(s) → {tier_percent}% off",
+            metadata={
+                "kind": "referral_reward",
+                "referrer_email": referrer_email,
+                "tier_percent": str(tier_percent),
+                "reward_count": str(reward_count),
+            },
+        )
+        return getattr(refund, "refund_id", "") or getattr(refund, "id", "") or ""
+    except Exception as e:
+        logger.warning(
+            "referrals: refund failed referrer=%s payment=%s err=%s",
+            referrer_email, payment_id, e,
+        )
+        return ""

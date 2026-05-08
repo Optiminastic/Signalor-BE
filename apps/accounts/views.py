@@ -17,6 +17,8 @@ from datetime import timedelta
 
 from .models import Subscription, PLAN_LIMITS
 from .subscription_utils import is_internal_email
+from apps.referrals.models import Referral
+from apps.partners.services import get_active_attribution
 from dodopayments import AuthenticationError, PermissionDeniedError
 
 from .dodo_env import (
@@ -103,17 +105,54 @@ class CreateCheckoutSessionView(APIView):
 
         sub, _ = Subscription.objects.get_or_create(email=email)
 
+        # Auto-apply the 10%-off discount. Two paths can supply it:
+        #   1) Active affiliate attribution (creator program) — wins by last-click
+        #   2) Pending Referral (user-to-user) — only if no affiliate attribution
+        # Both paths use the same Dodo discount (DODO_REFEREE_DISCOUNT_CODE).
+        # Note: checkout_sessions.create takes the human discount_code (e.g.
+        # "VSV4K3RN2DD"), NOT the dsc_... ID. The ID is for subscriptions.update.
+        discount_code_to_apply = ""
+        discount_source = ""
+        referee_code_env = os.getenv("DODO_REFEREE_DISCOUNT_CODE", "").strip()
+
+        try:
+            attribution = get_active_attribution(email)
+            if attribution and referee_code_env:
+                discount_code_to_apply = referee_code_env
+                discount_source = f"affiliate partner={attribution.partner.code}"
+        except Exception:
+            logger.exception("partners: attribution lookup failed at checkout email=%s", email)
+
+        if not discount_code_to_apply:
+            try:
+                referral = Referral.objects.filter(
+                    referee_email=email,
+                    status=Referral.Status.PENDING,
+                ).first()
+                if referral and referee_code_env:
+                    discount_code_to_apply = referee_code_env
+                    discount_source = "referral"
+            except Exception:
+                logger.exception("referrals: lookup failed at checkout for email=%s", email)
+
         try:
             # Current Dodo Python SDK: checkout_sessions (not subscriptions.create with payment_link).
-            checkout_session = dodo.checkout_sessions.create(
-                product_cart=[{"product_id": product_id, "quantity": 1}],
-                return_url=f"{FRONTEND_URL}/payments/success",
-                customer={
+            checkout_kwargs = {
+                "product_cart": [{"product_id": product_id, "quantity": 1}],
+                "return_url": f"{FRONTEND_URL}/payments/success",
+                "customer": {
                     "email": email,
                     "name": email.split("@")[0].replace(".", " ").title() or "Customer",
                 },
-                metadata={"email": email, "plan": plan},
-            )
+                "metadata": {"email": email, "plan": plan},
+            }
+            if discount_code_to_apply:
+                checkout_kwargs["discount_code"] = discount_code_to_apply
+                logger.info(
+                    "checkout: applying discount_code=%s source=%s email=%s",
+                    discount_code_to_apply, discount_source, email,
+                )
+            checkout_session = dodo.checkout_sessions.create(**checkout_kwargs)
             sub.plan = plan
             sub.save(update_fields=["plan"])
 
@@ -361,12 +400,21 @@ class DodoWebhookView(APIView):
         self._store_latest_payment_id(data, sub)
         logger.info("Subscription activated for %s (plan=%s)", email, sub.plan)
 
-        # Referral hook: if this email was referred, stage the referrer's reward.
+        # Referral hook (referee side): if THIS email was referred, mark the
+        # Referral as PAID and queue a 20%-off reward for the referrer. The
+        # actual refund happens later, on the referrer's renewal webhook.
         try:
             from apps.referrals.services import on_referee_first_payment
-            on_referee_first_payment(email, referrer_subscription_id=sub.payment_subscription_id)
+            on_referee_first_payment(email)
         except Exception:
             logger.exception("referrals: on_referee_first_payment failed for %s", email)
+
+        # Partner-program hook: if this email is attributed to an affiliate,
+        # create a PENDING commission row. Idempotent on payment_id.
+        try:
+            self._record_partner_commission(email, data)
+        except Exception:
+            logger.exception("partners: record_commission failed for %s", email)
 
     def _handle_subscription_renewed(self, data):
         """Subscription renewed for next period."""
@@ -387,11 +435,12 @@ class DodoWebhookView(APIView):
         self._store_latest_payment_id(data, sub)
         logger.info("Subscription renewed for %s", sub.email)
 
-        # Referral hook: a renewal landed for this email — mark any pending
-        # referrer reward as APPLIED (one-cycle discount has now been used).
+        # Referral hook: a renewal landed — if this email is a referrer with
+        # any queued PENDING ReferralReward, issue a 20% partial refund on the
+        # just-charged renewal payment.
         try:
             from apps.referrals.services import on_referrer_renewal
-            on_referrer_renewal(sub.email)
+            on_referrer_renewal(sub.email, webhook_data=data)
         except Exception:
             logger.exception("referrals: on_referrer_renewal failed for %s", sub.email)
 
@@ -500,6 +549,42 @@ class DodoWebhookView(APIView):
             return
         sub.last_invoice_payment_id = pid
         sub.save(update_fields=["last_invoice_payment_id"])
+
+    def _record_partner_commission(self, email, data):
+        """Look up affiliate attribution and stage a PENDING commission row.
+
+        Best-effort on amount extraction — Dodo's subscription.active payload
+        carries ``recurring_pre_tax_amount``. We use it as both gross and
+        post-discount; if a discount was applied the discrepancy is small and
+        the admin can adjust the row manually before payout.
+        """
+        from decimal import Decimal
+        from apps.partners.services import record_commission
+
+        payment_id = extract_payment_id_from_webhook(data) or data.get("subscription_id", "")
+        if not payment_id:
+            logger.info("partners: no payment_id in webhook — skipping commission")
+            return
+
+        amount_raw = (
+            data.get("recurring_pre_tax_amount")
+            or data.get("amount")
+            or data.get("total_amount")
+            or 0
+        )
+        try:
+            amount = Decimal(str(amount_raw)) / Decimal(100) if isinstance(amount_raw, int) else Decimal(str(amount_raw))
+        except Exception:
+            amount = Decimal("0")
+
+        currency = (data.get("currency") or "USD").upper()
+        record_commission(
+            referee_email=email,
+            payment_id=payment_id,
+            gross_amount=amount,
+            post_discount_amount=amount,
+            currency=currency,
+        )
 
 
 class UsageView(APIView):
