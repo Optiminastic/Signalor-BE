@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('analyzer', '0043_contentsuggestion'),
+        ('analyzer', '0035_merge_20260424_0957'),
     ]
 
     operations = [
