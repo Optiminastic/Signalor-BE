@@ -1,0 +1,184 @@
+databases:
+  - name: signalor-db
+    plan: starter
+    databaseName: signalor
+    user: signalor
+
+services:
+  - type: redis
+    name: signalor-redis
+    plan: starter
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru
+
+  - type: web
+    name: signalor-backend
+    runtime: python
+    plan: starter
+    region: oregon
+    buildCommand: ./build.sh
+    startCommand: gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 600
+    healthCheckPath: /api/auth/get-session
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: signalor-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: signalor-redis
+          property: connectionString
+      - key: ALLOWED_HOSTS
+        value: api.signalor.ai,signalor-backend.onrender.com
+      - key: CORS_ALLOWED_ORIGINS
+        value: https://signalor.ai,https://www.signalor.ai,https://staging.signalor.ai,http://localhost:3000
+      - key: FRONTEND_BASE_URL
+        value: https://signalor.ai
+      - key: ADMIN_URL
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: SUBSCRIPTION_REQUIRED
+        value: "true"
+      - key: ENFORCE_PLAN_LIMITS
+        value: "true"
+      - key: REQUIRE_SUBSCRIPTION_FOR_INTEGRATIONS
+        value: "true"
+      - key: DODO_API_KEY
+        sync: false
+      - key: DODO_LIVE_MODE
+        value: "true"
+      - key: DODO_PRODUCT_ID_STARTER
+        sync: false
+      - key: DODO_PRODUCT_ID_PRO
+        sync: false
+      - key: DODO_PRODUCT_ID_BUSINESS
+        sync: false
+      - key: DODO_WEBHOOK_SECRET
+        sync: false
+      - key: DODO_REFEREE_DISCOUNT_ID
+        sync: false
+      - key: DODO_REFERRER_DISCOUNT_ID
+        sync: false
+      - key: DODO_REFEREE_DISCOUNT_CODE
+        sync: false
+      - key: DODO_REFERRER_DISCOUNT_CODE
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_PRICE_ID_USD
+        sync: false
+      - key: STRIPE_PRICE_ID_INR
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DATAFORSEO_LOGIN
+        sync: false
+      - key: DATAFORSEO_PASSWORD
+        sync: false
+      - key: SHOPIFY_CLIENT_ID
+        sync: false
+      - key: SHOPIFY_CLIENT_SECRET
+        sync: false
+      - key: SHOPIFY_REDIRECT_URI
+        value: https://api.signalor.ai/api/integrations/shopify/callback
+      - key: EMAIL_HOST
+        sync: false
+      - key: EMAIL_PORT
+        value: "587"
+      - key: EMAIL_HOST_USER
+        sync: false
+      - key: EMAIL_HOST_PASSWORD
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        sync: false
+      - key: INTERNAL_EMAILS
+        sync: false
+
+  - type: cron
+    name: signalor-scheduled-analyses
+    runtime: python
+    plan: starter
+    region: oregon
+    schedule: "*/30 * * * *"
+    buildCommand: ./build.sh
+    startCommand: python manage.py run_scheduled_analyses
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: signalor-backend
+          envVarKey: SECRET_KEY
+      - key: DATABASE_URL
+        fromDatabase:
+          name: signalor-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: signalor-redis
+          property: connectionString
+      - key: ALLOWED_HOSTS
+        value: api.signalor.ai
+      - key: FRONTEND_BASE_URL
+        value: https://signalor.ai
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DATAFORSEO_LOGIN
+        sync: false
+      - key: DATAFORSEO_PASSWORD
+        sync: false
+      - key: EMAIL_HOST
+        sync: false
+      - key: EMAIL_PORT
+        value: "587"
+      - key: EMAIL_HOST_USER
+        sync: false
+      - key: EMAIL_HOST_PASSWORD
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        sync: false
+
+  - type: cron
+    name: signalor-cleanup-stale-rewards
+    runtime: python
+    plan: starter
+    region: oregon
+    schedule: "0 4 * * *"
+    buildCommand: ./build.sh
+    startCommand: python manage.py cleanup_stale_rewards
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: signalor-db
+          property: connectionString
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: signalor-backend
+          envVarKey: SECRET_KEY
+      - key: ALLOWED_HOSTS
+        value: api.signalor.ai

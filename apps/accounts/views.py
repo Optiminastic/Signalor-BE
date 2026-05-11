@@ -83,6 +83,12 @@ class CreateCheckoutSessionView(APIView):
     def post(self, request):
         email = request.data.get("email", "").lower().strip()
         plan = request.data.get("plan", "starter").lower().strip()
+        # Customer country / currency hints — used to pre-fill the billing
+        # address so Dodo defaults to the right currency at checkout (instead
+        # of the United States / USD). Currency only takes effect on products
+        # that have Adaptive Pricing enabled in the Dodo dashboard.
+        country_raw = (request.data.get("country") or "").strip().upper()
+        currency_raw = (request.data.get("currency") or "").strip().upper()
 
         if not email:
             return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -146,6 +152,14 @@ class CreateCheckoutSessionView(APIView):
                 },
                 "metadata": {"email": email, "plan": plan},
             }
+            # Pre-fill billing country so Dodo doesn't default to United States.
+            # Only `country` is required; other address fields stay optional and
+            # the customer fills them at checkout. Currency hint is also passed —
+            # Dodo honours it only when the product has Adaptive Pricing enabled.
+            if len(country_raw) == 2:
+                checkout_kwargs["billing_address"] = {"country": country_raw}
+            if len(currency_raw) == 3:
+                checkout_kwargs["billing_currency"] = currency_raw
             if discount_code_to_apply:
                 checkout_kwargs["discount_code"] = discount_code_to_apply
                 logger.info(
@@ -667,6 +681,157 @@ class PlanListView(APIView):
                 "engines": cfg["engines"],
             })
         return Response(plans)
+
+
+class PlanPricesView(APIView):
+    """GET /api/payments/plan-prices/ — live prices fetched from Dodo.
+
+    Replaces the frontend's EUR-rate math. Returns whatever the Dodo SDK
+    reports for each product so the pricing page always matches the real
+    checkout amount. Cached briefly to avoid hammering Dodo on every load.
+
+    Response shape:
+      {
+        "starter": { "currency": "USD", "amount_minor": 1999, "amount": 19.99,
+                     "interval": "Month", "interval_count": 1 },
+        "pro":     { ... },
+        "business":{ ... },
+        "source":  "dodo"  | "fallback"
+      }
+
+    Each plan entry can be null if its product is not configured.
+    """
+    permission_classes = [AllowAny]
+    _CACHE_KEY = "dodo_plan_prices_v1"
+    _CACHE_TTL = 600  # 10 minutes
+
+    def get(self, request):
+        from django.core.cache import cache
+
+        cached = cache.get(self._CACHE_KEY)
+        if cached is not None:
+            return Response(cached)
+
+        product_map = {
+            "starter": os.getenv("DODO_PRODUCT_ID_STARTER", os.getenv("DODO_PRODUCT_ID", "")).strip(),
+            "pro": os.getenv("DODO_PRODUCT_ID_PRO", "").strip(),
+            "business": os.getenv("DODO_PRODUCT_ID_BUSINESS", "").strip(),
+        }
+
+        dodo = _get_dodo()
+        if not dodo:
+            return Response(
+                {k: None for k in product_map} | {"source": "fallback"},
+                status=status.HTTP_200_OK,
+            )
+
+        result: dict = {"source": "dodo"}
+        # FX rates loaded lazily from the first product's base currency.
+        fx_rates: dict[str, float] | None = None
+        for plan_key, product_id in product_map.items():
+            if not product_id:
+                result[plan_key] = None
+                continue
+            try:
+                product = dodo.products.retrieve(product_id)
+                if fx_rates is None:
+                    base_ccy = (
+                        getattr(getattr(product, "price", None), "currency", None)
+                        or "USD"
+                    )
+                    fx_rates = _fetch_fx_rates(base_ccy)
+                result[plan_key] = _serialize_dodo_price(product, fx_rates)
+            except Exception as e:
+                logger.warning("plan-prices: dodo retrieve failed for %s (%s): %s", plan_key, product_id, e)
+                result[plan_key] = None
+
+        cache.set(self._CACHE_KEY, result, self._CACHE_TTL)
+        return Response(result)
+
+
+def _serialize_dodo_price(product, fx_rates: dict[str, float] | None = None) -> dict | None:
+    """Pull the current recurring price out of a Dodo Product object.
+
+    Dodo's SDK returns the product with a ``price`` object whose shape varies
+    between recurring_price (subscriptions) and one_time_price. We surface
+    what the pricing page needs: the base currency + amount, plus a
+    ``prices_by_currency`` map computed via FX rates so non-base-currency
+    visitors see an approximate localized total. Dodo applies the real FX
+    at checkout — these page-side numbers are within ~1% of that.
+    """
+    price = getattr(product, "price", None)
+    if price is None and isinstance(product, dict):
+        price = product.get("price")
+    if price is None:
+        return None
+
+    def _g(obj, key, default=None):
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    currency = (_g(price, "currency") or "USD").upper()
+    amount_minor = _g(price, "price")
+    if amount_minor is None:
+        amount_minor = _g(price, "amount")
+    try:
+        amount_minor = int(amount_minor) if amount_minor is not None else None
+    except (TypeError, ValueError):
+        amount_minor = None
+    if amount_minor is None:
+        return None
+
+    interval = _g(price, "payment_frequency_interval") or "Month"
+    interval_count = _g(price, "payment_frequency_count") or 1
+
+    base_amount = amount_minor / 100
+    prices_by_currency: dict[str, float] = {currency: round(base_amount, 2)}
+    if fx_rates:
+        for code, rate in fx_rates.items():
+            if code == currency or not isinstance(rate, (int, float)) or rate <= 0:
+                continue
+            prices_by_currency[code] = round(base_amount * rate, 2)
+
+    return {
+        "currency": currency,
+        "amount_minor": amount_minor,
+        "amount": round(base_amount, 2),
+        "interval": interval,
+        "interval_count": interval_count,
+        "prices_by_currency": prices_by_currency,
+    }
+
+
+def _fetch_fx_rates(base_currency: str) -> dict[str, float]:
+    """Pull spot FX rates with the given base. Cached for 24h. Empty on failure
+    — callers degrade gracefully (single-currency display)."""
+    from django.core.cache import cache
+    import requests
+
+    base_currency = base_currency.upper()
+    cache_key = f"fx_rates_v1_{base_currency}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    rates: dict[str, float] = {}
+    try:
+        resp = requests.get(
+            f"https://open.er-api.com/v6/latest/{base_currency}",
+            timeout=4,
+        )
+        data = resp.json() if resp.ok else {}
+        if data.get("result") == "success":
+            raw = data.get("rates") or {}
+            # Keep only the currencies we display on the page.
+            for code in ("USD", "EUR", "INR", "GBP", "AUD", "CAD", "SGD", "AED", "JPY"):
+                if code in raw:
+                    rates[code] = float(raw[code])
+    except Exception as e:
+        logger.warning("plan-prices: FX fetch failed (%s): %s", base_currency, e)
+
+    cache.set(cache_key, rates, 24 * 3600)
+    return rates
 
 
 class TerminateAccountView(APIView):
