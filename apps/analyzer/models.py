@@ -45,6 +45,7 @@ class AnalysisRun(models.Model):
     error_message = models.TextField(blank=True, default="")
     # User-selected prompts from verified onboarding / post-checkout launch (empty for other flows)
     onboarding_prompts = models.JSONField(default=list, blank=True)
+    storefront_password = models.CharField(max_length=255, blank=True, default="")
     llm_logs = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

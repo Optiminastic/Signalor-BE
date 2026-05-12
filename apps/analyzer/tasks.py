@@ -384,6 +384,9 @@ def run_single_page_analysis(run_id: int):
             except Exception:
                 pass
 
+        if not storefront_password:
+            storefront_password = run.storefront_password or ""
+
         from .pipeline.crawler import crawl_site, SiteMap
 
         homepage_crawl, site_map, additional_crawls = crawl_site(

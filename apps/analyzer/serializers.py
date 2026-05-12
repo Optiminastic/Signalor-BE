@@ -198,6 +198,9 @@ class StartAnalysisSerializer(serializers.Serializer):
         required=False,
         allow_empty=True,
     )
+    storefront_password = serializers.CharField(
+        max_length=255, required=False, allow_blank=True, default=""
+    )
 
     def validate_url(self, value):
         value = value.strip()

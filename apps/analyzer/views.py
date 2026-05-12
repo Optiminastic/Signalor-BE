@@ -722,6 +722,7 @@ class StartAnalysisView(APIView):
             run_type=data["run_type"],
             status=AnalysisRun.Status.PENDING,
             onboarding_prompts=list(cleaned_prompts) if verify_workspace else [],
+            storefront_password=data.get("storefront_password", ""),
         )
 
         # Start background task
@@ -745,7 +746,17 @@ class AnalysisRunBySlugView(APIView):
 
     def get(self, request, slug):
         try:
-            run = AnalysisRun.objects.get(slug=slug)
+            run = (
+                AnalysisRun.objects
+                .select_related("brand_visibility", "organization")
+                .prefetch_related(
+                    "page_scores",
+                    "competitors",   # remove this line to stop loading competitors
+                    "recommendations",
+                    "ai_probes",
+                )
+                .get(slug=slug)
+            )
         except AnalysisRun.DoesNotExist:
             return Response(
                 {"error": "Project not found."},

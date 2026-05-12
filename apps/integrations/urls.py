@@ -11,6 +11,7 @@ from .views import (
     IntegrationStatusView,
     ScoreTrafficCorrelationView,
     ShopifyAppUninstalledWebhookView,
+    ShopifyBillingUpdateView,
     ShopifyAuthURLView,
     ShopifyCallbackView,
     ShopifyConnectView,
@@ -94,6 +95,11 @@ urlpatterns = [
         "shopify/webhooks/app-uninstalled/",
         ShopifyAppUninstalledWebhookView.as_view(),
         name="shopify-app-uninstalled-webhook",
+    ),
+    path(
+        "shopify/billing-update/",
+        ShopifyBillingUpdateView.as_view(),
+        name="shopify-billing-update",
     ),
     path(
         "shopify/connect/",

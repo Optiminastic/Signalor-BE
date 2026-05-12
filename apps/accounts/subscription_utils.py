@@ -20,12 +20,25 @@ from .models import Subscription, PLAN_LIMITS
 # ── Internal / Free Emails ────────────────────────────────────────────────
 INTERNAL_DOMAINS = {"optiminastic.com"}
 
+# Specific addresses that get free unlimited access regardless of domain
+# (e.g. founder/admin Gmail accounts used for testing the customer flow).
+# Extra entries can be added via the INTERNAL_EMAILS env var (comma-separated).
+INTERNAL_EMAILS = {"optiminastic@gmail.com"}
+
+
+def _extra_internal_emails() -> set[str]:
+    raw = os.environ.get("INTERNAL_EMAILS", "")
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
 
 def is_internal_email(email: str | None) -> bool:
-    """@optiminastic.com emails get free unlimited access."""
+    """@optiminastic.com emails — and a small allowlist of specific addresses
+    — get free unlimited access (business-tier limits, no payment required)."""
     raw = (email or "").strip().lower()
     if not raw or "@" not in raw:
         return False
+    if raw in INTERNAL_EMAILS or raw in _extra_internal_emails():
+        return True
     domain = raw.split("@", 1)[1]
     return domain in INTERNAL_DOMAINS
 

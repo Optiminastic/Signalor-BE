@@ -6,8 +6,12 @@ __pycache__/
 *.so
 .Python
 venv/
+.venv/
 env/
 ENV/
+local.env
+producation.env
+staging.env
 
 # Django
 # db.sqlite3
@@ -20,6 +24,10 @@ media/
 .env
 .env.local
 .env.*.local
+
+# Per-environment config (env/ folder is committed; actual values are not)
+env/*.env
+!env/example.env
 
 # IDE
 .vscode/

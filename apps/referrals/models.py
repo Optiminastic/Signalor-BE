@@ -106,6 +106,11 @@ class ReferralReward(models.Model):
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
     dodo_discount_id = models.CharField(max_length=255, blank=True, default="")
 
+    refund_attempts = models.PositiveSmallIntegerField(
+        default=0,
+        help_text="Number of failed refund calls — REVOKED after MAX_REFUND_ATTEMPTS.",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     applied_at = models.DateTimeField(null=True, blank=True)
     revoked_at = models.DateTimeField(null=True, blank=True)

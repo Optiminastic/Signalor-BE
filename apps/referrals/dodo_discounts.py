@@ -1,59 +1,49 @@
 """
-Dodo Payments discount integration for referrals.
+Dodo Payments discount integration for the referee side of referrals.
 
-These functions are **stubs** — they record the intent and return a placeholder
-discount ID. Replace the bodies with real Dodo API calls (POST /v1/discounts +
-subscription update) once the exact endpoint shape is locked in.
+Only the referee's 10%-off discount is exposed via Dodo's discount system —
+applied at checkout time via ``checkout_sessions.create(discount_code=...)``.
 
-The webhook flow that calls these is already wired in views.py, so swapping the
-stubs for real calls is the only step needed to go live.
+The referrer side is handled by the refund-on-renewal flow in ``services.py``
+(the Dodo SDK does not expose a way to attach a discount to an existing
+subscription, so we issue partial refunds instead).
+
+Env vars expected:
+- ``DODO_REFEREE_DISCOUNT_ID``    — internal dsc_... ID, stamped on Referral
+                                    rows for audit. Not used at API call time.
+- ``DODO_REFEREE_DISCOUNT_CODE``  — human code (e.g. ``VSV4K3RN2DD``); the
+                                    actual value passed to Dodo's checkout.
 """
 from __future__ import annotations
 
 import logging
-import secrets
+import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
-def _stub_id(prefix: str) -> str:
-    return f"stub_{prefix}_{secrets.token_hex(6)}"
+def _referee_discount_id() -> str:
+    return os.getenv("DODO_REFEREE_DISCOUNT_ID", "").strip()
 
 
 def create_referee_discount(referee_email: str) -> Optional[str]:
-    """10% off the referee's first invoice.
+    """Return the static referee discount ID for storage on the Referral row.
 
-    TODO(dodo): POST /v1/discounts with type=percentage, amount=10,
-    duration=once, max_uses=1, customer=<referee_email>.
-    Return the discount_id so the checkout link can include it.
+    No Dodo API call — the discount already exists in the Dodo dashboard. The
+    checkout view reads ``DODO_REFEREE_DISCOUNT_CODE`` env var directly to get
+    the value passed as ``discount_code`` to Dodo. The ID returned here is
+    audit metadata.
     """
-    discount_id = _stub_id("referee")
+    discount_id = _referee_discount_id()
+    if not discount_id:
+        logger.warning(
+            "referrals: DODO_REFEREE_DISCOUNT_ID not set — referee %s will not get 10%% off",
+            referee_email,
+        )
+        return None
     logger.info(
-        "referrals.dodo: STUB create_referee_discount referee=%s discount_id=%s",
+        "referrals: referee=%s eligible for 10%% off (discount_id=%s)",
         referee_email, discount_id,
     )
     return discount_id
-
-
-def create_referrer_discount(referrer_email: str, subscription_id: str = "") -> Optional[str]:
-    """20% off the referrer's next renewal — one cycle only.
-
-    TODO(dodo): POST /v1/discounts with type=percentage, amount=20,
-    duration=once, then attach to the referrer's existing subscription via
-    subscription update / coupon application.
-    """
-    discount_id = _stub_id("referrer")
-    logger.info(
-        "referrals.dodo: STUB create_referrer_discount referrer=%s sub=%s discount_id=%s",
-        referrer_email, subscription_id or "<unknown>", discount_id,
-    )
-    return discount_id
-
-
-def revoke_discount(discount_id: str) -> bool:
-    """Revoke a previously-staged discount (e.g. referee cancelled before referrer's renewal)."""
-    if not discount_id:
-        return False
-    logger.info("referrals.dodo: STUB revoke_discount discount_id=%s", discount_id)
-    return True

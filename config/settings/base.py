@@ -35,6 +35,7 @@ INSTALLED_APPS = [
     'apps.visibility.apps.VisibilityConfig',
     'apps.recommendation.apps.RecommendationConfig',
     'apps.referrals.apps.ReferralsConfig',
+    'apps.partners.apps.PartnersConfig',
     'core',
 ]
 
