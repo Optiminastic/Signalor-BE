@@ -570,6 +570,34 @@ class CitationTrendPointSerializer(serializers.Serializer):
     rate_pct = serializers.FloatField()
 
 
+class AiRecommendationEnginePointSerializer(serializers.Serializer):
+    engine = serializers.CharField()
+    total = serializers.IntegerField()
+    mentioned = serializers.IntegerField()
+    recommended = serializers.IntegerField()
+    cited = serializers.IntegerField()
+    recommendation_pct = serializers.FloatField()
+
+
+class AiRecommendationSampleSerializer(serializers.Serializer):
+    engine = serializers.CharField()
+    prompt = serializers.CharField()
+    quote = serializers.CharField()
+    sentiment = serializers.CharField()
+
+
+class AiRecommendationSummarySerializer(serializers.Serializer):
+    total = serializers.IntegerField()
+    mentioned = serializers.IntegerField()
+    recommended = serializers.IntegerField()
+    cited = serializers.IntegerField()
+    mention_pct = serializers.FloatField()
+    recommendation_pct = serializers.FloatField()
+    citation_pct = serializers.FloatField()
+    per_engine = AiRecommendationEnginePointSerializer(many=True)
+    samples = AiRecommendationSampleSerializer(many=True)
+
+
 class BlogAutomationConfigSerializer(serializers.ModelSerializer):
     class Meta:
         model = BlogAutomationConfig
