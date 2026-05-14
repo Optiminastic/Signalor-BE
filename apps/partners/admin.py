@@ -1,9 +1,18 @@
+from datetime import timedelta
+from decimal import Decimal
+
 from django.contrib import admin, messages
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Count, Sum
+from django.shortcuts import redirect, render
+from django.urls import path, reverse
 from django.utils import timezone
 
 from .models import Partner, PartnerAttribution, PartnerCommission, PartnerPayout
+
+# Mirror the public dashboard's locking policy. Pending commissions older than
+# this many days are payable (the Dodo refund window has closed).
+PAYOUT_LOCK_WINDOW_DAYS = 30
 
 
 @admin.register(Partner)
@@ -17,13 +26,125 @@ class PartnerAdmin(admin.ModelAdmin):
     readonly_fields = ("created_at", "updated_at")
     fieldsets = (
         (None, {"fields": ("email", "name", "code", "status", "commission_percent")}),
+        ("Profile", {"fields": ("country", "social_platforms", "audience_size")}),
         ("Payout", {"fields": ("payout_method", "payout_details")}),
         ("Internal", {"fields": ("notes", "created_at", "updated_at")}),
     )
     actions = ["generate_missing_codes"]
+    change_list_template = "admin/partners/partner_changelist.html"
 
     def get_changeform_initial_data(self, request):
         return {"code": Partner.generate_unique_code()}
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom = [
+            path(
+                "payouts-due/",
+                self.admin_site.admin_view(self.payouts_due_view),
+                name="partners_payouts_due",
+            ),
+        ]
+        return custom + urls
+
+    def payouts_due_view(self, request):
+        """Aggregate PENDING commissions older than the refund window by
+        (partner, currency) and let admin process the batch in one click."""
+        cutoff = timezone.now() - timedelta(days=PAYOUT_LOCK_WINDOW_DAYS)
+
+        if request.method == "POST":
+            partner_id = request.POST.get("partner_id")
+            currency = (request.POST.get("currency") or "").strip()
+            if not partner_id or not currency:
+                messages.error(request, "Missing partner_id / currency.")
+                return redirect(reverse("admin:partners_payouts_due"))
+
+            commissions = list(
+                PartnerCommission.objects.filter(
+                    partner_id=partner_id,
+                    currency=currency,
+                    status=PartnerCommission.Status.PENDING,
+                    created_at__lt=cutoff,
+                ).select_related("partner")
+            )
+            if not commissions:
+                messages.warning(request, "No locked commissions to pay out for that batch.")
+                return redirect(reverse("admin:partners_payouts_due"))
+
+            partner = commissions[0].partner
+            total = sum(
+                (c.commission_amount for c in commissions),
+                start=Decimal("0"),
+            )
+            with transaction.atomic():
+                payout = PartnerPayout.objects.create(
+                    partner=partner,
+                    amount=total,
+                    currency=currency,
+                    method=partner.payout_method,
+                    paid_at=timezone.now(),
+                    notes=(
+                        f"Marked paid via Payouts-due admin view. "
+                        f"{len(commissions)} commission(s) included."
+                    ),
+                )
+                for c in commissions:
+                    c.status = PartnerCommission.Status.PAID
+                    c.payout = payout
+                    c.save(update_fields=["status", "payout"])
+
+            messages.success(
+                request,
+                f"Recorded payout of {currency} {total:.2f} to {partner.code}. "
+                f"Add the bank/Wise reference on the payout row.",
+            )
+            return redirect(reverse("admin:partners_payouts_due"))
+
+        # GET: aggregate locked PENDING commissions per (partner, currency).
+        rows = (
+            PartnerCommission.objects.filter(
+                status=PartnerCommission.Status.PENDING,
+                created_at__lt=cutoff,
+            )
+            .values("partner_id", "currency")
+            .annotate(total=Sum("commission_amount"), count=Count("id"))
+        )
+        partner_ids = {r["partner_id"] for r in rows}
+        partners_by_id = {p.id: p for p in Partner.objects.filter(id__in=partner_ids)}
+
+        groups = []
+        for r in rows:
+            partner = partners_by_id.get(r["partner_id"])
+            if not partner:
+                continue
+            groups.append({
+                "partner": partner,
+                "currency": r["currency"],
+                "total": r["total"] or Decimal("0"),
+                "count": r["count"] or 0,
+            })
+        groups.sort(key=lambda g: (-(g["total"] or 0), g["partner"].code))
+
+        total_count = sum(g["count"] for g in groups)
+        pending_count = PartnerCommission.objects.filter(
+            status=PartnerCommission.Status.PENDING,
+            created_at__gte=cutoff,
+        ).count()
+
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Payouts due",
+            "groups": groups,
+            "total_count": total_count,
+            "pending_count": pending_count,
+            "lock_window_days": PAYOUT_LOCK_WINDOW_DAYS,
+        }
+        return render(request, "admin/partners/payouts_due.html", context)
+
+    def changelist_view(self, request, extra_context=None):
+        extra_context = extra_context or {}
+        extra_context["payouts_due_url"] = reverse("admin:partners_payouts_due")
+        return super().changelist_view(request, extra_context=extra_context)
 
     @admin.display(description="Total earned")
     def total_earned(self, obj):

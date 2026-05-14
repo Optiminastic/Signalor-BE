@@ -1,0 +1,164 @@
+{% extends "admin/base_site.html" %}
+{% load humanize %}
+
+{% block title %}Payouts due · {{ block.super }}{% endblock %}
+
+{% block branding %}
+  <h1 id="site-name">
+    <a href="{% url 'admin:index' %}">Signalor admin</a>
+  </h1>
+{% endblock %}
+
+{% block breadcrumbs %}
+  <div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">Home</a>
+    &rsaquo; <a href="{% url 'admin:app_list' app_label='partners' %}">Partners</a>
+    &rsaquo; Payouts due
+  </div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+  <style>
+    .payouts-summary {
+      display: flex; gap: 16px; flex-wrap: wrap; margin: 0 0 24px;
+    }
+    .payouts-summary .tile {
+      flex: 1 1 200px; padding: 14px 18px;
+      border: 1px solid var(--border-color, #e0e0e0);
+      border-radius: 8px; background: var(--body-bg, #fff);
+    }
+    .payouts-summary .tile .label {
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--body-quiet-color, #888);
+    }
+    .payouts-summary .tile .value {
+      font-size: 24px; font-weight: 600; margin-top: 4px;
+      font-variant-numeric: tabular-nums;
+    }
+    table.payouts {
+      border-collapse: collapse; width: 100%;
+      border: 1px solid var(--border-color, #e0e0e0);
+    }
+    table.payouts th, table.payouts td {
+      padding: 10px 12px; border-bottom: 1px solid var(--border-color, #eaeaea);
+      text-align: left; vertical-align: top; font-size: 13px;
+    }
+    table.payouts th {
+      background: var(--darkened-bg, #f8f8f8);
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--body-quiet-color, #666);
+    }
+    table.payouts td.num {
+      text-align: right; font-variant-numeric: tabular-nums; font-weight: 600;
+    }
+    table.payouts .payout-details {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px; white-space: pre-wrap; max-width: 320px;
+    }
+    table.payouts .method-pill {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 600; text-transform: capitalize;
+      background: #eef; color: #336;
+    }
+    table.payouts form { display: inline; margin: 0; }
+    table.payouts button.pay {
+      padding: 6px 12px; border-radius: 6px; cursor: pointer;
+      background: #4caf50; color: #fff; border: 0; font-weight: 600;
+      font-size: 12px;
+    }
+    table.payouts button.pay:hover { background: #43a047; }
+    .empty {
+      padding: 32px; text-align: center;
+      border: 1px dashed var(--border-color, #ccc); border-radius: 8px;
+      color: var(--body-quiet-color, #888);
+    }
+    .pending-note {
+      margin-top: 24px; padding: 12px 16px;
+      background: var(--darkened-bg, #fffbe6); border-radius: 6px;
+      font-size: 12px; color: var(--body-quiet-color, #666);
+    }
+  </style>
+
+  <h1>Payouts due</h1>
+  <p style="margin: 0 0 20px; color: var(--body-quiet-color, #666); font-size: 13px;">
+    Commissions that have cleared the {{ lock_window_days }}-day refund window and are ready to pay out.
+    Send the money externally (Wise/PayPal/bank/crypto), then click <strong>Mark as paid</strong>
+    to record a PartnerPayout and flip the linked commissions.
+  </p>
+
+  <div class="payouts-summary">
+    <div class="tile">
+      <div class="label">Creators awaiting payout</div>
+      <div class="value">{{ groups|length }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Locked commissions</div>
+      <div class="value">{{ total_count }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Pending (still in refund window)</div>
+      <div class="value">{{ pending_count }}</div>
+    </div>
+  </div>
+
+  {% if groups %}
+    <table class="payouts">
+      <thead>
+        <tr>
+          <th>Creator</th>
+          <th>Method</th>
+          <th>Payout details</th>
+          <th>Locked rows</th>
+          <th class="num">Amount</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for g in groups %}
+        <tr>
+          <td>
+            <strong>{{ g.partner.code }}</strong><br>
+            <span style="color: var(--body-quiet-color, #777); font-size: 12px;">
+              {{ g.partner.name|default:g.partner.email }}<br>
+              <a href="{% url 'admin:partners_partner_change' g.partner.id %}">edit profile</a>
+            </span>
+          </td>
+          <td>
+            <span class="method-pill">{{ g.partner.get_payout_method_display }}</span>
+          </td>
+          <td>
+            <div class="payout-details">{{ g.partner.payout_details|default:"—" }}</div>
+          </td>
+          <td class="num">{{ g.count }}</td>
+          <td class="num">
+            {{ g.currency }} {{ g.total|floatformat:2|intcomma }}
+          </td>
+          <td>
+            <form method="post">
+              {% csrf_token %}
+              <input type="hidden" name="partner_id" value="{{ g.partner.id }}">
+              <input type="hidden" name="currency" value="{{ g.currency }}">
+              <button type="submit" class="pay"
+                onclick="return confirm('Mark {{ g.count }} commission(s) for {{ g.partner.code }} as PAID? This creates a PartnerPayout for {{ g.currency }} {{ g.total|floatformat:2 }} and cannot be undone from this view.');">
+                Mark as paid
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <div class="empty">
+      No locked commissions. {% if pending_count %}({{ pending_count }} still in the refund window — check back later.){% endif %}
+    </div>
+  {% endif %}
+
+  <div class="pending-note">
+    <strong>Note.</strong> Only commissions older than {{ lock_window_days }} days are listed here.
+    Newer pending commissions stay hidden until their Dodo refund window closes. Once you mark a batch
+    paid the partner's public dashboard updates automatically.
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,12 @@
+{% extends "admin/change_list.html" %}
+
+{% block object-tools-items %}
+  {% if payouts_due_url %}
+    <li>
+      <a href="{{ payouts_due_url }}" class="addlink" style="background: #4caf50;">
+        Payouts due
+      </a>
+    </li>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}
