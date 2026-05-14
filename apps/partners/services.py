@@ -47,6 +47,15 @@ def set_attribution(
     if partner.status == Partner.Status.TERMINATED:
         logger.info("partners: terminated partner code=%s ignored", code)
         return None
+    if partner.email and partner.email.lower() == email:
+        # Self-referral: the creator is trying to use their own code. Block
+        # silently so the discount doesn't apply and no commission is minted
+        # later when their payment lands.
+        logger.info(
+            "partners: self-referral blocked partner=%s email=%s",
+            partner.code, email,
+        )
+        return None
 
     attribution, created = PartnerAttribution.objects.update_or_create(
         email=email,
@@ -84,6 +93,37 @@ def get_active_attribution(email: str) -> Optional[PartnerAttribution]:
     if attribution.partner.status == Partner.Status.TERMINATED:
         return None
     return attribution
+
+
+def cancel_commission_for_refund(payment_id: str) -> Optional[PartnerCommission]:
+    """Mark a PENDING commission as CANCELLED when Dodo refunds its payment.
+
+    A PAID commission is never reversed — once you've actually wired the money
+    to the creator you eat the cost of the refund. Cancelling a PENDING row is
+    safe because nothing has been paid out yet.
+    """
+    payment_id = (payment_id or "").strip()
+    if not payment_id:
+        return None
+    commission = PartnerCommission.objects.filter(payment_id=payment_id).first()
+    if not commission:
+        return None
+    if commission.status == PartnerCommission.Status.PAID:
+        logger.warning(
+            "partners: refund landed on already-paid commission payment=%s partner=%s "
+            "(creator was already paid out — eat the loss)",
+            payment_id, commission.partner.code,
+        )
+        return commission
+    if commission.status == PartnerCommission.Status.CANCELLED:
+        return commission
+    commission.status = PartnerCommission.Status.CANCELLED
+    commission.save(update_fields=["status", "updated_at"])
+    logger.info(
+        "partners: commission cancelled by refund payment=%s partner=%s amount=%s",
+        payment_id, commission.partner.code, commission.commission_amount,
+    )
+    return commission
 
 
 def record_commission(

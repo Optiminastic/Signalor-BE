@@ -89,6 +89,11 @@ class CreateCheckoutSessionView(APIView):
         # that have Adaptive Pricing enabled in the Dodo dashboard.
         country_raw = (request.data.get("country") or "").strip().upper()
         currency_raw = (request.data.get("currency") or "").strip().upper()
+        # Affiliate code captured client-side in localStorage. An existing user
+        # who clicked a creator link won't have a PartnerAttribution row yet
+        # (those are only minted at signup) — record one now so the discount
+        # auto-applies below and the webhook can credit the partner.
+        partner_code = (request.data.get("partner_code") or "").strip().upper()
 
         if not email:
             return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -123,6 +128,12 @@ class CreateCheckoutSessionView(APIView):
 
         try:
             attribution = get_active_attribution(email)
+            # If the buyer just clicked an affiliate link but never went
+            # through signup, attribution will be empty. Mint one from the
+            # `partner_code` carried up from the client.
+            if not attribution and partner_code:
+                from apps.partners.services import set_attribution
+                attribution = set_attribution(email, partner_code, landing_path="checkout")
             if attribution and referee_code_env:
                 discount_code_to_apply = referee_code_env
                 discount_source = f"affiliate partner={attribution.partner.code}"
@@ -383,6 +394,10 @@ class DodoWebhookView(APIView):
             self._handle_subscription_cancelled(data)
         elif event_type == "payment.succeeded":
             self._handle_payment_succeeded(data)
+        elif event_type in ("payment.refunded", "refund.succeeded", "refund.created"):
+            # Dodo's exact refund event name has varied across SDK versions;
+            # cover the three observed forms. Body is best-effort.
+            self._handle_payment_refunded(data)
 
         return HttpResponse(status=200)
 
@@ -495,6 +510,41 @@ class DodoWebhookView(APIView):
             on_referee_cancelled(sub.email)
         except Exception:
             logger.exception("referrals: on_referee_cancelled failed for %s", sub.email)
+
+    def _handle_payment_refunded(self, data):
+        """Payment refunded — cancel any partner commission tied to that payment.
+
+        Dodo refund payloads can carry either ``original_payment_id`` (newer
+        SDKs) or just ``payment_id``. Try both so we cancel the right row even
+        if Dodo's field naming drifts. PAID commissions are never reversed —
+        once the creator has been wired the money we eat that refund.
+        """
+        # Prefer original_payment_id when present (refund payloads). Fall back
+        # to the recursive helper, which finds any nested payment_id.
+        original_payment_id = ""
+        if isinstance(data, dict):
+            for key in ("original_payment_id", "originalPaymentId"):
+                v = data.get(key)
+                if isinstance(v, str) and v.strip():
+                    original_payment_id = v.strip()
+                    break
+            if not original_payment_id:
+                obj = data.get("object")
+                if isinstance(obj, dict):
+                    for key in ("original_payment_id", "originalPaymentId"):
+                        v = obj.get(key)
+                        if isinstance(v, str) and v.strip():
+                            original_payment_id = v.strip()
+                            break
+        payment_id = original_payment_id or extract_payment_id_from_webhook(data)
+        if not payment_id:
+            logger.info("Dodo refund webhook: no payment_id resolvable; skipping")
+            return
+        try:
+            from apps.partners.services import cancel_commission_for_refund
+            cancel_commission_for_refund(payment_id)
+        except Exception:
+            logger.exception("partners: cancel_commission_for_refund failed payment=%s", payment_id)
 
     def _handle_payment_succeeded(self, data):
         """One-time payment succeeded — activate if linked to subscription."""
