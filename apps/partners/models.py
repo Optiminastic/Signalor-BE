@@ -46,6 +46,7 @@ class Partner(models.Model):
         WISE = "wise", "Wise"
         PAYPAL = "paypal", "PayPal"
         BANK = "bank", "Bank transfer"
+        CRYPTO = "crypto", "Crypto wallet"
         OTHER = "other", "Other"
 
     email = models.EmailField(unique=True, db_index=True)
@@ -69,6 +70,20 @@ class Partner(models.Model):
         help_text="Free-text payout details (account number, PayPal email, IBAN, etc.).",
     )
     notes = models.TextField(blank=True, default="")
+
+    # Application profile (collected from the public /creators-program form).
+    country = models.CharField(
+        max_length=2, blank=True, default="",
+        help_text="ISO 3166-1 alpha-2 code (e.g. 'US', 'IN', 'DE').",
+    )
+    social_platforms = models.JSONField(
+        default=list, blank=True,
+        help_text='List of {"platform": "...", "handle": "..."} entries.',
+    )
+    audience_size = models.CharField(
+        max_length=32, blank=True, default="",
+        help_text="Self-reported audience bucket: '<1k', '1k-10k', '10k-100k', '100k-1m', '1m+'.",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
