@@ -307,7 +307,31 @@ def _capture_page_render(url: str) -> dict:
                 )
                 page = context.new_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=_SCREENSHOT_TIMEOUT_MS)
-                page.wait_for_timeout(1500)
+                # Wait for the network to quiet down so JS-rendered cards and
+                # lazy-loaded hero images have a chance to appear. Fall back to
+                # a short fixed wait if networkidle never fires (some sites with
+                # always-on pixels / heartbeats won't go idle).
+                try:
+                    page.wait_for_load_state("networkidle", timeout=8000)
+                except Exception:
+                    page.wait_for_timeout(2500)
+
+                # Trigger lazy-load by scrolling the page top-to-bottom, then
+                # back to the top so the screenshot starts above the fold.
+                try:
+                    page.evaluate(
+                        """async () => {
+                            const step = window.innerHeight;
+                            for (let y = 0; y < document.body.scrollHeight; y += step) {
+                                window.scrollTo(0, y);
+                                await new Promise(r => setTimeout(r, 120));
+                            }
+                            window.scrollTo(0, 0);
+                            await new Promise(r => setTimeout(r, 250));
+                        }"""
+                    )
+                except Exception:
+                    pass
 
                 # Capture elements first so DOM hasn't been disturbed by scroll.
                 raw_elements = page.evaluate(_COLLECT_ELEMENTS_JS, _PICKABLE_SELECTOR)
