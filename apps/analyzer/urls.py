@@ -55,11 +55,33 @@ from .views import (
     PromptOpportunityDetailView,
     PromptRankView,
     PromptResultDetailView,
-    # Schema / E-E-A-T generators
-    PromptSchemaView,
-    # Wikipedia draft generator
-    PromptWikipediaDraftView,
-    QuickActionView,
+    ShareOfVoiceView,
+    CitationTrendView,
+    CitationSourcesView,
+    AiRecommendationSummaryView,
+    RecheckPromptView,
+    RecheckAllPromptsView,
+    PromptDeleteView,
+    GeneratePromptsView,
+    # New features
+    ScoreHistoryView,
+    ScheduledAnalysisView,
+    AutoFixView,
+    AutoFixPreviewView,
+    AutoFixApproveView,
+    AutoFixVerifyView,
+    AiChatView,
+    GeoImprovementsView,
+    ApplyGeoFixesAndReanalyzeView,
+    # Sitemap audit
+    SitemapAuditStartView,
+    SitemapAuditDetailView,
+    AgentLogView,
+    # Schema watchtower
+    SchemaWatchStartView,
+    SchemaWatchDetailView,
+    # Rank tracker
+    RankAuditStartView,
     RankAuditDetailView,
     RankAuditRefreshQueryView,
     # Rank tracker
@@ -121,17 +143,11 @@ urlpatterns = [
         name="prompt-opportunity-detail",
     ),
     path("runs/s/<str:slug>/prompts/<int:track_id>/", PromptDeleteView.as_view(), name="prompt-delete"),
-    path("runs/s/<str:slug>/recheck-all/", RecheckAllPromptsView.as_view(), name="prompt-recheck-all"),
-    path("runs/s/<str:slug>/share-of-voice/", ShareOfVoiceView.as_view(), name="share-of-voice"),
-    path("runs/s/<str:slug>/citation-trend/", CitationTrendView.as_view(), name="citation-trend"),
-    path("runs/s/<str:slug>/citations/", CitationSourcesView.as_view(), name="citation-sources"),
-    path(
-        "runs/s/<str:slug>/ai-recommendation-summary/",
-        AiRecommendationSummaryView.as_view(),
-        name="ai-recommendation-summary",
-    ),
-    path("runs/s/<str:slug>/brand-kit/", BrandKitView.as_view(), name="brand-kit"),
-    path("runs/s/<str:slug>/domain-analytics/", DomainAnalyticsView.as_view(), name="domain-analytics"),
+    path("runs/s/<str:slug>/recheck-all/",                     RecheckAllPromptsView.as_view(),  name="prompt-recheck-all"),
+    path("runs/s/<str:slug>/share-of-voice/",                  ShareOfVoiceView.as_view(),       name="share-of-voice"),
+    path("runs/s/<str:slug>/citation-trend/",                  CitationTrendView.as_view(),      name="citation-trend"),
+    path("runs/s/<str:slug>/citations/",                       CitationSourcesView.as_view(),    name="citation-sources"),
+    path("runs/s/<str:slug>/ai-recommendation-summary/",       AiRecommendationSummaryView.as_view(), name="ai-recommendation-summary"),
     path("runs/s/<str:slug>/geo-improvements/", GeoImprovementsView.as_view(), name="geo-improvements"),
     path(
         "runs/s/<str:slug>/apply-geo-fixes/", ApplyGeoFixesAndReanalyzeView.as_view(), name="apply-geo-fixes"

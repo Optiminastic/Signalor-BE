@@ -2320,6 +2320,125 @@ class AiRecommendationSummaryView(APIView):
         return Response(AiRecommendationSummarySerializer(data).data)
 
 
+class AiRecommendationSummaryView(APIView):
+    """GET /runs/s/<slug>/ai-recommendation-summary/
+
+    Aggregated answer to "how often does AI recommend this brand?" for the
+    Overview citation card. Reads only existing PromptResult / PromptCitation
+    rows — never fires a new AI call — so the response is honest and cheap.
+
+    Three honest signals:
+      mention_pct        — % of prompt responses that named the brand at all
+      recommendation_pct — % that named the brand AND were positive sentiment
+      citation_pct       — % that cited a URL on the brand's own domain
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from django.db.models import Count, Q, Exists, OuterRef
+        from ._cache import cached_or_compute
+        from .models import PromptCitation
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+
+        def _compute():
+            em = (run.email or "").strip()
+            valid_engine_keys = {e[0] for e in PromptResult.Engine.choices}
+            if is_plan_limits_enforcement_enabled() and em:
+                allowed = [e for e in get_plan_limits(em)["engines"] if e in valid_engine_keys]
+            else:
+                allowed = None
+
+            base = PromptResult.objects.filter(
+                prompt_track__analysis_run=run,
+                prompt_track__deleted_at__isnull=True,
+            )
+            if allowed is not None:
+                base = base.filter(engine__in=allowed)
+
+            brand_cite_exists = PromptCitation.objects.filter(
+                prompt_result=OuterRef("pk"),
+                is_brand=True,
+            )
+            annotated = base.annotate(has_brand_citation=Exists(brand_cite_exists))
+
+            totals = annotated.aggregate(
+                total=Count("id"),
+                mentioned=Count("id", filter=Q(brand_mentioned=True)),
+                recommended=Count(
+                    "id",
+                    filter=Q(brand_mentioned=True, sentiment=PromptResult.Sentiment.POSITIVE),
+                ),
+                cited=Count("id", filter=Q(has_brand_citation=True)),
+            )
+            total = totals["total"] or 0
+            mentioned = totals["mentioned"] or 0
+            recommended = totals["recommended"] or 0
+            cited = totals["cited"] or 0
+
+            def _pct(n: int) -> float:
+                return round((n / total * 100), 1) if total > 0 else 0.0
+
+            per_engine_rows = (
+                annotated.values("engine")
+                .annotate(
+                    total=Count("id"),
+                    mentioned=Count("id", filter=Q(brand_mentioned=True)),
+                    recommended=Count(
+                        "id",
+                        filter=Q(brand_mentioned=True, sentiment=PromptResult.Sentiment.POSITIVE),
+                    ),
+                    cited=Count("id", filter=Q(has_brand_citation=True)),
+                )
+                .order_by("engine")
+            )
+            per_engine = []
+            for row in per_engine_rows:
+                e_total = row["total"] or 0
+                e_rec = row["recommended"] or 0
+                per_engine.append({
+                    "engine": row["engine"],
+                    "total": e_total,
+                    "mentioned": row["mentioned"] or 0,
+                    "recommended": e_rec,
+                    "cited": row["cited"] or 0,
+                    "recommendation_pct": round((e_rec / e_total * 100), 1) if e_total > 0 else 0.0,
+                })
+
+            # Up to 6 sample positive quotes so the user can audit the score.
+            sample_qs = (
+                annotated.filter(brand_mentioned=True, sentiment=PromptResult.Sentiment.POSITIVE)
+                .exclude(response_text="")
+                .select_related("prompt_track")
+                .order_by("-confidence", "-checked_at")[:6]
+            )
+            samples = [
+                {
+                    "engine": pr.engine,
+                    "prompt": (pr.prompt_track.prompt_text or "")[:240],
+                    "quote": (pr.response_text or "")[:400],
+                    "sentiment": pr.sentiment,
+                }
+                for pr in sample_qs
+            ]
+
+            return {
+                "total": total,
+                "mentioned": mentioned,
+                "recommended": recommended,
+                "cited": cited,
+                "mention_pct": _pct(mentioned),
+                "recommendation_pct": _pct(recommended),
+                "citation_pct": _pct(cited),
+                "per_engine": per_engine,
+                "samples": samples,
+            }
+
+        data = cached_or_compute(f"ai_rec_summary:{slug}", 600, _compute)
+        return Response(AiRecommendationSummarySerializer(data).data)
+
+
 class CitationSourcesView(APIView):
     """GET /runs/s/<slug>/citations/ — citation source roll-up per run.
 
