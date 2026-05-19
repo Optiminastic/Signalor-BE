@@ -17,6 +17,7 @@ from rest_framework.views import APIView
 
 from apps.partners.services import get_active_attribution
 from apps.referrals.models import Referral
+from core.throttling import PollingThrottle
 
 from .dodo_env import (
     dodo_live_mode_enabled,
@@ -254,6 +255,9 @@ class SubscriptionStatusView(APIView):
     """GET /api/payments/status/?email="""
 
     permission_classes = [AllowAny]
+    # Polled every 2s by /payments/success and on every dashboard mount —
+    # the default 100/hour anon ceiling locks legit users out within seconds.
+    throttle_classes = [PollingThrottle]
 
     def get(self, request):
         starter = PLAN_LIMITS["starter"]
@@ -777,6 +781,9 @@ class UsageView(APIView):
     """GET /api/payments/usage/?email= — current usage vs plan limits."""
 
     permission_classes = [AllowAny]
+    # Read endpoint used by onboarding, billing, and gate cards — must not
+    # share the strict anon ceiling.
+    throttle_classes = [PollingThrottle]
 
     def get(self, request):
         from apps.analyzer.models import AnalysisRun, PromptTrack
@@ -883,6 +890,10 @@ class PlanPricesView(APIView):
     """
 
     permission_classes = [AllowAny]
+    # Loaded by the landing pricing teaser + /pricing — gets hit on every
+    # public visit. Cache absorbs cost; throttle protects against the rare
+    # loop without locking out legitimate viewers.
+    throttle_classes = [PollingThrottle]
     _CACHE_KEY = "dodo_plan_prices_v1"
     _CACHE_TTL = 600  # 10 minutes
 
