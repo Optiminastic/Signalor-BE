@@ -142,6 +142,7 @@ class CreateCheckoutSessionView(APIView):
             # `partner_code` carried up from the client.
             if not attribution and partner_code:
                 from apps.partners.services import set_attribution
+
                 attribution = set_attribution(email, partner_code, landing_path="checkout")
             if attribution and referee_code_env:
                 discount_code_to_apply = referee_code_env
@@ -451,11 +452,18 @@ class DodoWebhookView(APIView):
             logger.warning("Missing webhook signature headers")
             return HttpResponse(status=400)
 
-        # Standard Webhooks verification: HMAC-SHA256 of "{msg_id}.{timestamp}.{body}"
+        # Standard Webhooks verification: HMAC-SHA256 of "{msg_id}.{timestamp}.{body}".
+        # Per the spec, the secret arrives as "whsec_<base64>"; strip the prefix
+        # before decoding — leaving it in makes base64 fail with a "1 more than
+        # a multiple of 4" length error because `_` isn't in the standard
+        # base64 alphabet.
         try:
             import base64
 
-            secret_bytes = base64.b64decode(webhook_secret)
+            secret_material = webhook_secret
+            if secret_material.startswith("whsec_"):
+                secret_material = secret_material[len("whsec_") :]
+            secret_bytes = base64.b64decode(secret_material)
             to_sign = f"{msg_id}.{timestamp}.{payload.decode('utf-8')}"
             expected = base64.b64encode(
                 hmac.new(secret_bytes, to_sign.encode("utf-8"), hashlib.sha256).digest()
@@ -653,6 +661,7 @@ class DodoWebhookView(APIView):
             return
         try:
             from apps.partners.services import cancel_commission_for_refund
+
             cancel_commission_for_refund(payment_id)
         except Exception:
             logger.exception("partners: cancel_commission_for_refund failed payment=%s", payment_id)
