@@ -1,11 +1,11 @@
 """Partner / affiliate program REST endpoints."""
+
 from __future__ import annotations
 
 import os
 import re
 from datetime import timedelta
 from decimal import Decimal
-
 
 from django.db.models import Sum
 from django.utils import timezone
@@ -16,7 +16,6 @@ from rest_framework.views import APIView
 
 from .models import Partner, PartnerAttribution, PartnerCommission
 from .services import set_attribution
-
 
 # Refund window before a pending commission is considered locked/payable. Keep
 # this aligned with the Dodo refund policy and the user-facing copy.
@@ -31,8 +30,19 @@ _COUNTRY_RE = re.compile(r"^[A-Z]{2}$")
 
 # Allowed social platform keys (case-insensitive on input, lowercased on save).
 _ALLOWED_PLATFORMS = {
-    "youtube", "x", "twitter", "instagram", "tiktok", "linkedin",
-    "substack", "facebook", "threads", "twitch", "podcast", "blog", "other",
+    "youtube",
+    "x",
+    "twitter",
+    "instagram",
+    "tiktok",
+    "linkedin",
+    "substack",
+    "facebook",
+    "threads",
+    "twitch",
+    "podcast",
+    "blog",
+    "other",
 }
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -192,10 +202,17 @@ class PartnerApplyView(APIView):
             existing.social_platforms = social_platforms or existing.social_platforms
             existing.payout_method = payout_method
             existing.payout_details = payout_details
-            existing.save(update_fields=[
-                "name", "country", "audience_size", "social_platforms",
-                "payout_method", "payout_details", "updated_at",
-            ])
+            existing.save(
+                update_fields=[
+                    "name",
+                    "country",
+                    "audience_size",
+                    "social_platforms",
+                    "payout_method",
+                    "payout_details",
+                    "updated_at",
+                ]
+            )
             partner = existing
             created = False
         else:
@@ -282,24 +299,25 @@ class PartnerPublicStatsView(APIView):
         # Bubble up the display bucket so the frontend doesn't have to
         # re-derive lock state from the timestamp.
         recent = []
-        for c in (
-            commissions_qs.exclude(status=PartnerCommission.Status.CANCELLED)
-            .order_by("-created_at")[:20]
-        ):
+        for c in commissions_qs.exclude(status=PartnerCommission.Status.CANCELLED).order_by("-created_at")[
+            :20
+        ]:
             if c.status == PartnerCommission.Status.PAID:
                 bucket = "paid"
             elif (now - c.created_at).days >= COMMISSION_LOCK_WINDOW_DAYS:
                 bucket = "locked"
             else:
                 bucket = "pending"
-            recent.append({
-                "created_at": c.created_at.isoformat(),
-                "referee_email": _mask_email(c.referee_email),
-                "commission_amount": float(c.commission_amount),
-                "currency": c.currency,
-                "status": c.status,
-                "bucket": bucket,
-            })
+            recent.append(
+                {
+                    "created_at": c.created_at.isoformat(),
+                    "referee_email": _mask_email(c.referee_email),
+                    "commission_amount": float(c.commission_amount),
+                    "currency": c.currency,
+                    "status": c.status,
+                    "bucket": bucket,
+                }
+            )
 
         base = _frontend_base()
         return Response(
@@ -322,6 +340,209 @@ class PartnerPublicStatsView(APIView):
                     "lock_window_days": COMMISSION_LOCK_WINDOW_DAYS,
                 },
                 "recent_commissions": recent,
+            },
+            status=200,
+        )
+
+
+def _build_stats_payload(partner: Partner) -> dict:
+    """Aggregate the same buckets the public stats view computes, plus the
+    full (unmasked) recent-commissions list for the authed dashboard."""
+    now = timezone.now()
+    lock_cutoff = now - timedelta(days=COMMISSION_LOCK_WINDOW_DAYS)
+
+    attributions_qs = PartnerAttribution.objects.filter(partner=partner)
+    commissions_qs = PartnerCommission.objects.filter(partner=partner)
+    pending_qs = commissions_qs.filter(
+        status=PartnerCommission.Status.PENDING,
+        created_at__gte=lock_cutoff,
+    )
+    locked_qs = commissions_qs.filter(
+        status=PartnerCommission.Status.PENDING,
+        created_at__lt=lock_cutoff,
+    )
+    paid_qs = commissions_qs.filter(status=PartnerCommission.Status.PAID)
+
+    def _bucket(qs):
+        agg = qs.aggregate(total=Sum("commission_amount"))
+        return {"count": qs.count(), "amount": float(agg["total"] or Decimal("0"))}
+
+    recent = []
+    for c in commissions_qs.exclude(
+        status=PartnerCommission.Status.CANCELLED,
+    ).order_by("-created_at")[:50]:
+        if c.status == PartnerCommission.Status.PAID:
+            bucket = "paid"
+        elif (now - c.created_at).days >= COMMISSION_LOCK_WINDOW_DAYS:
+            bucket = "locked"
+        else:
+            bucket = "pending"
+        recent.append(
+            {
+                "created_at": c.created_at.isoformat(),
+                "referee_email": _mask_email(c.referee_email),
+                "commission_amount": float(c.commission_amount),
+                "currency": c.currency,
+                "status": c.status,
+                "bucket": bucket,
+            }
+        )
+
+    return {
+        "attributions_total": attributions_qs.count(),
+        "attributions_active": attributions_qs.filter(expires_at__gt=now).count(),
+        "pending": _bucket(pending_qs),
+        "locked": _bucket(locked_qs),
+        "paid": _bucket(paid_qs),
+        "lock_window_days": COMMISSION_LOCK_WINDOW_DAYS,
+        "recent_commissions": recent,
+    }
+
+
+class PartnerExistsView(APIView):
+    """GET /api/partners/exists/?email= — boolean check for the sign-in flow.
+
+    Used right after creator sign-in to decide whether to send the user to the
+    dashboard (Partner row exists) or to the apply form (first-time).
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        email = (request.query_params.get("email") or "").strip().lower()
+        if not email:
+            return Response({"exists": False}, status=200)
+        partner = Partner.objects.filter(email=email).first()
+        if not partner or partner.status == Partner.Status.TERMINATED:
+            return Response({"exists": False}, status=200)
+        return Response(
+            {"exists": True, "code": partner.code, "status": partner.status},
+            status=200,
+        )
+
+
+class PartnerMeView(APIView):
+    """GET / PATCH /api/partners/me/ — authed creator's own profile.
+
+    Email comes from the query param (GET) or body (PATCH). Auth is enforced
+    upstream by the better-auth cookie + the frontend pinning the request email
+    to the session email — same pattern the rest of the app uses for AllowAny
+    endpoints (see CLAUDE.md). Private fields (email, payout_method,
+    payout_details) are exposed here but never on /api/partners/stats/.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        email = (request.query_params.get("email") or "").strip().lower()
+        if not email:
+            return Response({"detail": "email required"}, status=400)
+        partner = Partner.objects.filter(email=email).first()
+        if not partner or partner.status == Partner.Status.TERMINATED:
+            return Response({"detail": "not found"}, status=404)
+
+        base = _frontend_base()
+        return Response(
+            {
+                "email": partner.email,
+                "code": partner.code,
+                "name": partner.name,
+                "country": partner.country,
+                "social_platforms": partner.social_platforms or [],
+                "audience_size": partner.audience_size,
+                "payout_method": partner.payout_method,
+                "payout_details": partner.payout_details,
+                "status": partner.status,
+                "commission_percent": partner.commission_percent,
+                "created_at": partner.created_at.isoformat(),
+                "share_url": f"{base}/?aff={partner.code}",
+                "dashboard_url": f"{base}/creators-program/{partner.code}",
+                "stats": _build_stats_payload(partner),
+            },
+            status=200,
+        )
+
+    def patch(self, request):
+        email = (request.data.get("email") or "").strip().lower()
+        if not email:
+            return Response({"detail": "email required"}, status=400)
+        partner = Partner.objects.filter(email=email).first()
+        if not partner or partner.status == Partner.Status.TERMINATED:
+            return Response({"detail": "not found"}, status=404)
+
+        # Each field is optional on PATCH — only touch what the client sends.
+        update_fields: list[str] = []
+
+        if "name" in request.data:
+            name = (request.data.get("name") or "").strip()
+            if not name:
+                return Response({"detail": "Name can't be empty."}, status=400)
+            partner.name = name
+            update_fields.append("name")
+
+        if "country" in request.data:
+            country = (request.data.get("country") or "").strip().upper()
+            if country and not _COUNTRY_RE.match(country):
+                return Response({"detail": "Invalid country code."}, status=400)
+            partner.country = country
+            update_fields.append("country")
+
+        if "social_platforms" in request.data:
+            socials = _clean_social_platforms(request.data.get("social_platforms"))
+            if not socials:
+                return Response(
+                    {"detail": "Add at least one social platform with a handle."},
+                    status=400,
+                )
+            partner.social_platforms = socials
+            update_fields.append("social_platforms")
+
+        if "audience_size" in request.data:
+            audience_size = (request.data.get("audience_size") or "").strip()
+            if audience_size and audience_size not in _ALLOWED_AUDIENCE_SIZES:
+                return Response({"detail": "Invalid audience size."}, status=400)
+            partner.audience_size = audience_size
+            update_fields.append("audience_size")
+
+        if "payout_method" in request.data:
+            payout_method = (request.data.get("payout_method") or "").strip().lower()
+            valid = {choice.value for choice in Partner.PayoutMethod}
+            if payout_method not in valid:
+                return Response({"detail": "Invalid payout method."}, status=400)
+            partner.payout_method = payout_method
+            update_fields.append("payout_method")
+
+        if "payout_details" in request.data:
+            payout_details = (request.data.get("payout_details") or "").strip()
+            if not payout_details or len(payout_details) < 3:
+                return Response(
+                    {"detail": "Add the details we need to pay you."},
+                    status=400,
+                )
+            partner.payout_details = payout_details[:2000]
+            update_fields.append("payout_details")
+
+        if not update_fields:
+            return Response({"detail": "Nothing to update."}, status=400)
+
+        update_fields.append("updated_at")
+        partner.save(update_fields=update_fields)
+
+        base = _frontend_base()
+        return Response(
+            {
+                "email": partner.email,
+                "code": partner.code,
+                "name": partner.name,
+                "country": partner.country,
+                "social_platforms": partner.social_platforms or [],
+                "audience_size": partner.audience_size,
+                "payout_method": partner.payout_method,
+                "payout_details": partner.payout_details,
+                "status": partner.status,
+                "commission_percent": partner.commission_percent,
+                "share_url": f"{base}/?aff={partner.code}",
+                "dashboard_url": f"{base}/creators-program/{partner.code}",
             },
             status=200,
         )
