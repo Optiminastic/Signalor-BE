@@ -1169,3 +1169,141 @@ class DeleteAccountView(APIView):
                 "deleted": deleted_counts,
             }
         )
+
+
+class ProfileView(APIView):
+    """GET /api/account/profile/?email= — user-editable profile fields.
+
+    Returns the user-uploaded B2 photo URL when present; the caller is
+    responsible for falling back to the Google OAuth photo from the
+    better-auth session when ``photo_url`` is null.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request):
+        from .models import User
+        from .profile_storage import photo_url
+
+        email = (request.query_params.get("email") or "").lower().strip()
+        if not email:
+            return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response(
+                {
+                    "email": email,
+                    "first_name": "",
+                    "last_name": "",
+                    "phone_number": "",
+                    "photo_url": None,
+                }
+            )
+
+        return Response(
+            {
+                "email": user.email,
+                "first_name": user.first_name or "",
+                "last_name": user.last_name or "",
+                "phone_number": user.phone_number or "",
+                "photo_url": photo_url(user.profile_photo_key) if user.profile_photo_key else None,
+            }
+        )
+
+    def patch(self, request):
+        """Update editable name / phone fields. Email is identity, not editable here."""
+        from .models import User
+
+        email = (request.data.get("email") or "").lower().strip()
+        if not email:
+            return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        changed = []
+        for field in ("first_name", "last_name", "phone_number"):
+            if field in request.data:
+                value = (request.data.get(field) or "").strip()
+                if getattr(user, field) != value:
+                    setattr(user, field, value)
+                    changed.append(field)
+        if changed:
+            user.save(update_fields=changed)
+        return Response({"updated": changed})
+
+
+class ProfilePhotoView(APIView):
+    """POST/DELETE /api/account/profile/photo/ — upload or remove a profile photo.
+
+    POST is multipart/form-data with ``email`` and a ``photo`` file part.
+    On success, returns the fresh pre-signed URL so the UI can render
+    immediately without a follow-up GET.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from .models import User
+        from .profile_storage import delete_photo, is_b2_enabled, photo_url, upload_photo
+
+        if not is_b2_enabled():
+            return Response(
+                {"error": "Photo uploads are not configured on this server."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        email = (request.data.get("email") or "").lower().strip()
+        if not email:
+            return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        photo = request.FILES.get("photo")
+        if not photo:
+            return Response(
+                {"error": "Missing 'photo' file part."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        data = photo.read()
+        new_key, err = upload_photo(user.id, data, photo.content_type or "")
+        if not new_key:
+            return Response({"error": err or "Upload failed."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Best-effort clean up the previous photo so we don't accumulate orphans.
+        old_key = user.profile_photo_key
+        user.profile_photo_key = new_key
+        user.save(update_fields=["profile_photo_key"])
+        if old_key and old_key != new_key:
+            delete_photo(old_key)
+
+        return Response({"photo_url": photo_url(new_key)})
+
+    def delete(self, request):
+        from .models import User
+        from .profile_storage import delete_photo
+
+        email = (request.data.get("email") or request.query_params.get("email") or "").lower().strip()
+        if not email:
+            return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if user.profile_photo_key:
+            delete_photo(user.profile_photo_key)
+            user.profile_photo_key = ""
+            user.save(update_fields=["profile_photo_key"])
+
+        return Response({"photo_url": None})

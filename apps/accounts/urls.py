@@ -9,6 +9,8 @@ from .views import (
     InvoiceListView,
     PlanListView,
     PlanPricesView,
+    ProfilePhotoView,
+    ProfileView,
     SubscriptionStatusView,
     TerminateAccountView,
     UsageView,
@@ -28,4 +30,6 @@ urlpatterns = [
     path("account/terminate/", TerminateAccountView.as_view(), name="terminate-account"),
     path("account/cancel-termination/", CancelTerminationView.as_view(), name="cancel-termination"),
     path("account/delete/", DeleteAccountView.as_view(), name="delete-account"),
+    path("account/profile/", ProfileView.as_view(), name="profile"),
+    path("account/profile/photo/", ProfilePhotoView.as_view(), name="profile-photo"),
 ]
