@@ -28,6 +28,7 @@ from .dodo_invoice import (
     extract_payment_id_from_webhook,
     fetch_payment_invoice_pdf,
     list_payments_for_subscription,
+    retrieve_payment,
 )
 from .models import PLAN_LIMITS, Subscription
 from .subscription_utils import is_internal_email
@@ -360,6 +361,26 @@ class DownloadInvoiceView(APIView):
         return response
 
 
+def _shape_payment_row(p: dict) -> dict:
+    """Reduce a Dodo payment object to the minimal shape the billing table needs.
+
+    Dodo's ``total_amount`` is in minor units (cents/paise/etc.) — divide by 100
+    for display. Status comes through as ``status`` or ``payment_status``.
+    """
+    amount_minor = p.get("total_amount") or p.get("amount") or 0
+    try:
+        amount = float(amount_minor) / 100.0 if amount_minor else None
+    except (TypeError, ValueError):
+        amount = None
+    return {
+        "payment_id": p.get("payment_id") or p.get("id") or "",
+        "created_at": p.get("created_at") or p.get("timestamp"),
+        "amount": amount,
+        "currency": p.get("currency") or p.get("settlement_currency") or "",
+        "status": (p.get("status") or p.get("payment_status") or "").lower() or None,
+    }
+
+
 class InvoiceListView(APIView):
     """GET /api/payments/invoices/?email= — list every Dodo payment for the
     user's subscription, newest first. Source of truth is Dodo; we don't
@@ -383,22 +404,33 @@ class InvoiceListView(APIView):
 
         if not sub.payment_subscription_id:
             # Subscription was never linked to a Dodo subscription id (e.g. legacy
-            # rows). Fall back to the single known payment if available so the UI
-            # still shows something.
+            # rows or one-off charges). Fetch the single known payment by id so
+            # the UI gets real date/amount/status instead of empty cells.
             if sub.last_invoice_payment_id:
-                return Response(
-                    {
-                        "items": [
-                            {
-                                "payment_id": sub.last_invoice_payment_id,
-                                "created_at": None,
-                                "amount": None,
-                                "currency": None,
-                                "status": None,
-                            }
-                        ],
-                    }
-                )
+                payment, err = retrieve_payment(sub.last_invoice_payment_id)
+                if payment is None:
+                    logger.warning(
+                        "Invoice retrieve failed for %s payment=%s: %s",
+                        email,
+                        sub.last_invoice_payment_id,
+                        err,
+                    )
+                    # Surface the payment_id so the PDF link still works, even
+                    # if Dodo couldn't enrich the other fields.
+                    return Response(
+                        {
+                            "items": [
+                                {
+                                    "payment_id": sub.last_invoice_payment_id,
+                                    "created_at": None,
+                                    "amount": None,
+                                    "currency": None,
+                                    "status": None,
+                                }
+                            ],
+                        }
+                    )
+                return Response({"items": [_shape_payment_row(payment)]})
             return Response({"items": []})
 
         items, err = list_payments_for_subscription(sub.payment_subscription_id)
@@ -406,25 +438,7 @@ class InvoiceListView(APIView):
             logger.warning("Invoice list failed for %s: %s", email, err)
             return Response({"items": [], "error": "upstream"}, status=status.HTTP_200_OK)
 
-        # Reshape each Dodo payment into the minimal fields the table needs.
-        # Dodo's `total_amount` is in minor units (cents/paise/etc.) — divide
-        # by 100 for display. Status comes through as `status` / `payment_status`.
-        out: list[dict] = []
-        for p in items:
-            amount_minor = p.get("total_amount") or p.get("amount") or 0
-            try:
-                amount = float(amount_minor) / 100.0 if amount_minor else None
-            except (TypeError, ValueError):
-                amount = None
-            out.append(
-                {
-                    "payment_id": p.get("payment_id") or p.get("id") or "",
-                    "created_at": p.get("created_at") or p.get("timestamp"),
-                    "amount": amount,
-                    "currency": p.get("currency") or p.get("settlement_currency") or "",
-                    "status": (p.get("status") or p.get("payment_status") or "").lower() or None,
-                }
-            )
+        out = [_shape_payment_row(p) for p in items]
         # Newest first — Dodo usually orders this way but normalize defensively.
         out.sort(key=lambda r: r.get("created_at") or "", reverse=True)
         return Response({"items": out})

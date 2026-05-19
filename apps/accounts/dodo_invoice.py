@@ -83,6 +83,44 @@ def fetch_payment_invoice_pdf(payment_id: str) -> tuple[bytes | None, str | None
         return None, "network_error"
 
 
+def retrieve_payment(payment_id: str) -> tuple[dict | None, str | None]:
+    """GET /payments/{payment_id} → single payment object.
+
+    Used by the invoice list view when we have a payment_id but no subscription_id
+    (legacy rows or one-off charges) — we still want to surface real date/amount/
+    status to the UI instead of nulls.
+    """
+    key = normalized_dodo_api_key()
+    if not key or not payment_id:
+        return None, "not_configured"
+    base = dodo_api_base().rstrip("/")
+    url = f"{base}/payments/{payment_id}"
+    try:
+        r = requests.get(
+            url,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Accept": "application/json",
+            },
+            timeout=30,
+        )
+        if r.status_code != 200:
+            logger.warning(
+                "Dodo retrieve_payment HTTP %s for payment_id=%s body=%s",
+                r.status_code,
+                payment_id,
+                (r.text or "")[:300],
+            )
+            return None, f"upstream_{r.status_code}"
+        body = r.json()
+    except (requests.RequestException, ValueError) as e:
+        logger.warning("Dodo retrieve_payment failed: %s", e)
+        return None, "network_error"
+    if not isinstance(body, dict):
+        return None, "bad_shape"
+    return body, None
+
+
 def list_payments_for_subscription(subscription_id: str) -> tuple[list[dict] | None, str | None]:
     """
     GET /payments?subscription_id=… → list of payment objects.
