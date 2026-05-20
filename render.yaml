@@ -17,11 +17,33 @@ services:
     plan: starter
     region: oregon
     buildCommand: ./build.sh
-    startCommand: gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 600
+    startCommand: opentelemetry-instrument gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 600
     healthCheckPath: /api/auth/get-session
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
+      # --- OpenTelemetry → Better Stack ---
+      - key: OTEL_SERVICE_NAME
+        value: signalor-backend
+      - key: OTEL_RESOURCE_ATTRIBUTES
+        value: service.name=signalor-backend,deployment.environment=production
+      - key: OTEL_EXPORTER_OTLP_PROTOCOL
+        value: http/protobuf
+      - key: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: https://s2446917.eu-fsn-3.betterstackdata.com
+      # Bearer token for the Better Stack source. Set in Render dashboard (sync: false).
+      - key: OTEL_EXPORTER_OTLP_HEADERS
+        sync: false
+      - key: OTEL_TRACES_EXPORTER
+        value: otlp
+      - key: OTEL_METRICS_EXPORTER
+        value: otlp
+      - key: OTEL_LOGS_EXPORTER
+        value: otlp
+      - key: OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED
+        value: "true"
+      - key: OTEL_PYTHON_LOG_CORRELATION
+        value: "true"
       - key: DJANGO_SETTINGS_MODULE
         value: config.settings.production
       - key: SECRET_KEY
