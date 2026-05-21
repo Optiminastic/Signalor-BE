@@ -5056,3 +5056,98 @@ class ContentApplyElementView(APIView):
             status_code = 503 if "integration" in msg.lower() else 400
             return Response({"detail": msg}, status=status_code)
         return Response(result)
+
+
+def _resolve_shopify_integration_for_run(run):
+    """Return the active Shopify Integration tied to the run's organization,
+    or (None, error_response) if there isn't one."""
+    if not run.organization_id:
+        return None, Response({"detail": "Run is not linked to an organization."}, status=400)
+    from apps.integrations.models import Integration
+
+    integ = Integration.objects.filter(
+        organization_id=run.organization_id,
+        provider=Integration.Provider.SHOPIFY,
+        is_active=True,
+    ).first()
+    if not integ:
+        return None, Response(
+            {"detail": "No connected Shopify integration for this run's store."},
+            status=503,
+        )
+    return integ, None
+
+
+class ContentRawFilesListView(APIView):
+    """GET /api/analyzer/runs/s/<slug>/content/raw-files/
+
+    Returns the current state of every supported crawler/AI file on the
+    connected Shopify store. Shape per item:
+
+        {name, label, kind, url, present, content, default_template}
+
+    `kind` is "theme_asset" (robots.txt) or "page" (everything else served
+    at /pages/<handle>).
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        from apps.integrations.services.shopify_raw_files import (
+            RawFileError,
+            list_raw_files,
+        )
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        integ, err = _resolve_shopify_integration_for_run(run)
+        if err:
+            return err
+        try:
+            items = list_raw_files(integ)
+        except RawFileError as exc:
+            return Response({"detail": str(exc)}, status=502)
+        return Response({"items": items})
+
+
+class ContentRawFileUpsertView(APIView):
+    """PUT /api/analyzer/runs/s/<slug>/content/raw-files/<name>/
+
+    Body: {content: str}. Name is one of: robots, llms, humans, ads.
+
+    For robots.txt the content is written to templates/robots.txt.liquid
+    in the active theme. For the others it's saved as the body_html of a
+    Shopify Page with handle `<name>-txt`, creating the page if missing.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def put(self, request, slug, name):
+        from django.shortcuts import get_object_or_404
+
+        from apps.integrations.services.shopify_raw_files import (
+            RAW_FILES,
+            RawFileError,
+            upsert_raw_file,
+        )
+
+        if name not in RAW_FILES:
+            return Response(
+                {"detail": f"Unknown raw file '{name}'. Allowed: {list(RAW_FILES)}"},
+                status=400,
+            )
+        content = request.data.get("content")
+        if content is None:
+            return Response({"detail": "content is required"}, status=400)
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        integ, err = _resolve_shopify_integration_for_run(run)
+        if err:
+            return err
+        try:
+            saved = upsert_raw_file(integ, name, content)
+        except RawFileError as exc:
+            return Response({"detail": str(exc)}, status=502)
+        return Response(saved)

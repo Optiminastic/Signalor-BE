@@ -36,6 +36,8 @@ from .views import (
     ContentPageFieldsView,
     # Content optimisation (Cursor-style edit + save)
     ContentPagesView,
+    ContentRawFilesListView,
+    ContentRawFileUpsertView,
     ContentRewriteElementView,
     ContentSaveView,
     ContentSuggestionDismissView,
@@ -209,6 +211,16 @@ urlpatterns = [
         "runs/s/<str:slug>/content/apply-element/",
         ContentApplyElementView.as_view(),
         name="content-apply-element",
+    ),
+    path(
+        "runs/s/<str:slug>/content/raw-files/",
+        ContentRawFilesListView.as_view(),
+        name="content-raw-files-list",
+    ),
+    path(
+        "runs/s/<str:slug>/content/raw-files/<str:name>/",
+        ContentRawFileUpsertView.as_view(),
+        name="content-raw-files-upsert",
     ),
     path("runs/s/<str:slug>/", AnalysisRunBySlugView.as_view(), name="run-by-slug"),
     path("runs/<int:run_id>/status/", AnalysisRunStatusView.as_view(), name="run-status"),
