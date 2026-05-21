@@ -4251,8 +4251,8 @@ class BacklinkOrderListCreateView(APIView):
             except (PromptTrack.DoesNotExist, TypeError, ValueError):
                 prompt_track = None
 
-        # Order is created in pending_payment — provider only sees it after the
-        # user confirms payment via BacklinkOrderConfirmPaymentView.
+        from apps.integrations.services.backlink_providers import get_client
+
         order = BacklinkOrder.objects.create(
             provider=product.provider,
             product=product,
@@ -4266,6 +4266,21 @@ class BacklinkOrderListCreateView(APIView):
             currency=product.currency,
             notes_for_provider=notes,
         )
+
+        try:
+            client = get_client(product.provider.slug)
+            result = client.place_order(
+                sku=product.sku,
+                target_url=target_url,
+                anchor_text=anchor_text,
+                notes=notes,
+            )
+            order.status = result.status or BacklinkOrder.Status.QUEUED
+            order.provider_order_id = result.provider_order_id or ""
+            order.ordered_at = timezone.now()
+            order.save(update_fields=["status", "provider_order_id", "ordered_at"])
+        except Exception as exc:
+            logger.exception("Immediate backlink order placement failed: %s", exc)
 
         return Response(_serialize_order(order), status=status.HTTP_201_CREATED)
 
