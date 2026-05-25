@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import ApiKey, Webhook
+from .models import ApiKey, NextJsDeployment, Webhook
 
 
 class ApiKeyListSerializer(serializers.ModelSerializer):
@@ -66,3 +66,39 @@ class CreateWebhookSerializer(serializers.Serializer):
 
     def validate_email(self, value):
         return (value or "").lower().strip()
+
+
+class NextJsDeploymentListSerializer(serializers.ModelSerializer):
+    """Dashboard view of recent deploys. Includes the linked analysis slug
+    so the UI can deep-link to the run page."""
+
+    analysis_slug = serializers.SerializerMethodField()
+    analysis_status = serializers.SerializerMethodField()
+    analysis_score = serializers.SerializerMethodField()
+
+    class Meta:
+        model = NextJsDeployment
+        fields = [
+            "id",
+            "commit_sha",
+            "environment",
+            "url",
+            "host",
+            "status",
+            "error_message",
+            "build_metadata",
+            "analysis_slug",
+            "analysis_status",
+            "analysis_score",
+            "created_at",
+            "deployed_at",
+        ]
+
+    def get_analysis_slug(self, obj):
+        return obj.analysis_run.slug if obj.analysis_run else None
+
+    def get_analysis_status(self, obj):
+        return obj.analysis_run.status if obj.analysis_run else None
+
+    def get_analysis_score(self, obj):
+        return obj.analysis_run.composite_score if obj.analysis_run else None
