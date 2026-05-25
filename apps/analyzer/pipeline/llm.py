@@ -3,7 +3,7 @@ Unified LLM client using OpenRouter.
 Routes requests through 3 cheap models: GPT-4o-mini, Claude 3.5 Haiku, Gemini 2.0 Flash.
 Falls back to direct Gemini API if no OpenRouter key.
 """
-import json
+
 import logging
 import os
 import threading
@@ -17,17 +17,19 @@ logger = logging.getLogger("apps")
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Default models
+# Note: OpenRouter rejects bare "google/gemini-2.0-flash" with HTTP 400 —
+# must use the versioned ID. Keep in sync with apps/analyzer/auto_fix.py.
 MODELS = {
     "gpt": "openai/gpt-4o-mini",
     "claude": "anthropic/claude-3.5-haiku",
-    "gemini": "google/gemini-2.0-flash",
+    "gemini": "google/gemini-2.0-flash-001",
     "perplexity": "perplexity/sonar",
 }
 
 MODEL_LABELS = {
     "openai/gpt-4o-mini": "GPT-4o Mini",
     "anthropic/claude-3.5-haiku": "Claude 3.5 Haiku",
-    "google/gemini-2.0-flash": "Gemini 2.0 Flash",
+    "google/gemini-2.0-flash-001": "Gemini 2.0 Flash",
     "perplexity/sonar": "Perplexity Sonar",
     "gemini-direct": "Gemini 2.0 Flash (Direct)",
 }
@@ -85,18 +87,21 @@ def _log_call(model: str, purpose: str, prompt: str, response: str, status: str,
             return  # Not collecting
 
         label = MODEL_LABELS.get(model, model)
-        _collected_logs.append({
-            "model": label,
-            "model_id": model,
-            "purpose": purpose,
-            "prompt": _sanitize(prompt[:1000]),
-            "response": _sanitize(response[:3000]),
-            "status": status,
-            "duration_ms": duration_ms,
-        })
+        _collected_logs.append(
+            {
+                "model": label,
+                "model_id": model,
+                "purpose": purpose,
+                "prompt": _sanitize(prompt[:1000]),
+                "response": _sanitize(response[:3000]),
+                "status": status,
+                "duration_ms": duration_ms,
+            }
+        )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
+
 
 def _get_openrouter_key() -> str | None:
     return os.environ.get("OPENROUTER_API_KEY", "").strip() or None
@@ -136,6 +141,7 @@ def is_available() -> bool:
 
 
 # ── Main API ──────────────────────────────────────────────────────────────
+
 
 def ask_llm(
     prompt: str,
@@ -215,12 +221,14 @@ def _extract_citations_from_openrouter(data: dict) -> list[dict]:
         except Exception:
             return
         seen.add(u)
-        out.append({
-            "url": u[:2048],
-            "title": (title or "")[:512],
-            "snippet": (snippet or "")[:2000],
-            "position": len(out) + 1,
-        })
+        out.append(
+            {
+                "url": u[:2048],
+                "title": (title or "")[:512],
+                "snippet": (snippet or "")[:2000],
+                "position": len(out) + 1,
+            }
+        )
 
     try:
         # 1. Perplexity — top-level citations array (list of URL strings)
@@ -259,8 +267,11 @@ def _extract_citations_from_openrouter(data: dict) -> list[dict]:
 
 
 def _call_openrouter(
-    prompt: str, preferred_provider: str | None,
-    max_tokens: int, temperature: float, api_key: str,
+    prompt: str,
+    preferred_provider: str | None,
+    max_tokens: int,
+    temperature: float,
+    api_key: str,
     purpose: str = "",
 ) -> tuple[str, list[dict]]:
     """Call OpenRouter API. Returns (text, citations[])."""
@@ -281,7 +292,7 @@ def _call_openrouter(
     }
 
     prompt_preview = _log_preview(prompt, 120)
-    logger.info("[LLM REQUEST] >> %s | %s | prompt: \"%s...\"", model, purpose, prompt_preview)
+    logger.info('[LLM REQUEST] >> %s | %s | prompt: "%s..."', model, purpose, prompt_preview)
 
     t0 = time.time()
     try:
@@ -299,8 +310,12 @@ def _call_openrouter(
             citations = _extract_citations_from_openrouter(data)
             response_preview = _log_preview(content, 200)
             logger.info(
-                "[LLM RESPONSE] << %s | %dms | %d chars | %d citations | \"%s...\"",
-                model, duration_ms, len(content), len(citations), response_preview,
+                '[LLM RESPONSE] << %s | %dms | %d chars | %d citations | "%s..."',
+                model,
+                duration_ms,
+                len(content),
+                len(citations),
+                response_preview,
             )
             _log_call(model, purpose, prompt, content.strip(), "success", duration_ms)
             return (content.strip(), citations)
@@ -322,8 +337,13 @@ def _call_openrouter(
 
 
 def _retry_with_next(
-    prompt: str, failed_model: str, max_tokens: int, temperature: float,
-    api_key: str, headers: dict, purpose: str = "",
+    prompt: str,
+    failed_model: str,
+    max_tokens: int,
+    temperature: float,
+    api_key: str,
+    headers: dict,
+    purpose: str = "",
 ) -> tuple[str, list[dict]]:
     """Try the next model if the first one fails. Returns (text, citations[])."""
     all_models = list(MODELS.values())
@@ -366,7 +386,7 @@ def _call_gemini_direct(prompt: str, purpose: str = "") -> str:
         return ""
 
     prompt_preview = _log_preview(prompt, 120)
-    logger.info("[LLM REQUEST] >> gemini-direct | %s | prompt: \"%s...\"", purpose, prompt_preview)
+    logger.info('[LLM REQUEST] >> gemini-direct | %s | prompt: "%s..."', purpose, prompt_preview)
 
     t0 = time.time()
     try:
@@ -378,7 +398,12 @@ def _call_gemini_direct(prompt: str, purpose: str = "") -> str:
         text = response.text.strip()
         duration_ms = int((time.time() - t0) * 1000)
         response_preview = _log_preview(text, 200)
-        logger.info("[LLM RESPONSE] << gemini-direct | %dms | %d chars | \"%s...\"", duration_ms, len(text), response_preview)
+        logger.info(
+            '[LLM RESPONSE] << gemini-direct | %dms | %d chars | "%s..."',
+            duration_ms,
+            len(text),
+            response_preview,
+        )
         _log_call("gemini-direct", purpose, prompt, text, "success", duration_ms)
         return text
     except Exception as exc:
@@ -388,14 +413,18 @@ def _call_gemini_direct(prompt: str, purpose: str = "") -> str:
         return ""
 
 
-def ask_multiple_llms(prompt: str, providers: list[str] | None = None, purpose: str = "", max_tokens: int = 512) -> dict[str, str]:
+def ask_multiple_llms(
+    prompt: str, providers: list[str] | None = None, purpose: str = "", max_tokens: int = 512
+) -> dict[str, str]:
     """
     Ask the same prompt to multiple LLMs IN PARALLEL and return all responses.
     Useful for AI visibility probes -- test across providers concurrently.
 
     Returns: {"gpt": "response...", "claude": "response...", "gemini": "response..."}
     """
-    rich = ask_multiple_llms_with_citations(prompt, providers=providers, purpose=purpose, max_tokens=max_tokens)
+    rich = ask_multiple_llms_with_citations(
+        prompt, providers=providers, purpose=purpose, max_tokens=max_tokens
+    )
     return {p: v["text"] for p, v in rich.items()}
 
 
@@ -429,7 +458,10 @@ def ask_multiple_llms_with_citations(
 
     def _call_provider(provider):
         text, citations = ask_llm_with_citations(
-            prompt, preferred_provider=provider, purpose=purpose, max_tokens=max_tokens,
+            prompt,
+            preferred_provider=provider,
+            purpose=purpose,
+            max_tokens=max_tokens,
         )
         return provider, {"text": text, "citations": citations}
 
@@ -445,4 +477,3 @@ def ask_multiple_llms_with_citations(
                 results[provider] = {"text": "", "citations": []}
 
     return results
-
