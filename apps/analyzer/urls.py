@@ -49,6 +49,7 @@ from .views import (
     GeneratePromptsView,
     GeoImprovementsView,
     HealthCheckView,
+    OnboardingStartView,
     PromptBacklinksView,
     PromptDeleteView,
     PromptListCreateView,
@@ -89,6 +90,7 @@ app_name = "analyzer"
 
 urlpatterns = [
     path("health/", HealthCheckView.as_view(), name="health-check"),
+    path("onboarding-start/", OnboardingStartView.as_view(), name="onboarding-start"),
     path("analyze/", StartAnalysisView.as_view(), name="start-analysis"),
     path("generate-prompts/", GeneratePromptsView.as_view(), name="generate-prompts"),
     path("runs/history/", ScoreHistoryView.as_view(), name="run-history"),
