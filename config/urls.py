@@ -10,6 +10,7 @@ urlpatterns = [
     path("api/", include("apps.organizations.urls")),
     path("api/analyzer/", include("apps.analyzer.urls")),
     path("api/integrations/", include("apps.integrations.urls")),
+    path("api/integrations/nextjs/", include("apps.public_api.nextjs_dashboard_urls")),
     path("api/v1/public/", include("apps.public_api.urls")),
     path("api/keys/", include("apps.public_api.dashboard_urls")),
     path("api/webhooks/", include("apps.public_api.webhook_urls")),

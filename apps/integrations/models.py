@@ -26,6 +26,7 @@ class Integration(models.Model):
         WORDPRESS = "wordpress", "WordPress"
         WOOCOMMERCE = "woocommerce", "WooCommerce"
         WEBFLOW = "webflow", "Webflow"
+        NEXTJS = "nextjs", "Next.js"
 
     organization = models.ForeignKey(
         "organizations.Organization",

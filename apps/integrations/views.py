@@ -24,7 +24,7 @@ from apps.accounts.subscription_utils import (
     project_limit_reached,
 )
 from apps.organizations.models import Organization
-from core.throttling import PollingThrottle
+from core.throttling import ExpensiveThrottle, PollingThrottle
 
 from .models import (
     Integration,
@@ -541,6 +541,7 @@ class GASyncView(APIView):
     """POST /api/integrations/google-analytics/sync/?email="""
 
     permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
 
     def post(self, request):
         email = request.query_params.get("email", "").lower().strip()
@@ -1288,6 +1289,7 @@ class ShopifySyncView(APIView):
     """POST /api/integrations/shopify/sync/?email=&org_id="""
 
     permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
 
     def post(self, request):
         email = request.query_params.get("email", "").lower().strip()
@@ -1758,6 +1760,7 @@ class WordPressSyncView(APIView):
     """POST /api/integrations/wordpress/sync/?email="""
 
     permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
 
     def post(self, request):
         email = request.query_params.get("email", "").lower().strip()
@@ -1940,6 +1943,7 @@ class WooCommerceSyncView(APIView):
     """POST /api/integrations/woocommerce/sync/?email=&org_id="""
 
     permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
 
     def post(self, request):
         email = (request.query_params.get("email") or request.data.get("email", "")).lower().strip()

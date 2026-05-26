@@ -239,3 +239,82 @@ class WebhookDelivery(models.Model):
 
     def __str__(self):
         return f"{self.event} → {self.webhook_id} [{self.status}]"
+
+
+class NextJsDeployment(models.Model):
+    """A deploy reported by the @signalor/nextjs SDK or CLI.
+
+    Captures what was deployed (commit, env, URL) and links to the
+    AnalysisRun we kick off in response. Page metadata pushed by the SDK
+    via /metadata/bulk lives in ``pages_metadata`` so the analyzer can
+    use it instead of crawling.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        ANALYZING = "analyzing", "Analyzing"
+        COMPLETE = "complete", "Complete"
+        FAILED = "failed", "Failed"
+
+    class Environment(models.TextChoices):
+        PRODUCTION = "production", "Production"
+        PREVIEW = "preview", "Preview"
+        DEVELOPMENT = "development", "Development"
+
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="nextjs_deployments",
+    )
+    # Nullable: the deploy row is created first; the analyzer task fills
+    # this in once it kicks off the run.
+    analysis_run = models.ForeignKey(
+        "analyzer.AnalysisRun",
+        on_delete=models.SET_NULL,
+        related_name="nextjs_deployments",
+        null=True,
+        blank=True,
+    )
+
+    # All optional — local dev has no commit, some hosts don't expose a
+    # deploy URL until the build finishes.
+    commit_sha = models.CharField(max_length=40, blank=True, default="")
+    environment = models.CharField(
+        max_length=20,
+        choices=Environment.choices,
+        default=Environment.PRODUCTION,
+    )
+    url = models.URLField(max_length=2048, blank=True, default="")
+    # "vercel", "netlify", "self-hosted", etc. — reported by the SDK from
+    # platform env vars (VERCEL_ENV, NETLIFY, etc.).
+    host = models.CharField(max_length=40, blank=True, default="")
+    # Anything the SDK wants to attach (build duration, node version, etc.).
+    # Surfaced in the dashboard deployments timeline.
+    build_metadata = models.JSONField(default=dict, blank=True)
+
+    # Page-level metadata pushed via /metadata/bulk:
+    # [{"path": "/", "title": "...", "h1": "...", "description": "...",
+    #   "schema_hints": ["Organization", "WebSite"]}, ...]
+    # Lets the analyzer skip crawling pages we already have data for.
+    pages_metadata = models.JSONField(default=list, blank=True)
+
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+    error_message = models.TextField(blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    deployed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["organization", "-created_at"]),
+            models.Index(fields=["commit_sha"]),
+        ]
+
+    def __str__(self):
+        commit = self.commit_sha[:8] if self.commit_sha else "no-commit"
+        return f"NextJsDeployment {self.organization_id} {commit} [{self.environment}]"

@@ -20,9 +20,10 @@ from .dashboard_serializers import (
     ApiKeyListSerializer,
     CreateApiKeySerializer,
     CreateWebhookSerializer,
+    NextJsDeploymentListSerializer,
     WebhookListSerializer,
 )
-from .models import ApiKey, Webhook
+from .models import ApiKey, NextJsDeployment, Webhook
 
 
 def _resolve_org(email: str, org_id: int | None):
@@ -177,3 +178,36 @@ class WebhookDeleteView(APIView):
             )
         webhook.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class NextJsDeploymentListView(APIView):
+    """GET /api/integrations/nextjs/deployments/?email=&org_id=&limit=
+
+    Recent Next.js deploys for the org, newest first. Used by the
+    dashboard Developers page to surface deploy history.
+    """
+
+    permission_classes = [AllowAny]
+
+    DEFAULT_LIMIT = 20
+    MAX_LIMIT = 100
+
+    def get(self, request):
+        email = request.query_params.get("email", "")
+        org_id = _parse_org_id(request.query_params.get("org_id"))
+        org, err = _resolve_org(email, org_id)
+        if err:
+            return err
+
+        # Bounded so a runaway client can't pull years of history per request.
+        try:
+            limit = min(int(request.query_params.get("limit", self.DEFAULT_LIMIT)), self.MAX_LIMIT)
+        except (TypeError, ValueError):
+            limit = self.DEFAULT_LIMIT
+
+        deployments = (
+            NextJsDeployment.objects.filter(organization=org)
+            .select_related("analysis_run")
+            .order_by("-created_at")[:limit]
+        )
+        return Response(NextJsDeploymentListSerializer(deployments, many=True).data)

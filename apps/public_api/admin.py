@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import ApiKey, PublicApiUsage, Webhook, WebhookDelivery
+from .models import ApiKey, NextJsDeployment, PublicApiUsage, Webhook, WebhookDelivery
 
 
 @admin.register(ApiKey)
@@ -67,3 +67,19 @@ class WebhookDeliveryAdmin(admin.ModelAdmin):
         "created_at",
         "delivered_at",
     ]
+
+
+@admin.register(NextJsDeployment)
+class NextJsDeploymentAdmin(admin.ModelAdmin):
+    list_display = [
+        "created_at",
+        "organization",
+        "environment",
+        "host",
+        "commit_sha",
+        "status",
+        "analysis_run",
+    ]
+    list_filter = ["status", "environment", "host"]
+    search_fields = ["organization__name", "commit_sha", "url"]
+    readonly_fields = ["pages_metadata", "build_metadata", "created_at", "deployed_at"]

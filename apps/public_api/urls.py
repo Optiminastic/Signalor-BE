@@ -1,4 +1,4 @@
-from django.urls import path
+from django.urls import include, path
 
 from .views import (
     CreateAnalysisView,
@@ -18,4 +18,5 @@ urlpatterns = [
         name="analyses-recommendations",
     ),
     path("usage/", UsageView.as_view(), name="usage"),
+    path("nextjs/", include("apps.public_api.nextjs.urls")),
 ]

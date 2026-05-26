@@ -42,6 +42,10 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
+    # Global per-IP rate limit. Runs before view dispatch so admin / oauth /
+    # non-DRF paths are also bounded. No-op in dev (DEBUG=True) unless
+    # IP_RATE_LIMIT_ENABLED is overridden.
+    "core.middleware.GlobalIPRateLimitMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -49,6 +53,18 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+
+# Per-IP global rate limit knobs. Defaults are tuned for a single-user-per-IP
+# pattern; raise IP_RATE_LIMIT_PER_MINUTE if you have NATed corporate users.
+IP_RATE_LIMIT_PER_MINUTE = int(os.getenv("IP_RATE_LIMIT_PER_MINUTE", 240))
+IP_RATE_LIMIT_BURST = int(os.getenv("IP_RATE_LIMIT_BURST", 40))
+# TRUSTED_PROXY_IPS: comma-separated IPs of proxies that may forward XFF.
+# Empty list = trust XFF unconditionally (use only behind a known LB/CDN);
+# None (default) = trust XFF only if request comes from REMOTE_ADDR == loopback.
+_TRUSTED_PROXIES = os.getenv("TRUSTED_PROXY_IPS", "")
+TRUSTED_PROXY_IPS = (
+    {ip.strip() for ip in _TRUSTED_PROXIES.split(",") if ip.strip()} if _TRUSTED_PROXIES else None
+)
 
 ROOT_URLCONF = "config.urls"
 
@@ -108,6 +124,15 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
+# Request-size guardrails. Defends against memory-exhaustion attacks via giant
+# JSON bodies or form payloads. Largest legitimate POST today is the content
+# editor save (raw HTML files) at ~500 KB; 1 MB gives 2x headroom.
+# Override per-deploy with env vars if a specific endpoint needs more.
+DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.getenv("DATA_UPLOAD_MAX_MEMORY_SIZE", 1024 * 1024))  # 1 MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = int(os.getenv("FILE_UPLOAD_MAX_MEMORY_SIZE", 5 * 1024 * 1024))  # 5 MB
+DATA_UPLOAD_MAX_NUMBER_FIELDS = int(os.getenv("DATA_UPLOAD_MAX_NUMBER_FIELDS", 1000))
+DATA_UPLOAD_MAX_NUMBER_FILES = int(os.getenv("DATA_UPLOAD_MAX_NUMBER_FILES", 10))
+
 REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
@@ -131,8 +156,12 @@ REST_FRAMEWORK = {
     # Global ceilings act as defense-in-depth. Per-route limits are applied
     # via ScopedRateThrottle on the views themselves — see scopes below.
     "DEFAULT_THROTTLE_RATES": {
-        "anon": "100/hour",
-        "user": "1000/hour",
+        # Global ceiling for any AllowAny view that doesn't pick a scoped throttle.
+        # Tight enough that an unauth attacker can't cheaply hammer the API,
+        # generous enough for a real visitor opening a few pages.
+        "anon": "60/hour",
+        # Authed user ceiling. Per-route scoped throttles below override these.
+        "user": "600/hour",
         # Cost-incurring routes (LLM, full re-analysis, auto-fix, blog gen).
         "expensive": "10/minute",
         # AI chat — per-message Gemini cost; allow burst for normal convo.
@@ -216,6 +245,11 @@ ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", "")
 
 DATAFORSEO_LOGIN = os.getenv("DATAFORSEO_LOGIN", "")
 DATAFORSEO_PASSWORD = os.getenv("DATAFORSEO_PASSWORD", "")
+
+# Cloudflare Turnstile (anti-bot for public AI endpoints). When unset the
+# server-side check is skipped — useful for dev/staging without a CF account.
+# The frontend respects NEXT_PUBLIC_TURNSTILE_SITE_KEY independently.
+TURNSTILE_SECRET = os.getenv("TURNSTILE_SECRET", "")
 
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
