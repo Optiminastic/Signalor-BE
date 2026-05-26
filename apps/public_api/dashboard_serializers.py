@@ -1,0 +1,68 @@
+from rest_framework import serializers
+
+from .models import ApiKey, Webhook
+
+
+class ApiKeyListSerializer(serializers.ModelSerializer):
+    """Safe to expose — never includes the plaintext or full hash."""
+
+    class Meta:
+        model = ApiKey
+        fields = [
+            "id",
+            "name",
+            "environment",
+            "key_prefix",
+            "key_last4",
+            "created_by_email",
+            "created_at",
+            "last_used_at",
+            "revoked_at",
+        ]
+
+
+class CreateApiKeySerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    org_id = serializers.IntegerField(required=False, allow_null=True)
+    name = serializers.CharField(max_length=120)
+    environment = serializers.ChoiceField(
+        choices=ApiKey.Environment.choices,
+        default=ApiKey.Environment.LIVE,
+    )
+
+    def validate_email(self, value):
+        return (value or "").lower().strip()
+
+    def validate_name(self, value):
+        value = (value or "").strip()
+        if not value:
+            raise serializers.ValidationError("Name is required.")
+        return value
+
+
+class WebhookListSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Webhook
+        fields = [
+            "id",
+            "url",
+            "events",
+            "secret_last4",
+            "is_active",
+            "created_by_email",
+            "created_at",
+            "last_delivered_at",
+        ]
+
+
+class CreateWebhookSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    org_id = serializers.IntegerField(required=False, allow_null=True)
+    url = serializers.URLField(max_length=2048)
+    events = serializers.ListField(
+        child=serializers.ChoiceField(choices=Webhook.Event.choices),
+        min_length=1,
+    )
+
+    def validate_email(self, value):
+        return (value or "").lower().strip()

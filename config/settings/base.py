@@ -14,90 +14,89 @@ if _env_path.exists():
 if _env_local.exists():
     load_dotenv(_env_local, override=True)
 
-LOGS_DIR = BASE_DIR / 'logs'
+LOGS_DIR = BASE_DIR / "logs"
 LOGS_DIR.mkdir(exist_ok=True)
 
 INSTALLED_APPS = [
-    'django.contrib.admin',
-    'django.contrib.auth',
-    'django.contrib.contenttypes',
-    'django.contrib.sessions',
-    'django.contrib.messages',
-    'django.contrib.staticfiles',
-    
-    'rest_framework',
-    'corsheaders',
-    
-   'apps.accounts.apps.AccountsConfig',
-    'apps.organizations.apps.OrganizationsConfig',
-    'apps.analyzer.apps.AnalyzerConfig',
-    'apps.integrations.apps.IntegrationsConfig',
-    'apps.visibility.apps.VisibilityConfig',
-    'apps.recommendation.apps.RecommendationConfig',
-    'apps.referrals.apps.ReferralsConfig',
-    'apps.partners.apps.PartnersConfig',
-    'core',
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
+    "rest_framework",
+    "corsheaders",
+    "apps.accounts.apps.AccountsConfig",
+    "apps.organizations.apps.OrganizationsConfig",
+    "apps.analyzer.apps.AnalyzerConfig",
+    "apps.integrations.apps.IntegrationsConfig",
+    "apps.visibility.apps.VisibilityConfig",
+    "apps.recommendation.apps.RecommendationConfig",
+    "apps.referrals.apps.ReferralsConfig",
+    "apps.partners.apps.PartnersConfig",
+    "apps.public_api.apps.PublicApiConfig",
+    "core",
 ]
 
 MIDDLEWARE = [
-    'django.middleware.security.SecurityMiddleware',
-    'whitenoise.middleware.WhiteNoiseMiddleware', 
-    'corsheaders.middleware.CorsMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django.contrib.messages.middleware.MessageMiddleware',
-    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
+    "corsheaders.middleware.CorsMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+    "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-ROOT_URLCONF = 'config.urls'
+ROOT_URLCONF = "config.urls"
 
 TEMPLATES = [
     {
-        'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [BASE_DIR / 'templates'],
-        'APP_DIRS': True,
-        'OPTIONS': {
-            'context_processors': [
-                'django.template.context_processors.debug',
-                'django.template.context_processors.request',
-                'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [BASE_DIR / "templates"],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.debug",
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
             ],
         },
     },
 ]
-AUTH_USER_MODEL = 'accounts.User'
+AUTH_USER_MODEL = "accounts.User"
 
 AUTH_PASSWORD_VALIDATORS = [
     {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-        'OPTIONS': {
-            'min_length': 8,
-        }
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+        "OPTIONS": {
+            "min_length": 8,
+        },
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
+        "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
     },
 ]
 
-LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+LANGUAGE_CODE = "en-us"
+TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
-STATIC_URL = '/static/'
-STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
-MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
 
 # Discovery-engine PDF reports directory (override via env if needed)
 DISCOVERY_REPORTS_DIR = os.getenv(
@@ -105,134 +104,133 @@ DISCOVERY_REPORTS_DIR = os.getenv(
     str(BASE_DIR.parent / "discovery-engine" / "reports"),
 )
 
-DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 REST_FRAMEWORK = {
-    'DEFAULT_RENDERER_CLASSES': [
-        'rest_framework.renderers.JSONRenderer',
+    "DEFAULT_RENDERER_CLASSES": [
+        "rest_framework.renderers.JSONRenderer",
     ],
-    'DEFAULT_PARSER_CLASSES': [
-        'rest_framework.parsers.JSONParser',
+    "DEFAULT_PARSER_CLASSES": [
+        "rest_framework.parsers.JSONParser",
     ],
-    'DEFAULT_AUTHENTICATION_CLASSES': [
+    "DEFAULT_AUTHENTICATION_CLASSES": [
         # 'apps.auth.authentication.JWTAuthentication',
-        'rest_framework.authentication.SessionAuthentication',
+        "rest_framework.authentication.SessionAuthentication",
     ],
-    'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.IsAuthenticated',
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
     ],
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 20,
-    'DEFAULT_THROTTLE_CLASSES': [
-        'rest_framework.throttling.AnonRateThrottle',
-        'rest_framework.throttling.UserRateThrottle',
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 20,
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
     ],
     # Global ceilings act as defense-in-depth. Per-route limits are applied
     # via ScopedRateThrottle on the views themselves — see scopes below.
-    'DEFAULT_THROTTLE_RATES': {
-        'anon': '100/hour',
-        'user': '1000/hour',
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": "100/hour",
+        "user": "1000/hour",
         # Cost-incurring routes (LLM, full re-analysis, auto-fix, blog gen).
-        'expensive': '10/minute',
+        "expensive": "10/minute",
         # AI chat — per-message Gemini cost; allow burst for normal convo.
-        'ai_chat': '30/minute',
+        "ai_chat": "30/minute",
         # DataForSEO-backed routes (domain analytics, citation enrich,
         # audit starts that hit the vendor). Bounds vendor credit burn.
-        'dataforseo': '20/minute',
+        "dataforseo": "20/minute",
         # Audit "start" endpoints — kick off background tasks, expensive
         # to spawn but not as costly as full analyze.
-        'audit_start': '15/minute',
+        "audit_start": "15/minute",
         # Status / list / detail polls. High enough that legit clients
         # never hit it; low enough that a runaway frontend loop is capped.
-        'polling': '120/minute',
+        "polling": "120/minute",
         # Auth-adjacent: email/OTP sends, password resets. Per-IP.
-        'auth_send': '10/minute',
+        "auth_send": "10/minute",
+        # Public API (Bearer-token) — per-key ceilings; plan tiers can refine later.
+        "public_api_read": "300/minute",
+        "public_api_write": "30/minute",
     },
-    'EXCEPTION_HANDLER': 'core.exceptions.custom_exception_handler',
+    "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
 }
 
 LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'formatters': {
-        'verbose': {
-            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
-            'style': '{',
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "{levelname} {asctime} {module} {process:d} {thread:d} {message}",
+            "style": "{",
         },
-        'simple': {
-            'format': '{levelname} {message}',
-            'style': '{',
-        },
-    },
-    'filters': {
-        'require_debug_false': {
-            '()': 'django.utils.log.RequireDebugFalse',
-        },
-        'require_debug_true': {
-            '()': 'django.utils.log.RequireDebugTrue',
+        "simple": {
+            "format": "{levelname} {message}",
+            "style": "{",
         },
     },
-    'handlers': {
-        'console': {
-            'level': 'INFO',
-            'class': 'logging.StreamHandler',
-            'formatter': 'simple'
+    "filters": {
+        "require_debug_false": {
+            "()": "django.utils.log.RequireDebugFalse",
         },
-        'file': {
-            'level': 'INFO',
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': LOGS_DIR / 'django.log',
-            'maxBytes': 1024 * 1024 * 15,  # 15MB
-            'backupCount': 10,
-            'formatter': 'verbose',
+        "require_debug_true": {
+            "()": "django.utils.log.RequireDebugTrue",
         },
     },
-    'loggers': {
-        'django': {
-            'handlers': ['console', 'file'],
-            'level': 'INFO',
-            'propagate': False,
+    "handlers": {
+        "console": {"level": "INFO", "class": "logging.StreamHandler", "formatter": "simple"},
+        "file": {
+            "level": "INFO",
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": LOGS_DIR / "django.log",
+            "maxBytes": 1024 * 1024 * 15,  # 15MB
+            "backupCount": 10,
+            "formatter": "verbose",
         },
-        'core': {
-            'handlers': ['console', 'file'],
-            'level': 'INFO',
-            'propagate': False,
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": False,
         },
-        'apps': {
-            'handlers': ['console', 'file'],
-            'level': 'INFO',
-            'propagate': False,
+        "core": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "apps": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": False,
         },
     },
 }
 
-GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID', '')
-GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET', '')
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_ANALYTICS_REDIRECT_URI = os.getenv(
-    'GOOGLE_ANALYTICS_REDIRECT_URI',
-    'http://localhost:3000/settings/integrations/callback/google-analytics',
+    "GOOGLE_ANALYTICS_REDIRECT_URI",
+    "http://localhost:3000/settings/integrations/callback/google-analytics",
 )
-ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY', '')
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", "")
 
-DATAFORSEO_LOGIN = os.getenv('DATAFORSEO_LOGIN', '')
-DATAFORSEO_PASSWORD = os.getenv('DATAFORSEO_PASSWORD', '')
+DATAFORSEO_LOGIN = os.getenv("DATAFORSEO_LOGIN", "")
+DATAFORSEO_PASSWORD = os.getenv("DATAFORSEO_PASSWORD", "")
 
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
-EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", 587))
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = os.getenv('SMTP_USER', '')
-EMAIL_HOST_PASSWORD = os.getenv('SMTP_PASS', '')
-DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'noreply@example.com')
+EMAIL_HOST_USER = os.getenv("SMTP_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("SMTP_PASS", "")
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@example.com")
 
 SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SAMESITE = 'Lax'
+SESSION_COOKIE_SAMESITE = "Lax"
 SESSION_COOKIE_AGE = 1209600  # 2 weeks
 
 CSRF_COOKIE_HTTPONLY = True
-CSRF_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SAMESITE = "Lax"
 
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
@@ -241,7 +239,7 @@ CORS_ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 CACHES = {
-    'default': {
-        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
     }
 }
