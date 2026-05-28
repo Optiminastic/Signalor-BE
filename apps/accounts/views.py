@@ -1220,7 +1220,16 @@ class CancelTerminationView(APIView):
 
 
 class DeleteAccountView(APIView):
-    """POST /api/account/delete/ — hard delete account and all data."""
+    """POST /api/account/delete/ — hard delete account and all data.
+
+    Removes the Django User row plus every email-keyed table so the account
+    cannot be silently restored when the user signs in again. Financial-trail
+    rows (Partner with commissions, PartnerCommission.referee_email) are
+    anonymized rather than deleted to preserve audit history.
+
+    Note: better-auth's own user/session/account tables live on the FE side;
+    the FE handler calls authClient.deleteUser() before hitting this endpoint.
+    """
 
     permission_classes = [AllowAny]
 
@@ -1237,32 +1246,80 @@ class DeleteAccountView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        from django.db import models, transaction
+
         from apps.analyzer.models import AnalysisRun
         from apps.organizations.models import Organization
+        from apps.partners.models import Partner, PartnerAttribution, PartnerCommission
+        from apps.referrals.models import Referral, ReferralCode, ReferralReward
+        from apps.visibility.models import VisibilityCheck
 
-        deleted_counts = {}
+        from .models import User
 
-        runs = AnalysisRun.objects.filter(email=email)
-        deleted_counts["analysis_runs"] = runs.count()
-        runs.delete()
+        # Stable anonymized email for financial-trail rows (Partner.email is
+        # unique, so we need a deterministic non-colliding placeholder).
+        anon_suffix = hashlib.sha256(email.encode()).hexdigest()[:12]
+        anon_email = f"deleted+{anon_suffix}@signalor.local"
 
-        orgs = Organization.objects.filter(owner_email=email)
-        deleted_counts["organizations"] = orgs.count()
-        orgs.delete()
+        counts: dict[str, int] = {}
 
-        try:
-            sub = Subscription.objects.get(email=email)
-            sub.delete()
-            deleted_counts["subscription"] = 1
-        except Subscription.DoesNotExist:
-            deleted_counts["subscription"] = 0
+        with transaction.atomic():
+            # PartnerCommission referee_email — anonymize (preserve commission ledger)
+            counts["partner_commissions_anonymized"] = PartnerCommission.objects.filter(
+                referee_email=email
+            ).update(referee_email=anon_email)
 
-        logger.info("Account permanently deleted for %s: %s", email, deleted_counts)
+            counts["partner_attributions"], _ = PartnerAttribution.objects.filter(email=email).delete()
+
+            # If user is a Partner: anonymize when commissions exist (PROTECT
+            # would otherwise block delete), else hard-delete.
+            try:
+                partner = Partner.objects.get(email=email)
+                if PartnerCommission.objects.filter(partner=partner).exists():
+                    partner.email = anon_email
+                    partner.status = Partner.Status.TERMINATED
+                    partner.save(update_fields=["email", "status"])
+                    counts["partner_anonymized"] = 1
+                else:
+                    partner.delete()
+                    counts["partner_deleted"] = 1
+            except Partner.DoesNotExist:
+                pass
+
+            counts["referrals"], _ = Referral.objects.filter(
+                models.Q(referrer_email=email) | models.Q(referee_email=email)
+            ).delete()
+            counts["referral_codes"], _ = ReferralCode.objects.filter(owner_email=email).delete()
+            counts["referral_rewards"], _ = ReferralReward.objects.filter(referrer_email=email).delete()
+
+            counts["visibility_checks"], _ = VisibilityCheck.objects.filter(email=email).delete()
+
+            # Analysis runs cascade to PromptTrack, Recommendation, Competitor,
+            # AutoFixJob, SchemaWatch, RankAudit, ChatMessage, etc.
+            counts["analysis_runs"], _ = AnalysisRun.objects.filter(email=email).delete()
+
+            # Organizations cascade to Integration, ApiKey, Webhook,
+            # public_api_usage, scheduled analyses, etc.
+            counts["organizations"], _ = Organization.objects.filter(owner_email=email).delete()
+
+            counts["invoice_records"], _ = InvoiceRecord.objects.filter(email=email).delete()
+
+            try:
+                Subscription.objects.get(email=email).delete()
+                counts["subscription"] = 1
+            except Subscription.DoesNotExist:
+                counts["subscription"] = 0
+
+            # The User row itself — without this the account silently restores
+            # on next sign-in. This was the original bug.
+            counts["user"], _ = User.objects.filter(email=email).delete()
+
+        logger.info("Account permanently deleted for %s: %s", email, counts)
 
         return Response(
             {
                 "message": "Account permanently deleted.",
-                "deleted": deleted_counts,
+                "deleted": counts,
             }
         )
 

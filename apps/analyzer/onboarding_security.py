@@ -68,6 +68,40 @@ def verify_token(token: str, client_ip: str, max_age: int | None = None) -> tupl
     return True, ""
 
 
+def subscriber_bypass(email: str | None) -> bool:
+    """Active paying subscribers (and internal emails) don't need the onboarding
+    token — they hit start-analysis / org-create from the authenticated dashboard,
+    not the public onboarding funnel where Turnstile lives."""
+    from apps.accounts.models import Subscription
+    from apps.accounts.subscription_utils import is_internal_email
+
+    if is_internal_email(email):
+        return True
+    em = (email or "").strip().lower()
+    if not em:
+        return False
+    try:
+        return Subscription.objects.get(email=em).is_active
+    except Subscription.DoesNotExist:
+        return False
+
+
+def gate_onboarding_endpoint(request, email: str | None = None) -> tuple[bool, str]:
+    """
+    Gate a public onboarding endpoint with the X-Onboarding-Token unless the
+    caller is already an active subscriber (or internal email).
+
+    Returns (ok, reason). On failure, the caller should respond with 401 and
+    surface the reason in the body.
+    """
+    if subscriber_bypass(email):
+        return True, ""
+    from core.middleware import _client_ip
+
+    token = request.headers.get("X-Onboarding-Token", "")
+    return verify_token(token, _client_ip(request))
+
+
 def turnstile_enabled() -> bool:
     return bool(getattr(settings, "TURNSTILE_SECRET", "") or "")
 

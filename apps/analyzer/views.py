@@ -18,6 +18,7 @@ from apps.accounts.subscription_utils import (
     get_plan_limits,
     is_plan_limits_enforcement_enabled,
     plan_limit_error_response_dict,
+    project_limit_reached,
     prompt_batch_would_exceed,
     prompt_limit_reached,
 )
@@ -46,6 +47,9 @@ from .models import (
     Recommendation,
     UserAction,
     UserGamification,
+)
+from .onboarding_security import (
+    gate_onboarding_endpoint as _gate_onboarding_endpoint,
 )
 from .onboarding_security import (
     mint_token as _mint_onboarding_token,
@@ -716,9 +720,37 @@ class StartAnalysisView(APIView):
         email = data.get("email", "")
         org_id = data.get("org_id")
 
+        # Onboarding gate: anon / free callers must hold a token minted by
+        # /onboarding-start/ (which is Turnstile-gated). Active subscribers
+        # bypass — the dashboard "run new analysis" button has no Turnstile.
+        ok, reason = _gate_onboarding_endpoint(request, email)
+        if not ok:
+            logger.info("start_analysis token_reject ip=%s reason=%s", _client_ip(request), reason)
+            return Response(
+                {
+                    "detail": "Onboarding token required. POST /api/analyzer/onboarding-start/ first.",
+                    "reason": reason,
+                },
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
         allowed, sub_err = analysis_allowed_for_email(email)
         if not allowed:
             return Response({"error": sub_err}, status=status.HTTP_403_FORBIDDEN)
+
+        # Project cap: if the caller is at their plan's project limit AND this
+        # analysis would land in a fresh org (no existing org for this email),
+        # block it. Without this, free-tier users could create unlimited
+        # orphan AnalysisRuns and burn AI calls without ever creating an org.
+        if email and not org_id:
+            existing_org = Organization.objects.filter(owner_email=email).first()
+            if not existing_org:
+                reached, msg = project_limit_reached(email)
+                if reached:
+                    return Response(
+                        plan_limit_error_response_dict(msg),
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
 
         # Plan cap: each completed analysis adds up to 10 prompt tracks.
         # Anonymous (no email) requests are free-tool scans — no account to cap.
