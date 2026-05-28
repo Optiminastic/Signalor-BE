@@ -3533,8 +3533,9 @@ class SitemapAuditStartView(APIView):
     def post(self, request, slug):
         from django.shortcuts import get_object_or_404
 
+        from .celery_tasks import run_sitemap_audit_task
         from .models import SitemapAudit
-        from .pipeline.sitemap_audit import HARD_URL_CAP, run_sitemap_audit
+        from .pipeline.sitemap_audit import HARD_URL_CAP
         from .serializers import SitemapAuditSerializer
 
         run = get_object_or_404(AnalysisRun, slug=slug)
@@ -3543,17 +3544,7 @@ class SitemapAuditStartView(APIView):
             status=SitemapAudit.Status.QUEUED,
             crawl_limit=HARD_URL_CAP,
         )
-
-        from ._thread_safety import run_in_background_with_status
-
-        run_in_background_with_status(
-            model_cls=SitemapAudit,
-            instance_id=audit.id,
-            status_field="status",
-            failure_value=SitemapAudit.Status.FAILED,
-            work=lambda: run_sitemap_audit(audit.id),
-            log_label="run_sitemap_audit",
-        )
+        run_sitemap_audit_task.delay(audit.id)
 
         return Response(
             SitemapAuditSerializer(audit).data,

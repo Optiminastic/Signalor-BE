@@ -57,6 +57,14 @@ services:
           type: redis
           name: signalor-redis
           property: connectionString
+      # Same Redis instance is reused as Celery's broker — keeps infra simple.
+      # Without this, .delay() falls back to CELERY_TASK_ALWAYS_EAGER and the
+      # web process would run sitemap audits inline, defeating the worker.
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: signalor-redis
+          property: connectionString
       - key: ALLOWED_HOSTS
         value: api.signalor.ai,signalor-backend.onrender.com
       - key: CORS_ALLOWED_ORIGINS
@@ -144,6 +152,54 @@ services:
       - key: B2_ENDPOINT
         sync: false
       - key: B2_REGION
+        sync: false
+
+  - type: worker
+    name: signalor-celery-worker
+    runtime: python
+    plan: starter
+    region: oregon
+    buildCommand: ./build.sh
+    # Single worker process, modest concurrency — sitemap audits are mostly
+    # network-bound. Bump --concurrency when more tasks land on Celery.
+    startCommand: celery -A config worker --loglevel=info --concurrency=2
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: signalor-backend
+          envVarKey: SECRET_KEY
+      - key: DATABASE_URL
+        fromDatabase:
+          name: signalor-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: signalor-redis
+          property: connectionString
+      # Celery picks up REDIS_URL via settings.base if CELERY_BROKER_URL is
+      # unset; setting it explicitly here documents the intent.
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: signalor-redis
+          property: connectionString
+      - key: ALLOWED_HOSTS
+        value: api.signalor.ai
+      - key: FRONTEND_BASE_URL
+        value: https://signalor.ai
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DATAFORSEO_LOGIN
+        sync: false
+      - key: DATAFORSEO_PASSWORD
         sync: false
 
   - type: cron

@@ -277,3 +277,20 @@ CACHES = {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
     }
 }
+
+# ── Celery ───────────────────────────────────────────────────────────────
+# Today only the sitemap audit task (apps.analyzer.celery_tasks) is on
+# Celery; everything else still uses threading.Thread. When CELERY_BROKER_URL
+# is unset, tasks run eagerly in-process so dev / tests don't need a worker.
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", os.getenv("REDIS_URL", ""))
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "")
+CELERY_TASK_ALWAYS_EAGER = not bool(CELERY_BROKER_URL)
+CELERY_TASK_EAGER_PROPAGATES = True
+CELERY_TASK_ACKS_LATE = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_TASK_TIME_LIMIT = 60 * 30  # 30-minute hard ceiling per task
+CELERY_TASK_SOFT_TIME_LIMIT = 60 * 25
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = "UTC"

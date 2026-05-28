@@ -855,17 +855,20 @@ def run_single_page_analysis(run_id: int):
 
 
 def _kickoff_sitemap_audit(run_id: int) -> None:
-    """Create a SitemapAudit for this run and start its background work.
+    """Create a SitemapAudit row and dispatch the crawl to a Celery worker.
 
     Called from start_analysis_task so the sitemap crawl runs in PARALLEL
     with the main page analysis — the Sitemap tab shows progress immediately
     instead of staying on the "Run audit" empty state until the main run
     finishes. Failures here are non-fatal: the main analysis is independent.
+
+    When CELERY_BROKER_URL is unset (local dev), the task runs eagerly
+    in-process via CELERY_TASK_ALWAYS_EAGER.
     """
     try:
-        from ._thread_safety import run_in_background_with_status
+        from .celery_tasks import run_sitemap_audit_task
         from .models import SitemapAudit
-        from .pipeline.sitemap_audit import HARD_URL_CAP, run_sitemap_audit
+        from .pipeline.sitemap_audit import HARD_URL_CAP
 
         run = AnalysisRun.objects.get(pk=run_id)
         audit = SitemapAudit.objects.create(
@@ -873,14 +876,7 @@ def _kickoff_sitemap_audit(run_id: int) -> None:
             status=SitemapAudit.Status.QUEUED,
             crawl_limit=HARD_URL_CAP,
         )
-        run_in_background_with_status(
-            model_cls=SitemapAudit,
-            instance_id=audit.id,
-            status_field="status",
-            failure_value=SitemapAudit.Status.FAILED,
-            work=lambda: run_sitemap_audit(audit.id),
-            log_label="run_sitemap_audit_auto",
-        )
+        run_sitemap_audit_task.delay(audit.id)
     except Exception as exc:
         logger.warning("Auto sitemap audit kickoff failed for run %d: %s", run_id, exc)
 
