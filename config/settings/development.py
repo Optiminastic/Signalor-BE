@@ -67,5 +67,7 @@ REST_FRAMEWORK = {
         "audit_start": None,
         "polling": None,
         "auth_send": None,
+        "public_api_read": None,
+        "public_api_write": None,
     },
 }
