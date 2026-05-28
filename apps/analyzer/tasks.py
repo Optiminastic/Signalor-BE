@@ -847,30 +847,6 @@ def run_single_page_analysis(run_id: int):
         run.save()
         logger.info("Analysis complete for run %d: score %.1f", run_id, composite)
 
-        # Auto-fire the sitemap audit so the Sitemap tab is populated by the
-        # time the user navigates to it (no manual "Run audit" click required).
-        # Failures are non-fatal — the main analysis already succeeded.
-        try:
-            from ._thread_safety import run_in_background_with_status
-            from .models import SitemapAudit
-            from .pipeline.sitemap_audit import HARD_URL_CAP, run_sitemap_audit
-
-            audit = SitemapAudit.objects.create(
-                analysis_run=run,
-                status=SitemapAudit.Status.QUEUED,
-                crawl_limit=HARD_URL_CAP,
-            )
-            run_in_background_with_status(
-                model_cls=SitemapAudit,
-                instance_id=audit.id,
-                status_field="status",
-                failure_value=SitemapAudit.Status.FAILED,
-                work=lambda: run_sitemap_audit(audit.id),
-                log_label="run_sitemap_audit_auto",
-            )
-        except Exception as exc:
-            logger.warning("Auto sitemap audit kickoff failed for run %d: %s", run_id, exc)
-
     except Exception as exc:
         logger.error("Analysis failed for run %d: %s", run_id, exc, exc_info=True)
         run.status = AnalysisRun.Status.FAILED
@@ -878,10 +854,45 @@ def run_single_page_analysis(run_id: int):
         run.save()
 
 
+def _kickoff_sitemap_audit(run_id: int) -> None:
+    """Create a SitemapAudit for this run and start its background work.
+
+    Called from start_analysis_task so the sitemap crawl runs in PARALLEL
+    with the main page analysis — the Sitemap tab shows progress immediately
+    instead of staying on the "Run audit" empty state until the main run
+    finishes. Failures here are non-fatal: the main analysis is independent.
+    """
+    try:
+        from ._thread_safety import run_in_background_with_status
+        from .models import SitemapAudit
+        from .pipeline.sitemap_audit import HARD_URL_CAP, run_sitemap_audit
+
+        run = AnalysisRun.objects.get(pk=run_id)
+        audit = SitemapAudit.objects.create(
+            analysis_run=run,
+            status=SitemapAudit.Status.QUEUED,
+            crawl_limit=HARD_URL_CAP,
+        )
+        run_in_background_with_status(
+            model_cls=SitemapAudit,
+            instance_id=audit.id,
+            status_field="status",
+            failure_value=SitemapAudit.Status.FAILED,
+            work=lambda: run_sitemap_audit(audit.id),
+            log_label="run_sitemap_audit_auto",
+        )
+    except Exception as exc:
+        logger.warning("Auto sitemap audit kickoff failed for run %d: %s", run_id, exc)
+
+
 def start_analysis_task(run_id: int):
-    """Start the analysis in a background thread."""
+    """Start the main analysis in a background thread and fire the sitemap
+    audit in parallel so the Sitemap tab is populated as soon as possible."""
     if not AnalysisRun.objects.filter(pk=run_id).exists():
         return
 
     thread = threading.Thread(target=run_single_page_analysis, args=(run_id,), daemon=True)
     thread.start()
+
+    # Sibling sitemap audit — runs concurrently with the main analysis above.
+    _kickoff_sitemap_audit(run_id)
