@@ -14,4 +14,9 @@ python -m playwright install --with-deps chromium
 python -m playwright install chromium-headless-shell
 
 python manage.py collectstatic --no-input
+
+# Reconcile any known migration-drift cases before running migrate. See
+# scripts/reconcile_migrations.py — safe on fresh and healthy databases too.
+python scripts/reconcile_migrations.py
+
 python manage.py migrate --no-input
