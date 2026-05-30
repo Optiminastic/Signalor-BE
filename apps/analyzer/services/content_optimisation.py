@@ -312,7 +312,24 @@ def _capture_page_render(url: str, storefront_password: str = "") -> dict:
 
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+            # Playwright 1.49+ uses chrome-headless-shell (a separate binary)
+            # by default when launching headless. On Render we've seen the
+            # build's install of chrome-headless-shell silently skip on a
+            # stale cache. Try the default first; if the shell is missing,
+            # fall back to the full chromium binary which `playwright install
+            # chromium` always lays down. Either path works for screenshots.
+            try:
+                browser = pw.chromium.launch(headless=True)
+            except Exception as launch_exc:
+                msg = str(launch_exc)
+                if "chrome-headless-shell" in msg or "chromium_headless_shell" in msg:
+                    logger.warning("chrome-headless-shell missing; falling back to chromium binary")
+                    browser = pw.chromium.launch(
+                        headless=True,
+                        executable_path=pw.chromium.executable_path,
+                    )
+                else:
+                    raise
             try:
                 context = browser.new_context(
                     viewport=_SCREENSHOT_VIEWPORT,
