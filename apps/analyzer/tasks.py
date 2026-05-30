@@ -827,15 +827,20 @@ def _generate_and_fire_competitive_prompts(run: AnalysisRun) -> None:
     the user having to trigger anything from the UI.
     """
     try:
-        # Idempotency: one set of auto-generated competitive prompts per run.
-        already = run.prompt_tracks.filter(
+        # Idempotency: count-based, not existence-based. Onboarding can plant a
+        # single COMPETITIVE-typed prompt (e.g. the hardcoded "Compare X with
+        # competitors" fallback from GeneratePromptsView), which would trip a
+        # naive .exists() check and skip generation entirely. Our auto-gen
+        # always produces 10 prompts, so saturation = >=10 already present.
+        existing_competitive = run.prompt_tracks.filter(
             prompt_type=PromptTrack.PromptSurfaceType.COMPETITIVE,
             is_custom=False,
             deleted_at__isnull=True,
-        ).exists()
-        if already:
+        ).count()
+        if existing_competitive >= 10:
             logger.info(
-                "Competitive prompts already exist for run %d; skipping auto-gen.", run.id
+                "Competitive prompts at saturation (%d>=10) for run %d; skipping auto-gen.",
+                existing_competitive, run.id,
             )
             return
 
