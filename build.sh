@@ -5,33 +5,39 @@ set -o pipefail
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Install Playwright browsers inside the playwright PACKAGE itself —
-# that's the ONE path Render's deploy snapshot actually preserves
-# verbatim (it's pip-installed content). We tried .ms-playwright/ in the
-# project root and .venv/ms-playwright/; both were empty at runtime even
-# though build.sh wrote to them. PLAYWRIGHT_BROWSERS_PATH=0 had a
-# different bug (install → driver/.local-browsers, launch → driver/
-# package/.local-browsers — mismatch). Resolving the path dynamically
-# from the installed playwright package and pointing both install AND
-# launch at it sidesteps both bugs.
-export PLAYWRIGHT_BROWSERS_PATH=$(python -c "import os, playwright; print(os.path.join(os.path.dirname(playwright.__file__), 'driver', 'package', '.local-browsers'))")
+# Where Playwright will LOOK for browsers at runtime: a directory inside the
+# installed playwright package. Render's deploy snapshot preserves this
+# location (it's part of pip-installed content), unlike .ms-playwright/
+# or .venv/ms-playwright/ which both turned out to be wiped on deploy.
+EXPECTED_AT=$(python -c "import os, playwright; print(os.path.join(os.path.dirname(playwright.__file__), 'driver', 'package', '.local-browsers'))")
+export PLAYWRIGHT_BROWSERS_PATH="$EXPECTED_AT"
+mkdir -p "$EXPECTED_AT"
 echo "[build.sh] PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH"
 
-# Chromium for Playwright-based page screenshots (content optimisation preview).
-# --with-deps installs the system libraries Chromium needs on Render's Linux image.
-# Playwright 1.49+ ships chrome-headless-shell as a SEPARATE browser binary,
-# used by default when launching with headless=True. If it's missing at runtime
-# the launch fails with:
-#   "Executable doesn't exist at .../chromium_headless_shell-XXXX/..."
-# Install both in a single call with --force so a stale cache directory can't
-# cause the second binary to be silently skipped on a partial cache hit.
-python -m playwright install --with-deps --force chromium chromium-headless-shell
+# Install chromium + chrome-headless-shell. PLAYWRIGHT_VERBOSE_LOGS so the
+# Render build log shows the actual download URLs and target directory —
+# critical for diagnosing "install said OK but binary isn't there" cases.
+PLAYWRIGHT_VERBOSE_LOGS=1 python -m playwright install --with-deps --force chromium chromium-headless-shell
 
-# Show what landed at the install root so build logs make it obvious if
-# the dir is empty or contains a different chromium build number than
-# the runtime expects.
-echo "[build.sh] installed browsers at $PLAYWRIGHT_BROWSERS_PATH:"
-ls -la "$PLAYWRIGHT_BROWSERS_PATH" 2>&1 || echo "(directory missing)"
+echo "[build.sh] contents of $EXPECTED_AT after install:"
+ls -la "$EXPECTED_AT" 2>&1 || echo "(directory missing)"
+
+# Belt-and-suspenders: if the install actually wrote to one of the default
+# cache locations instead of our target (we've seen install ignore the env
+# var on Render), mirror those into EXPECTED_AT so runtime finds them.
+# `cp -rn` won't overwrite — safe when the directories overlap.
+for src in \
+    "$HOME/.cache/ms-playwright" \
+    "/opt/render/.cache/ms-playwright" \
+    "$(python -c "import os, playwright; print(os.path.join(os.path.dirname(playwright.__file__), 'driver', '.local-browsers'))")"; do
+    if [ -d "$src" ] && [ -n "$(ls -A "$src" 2>/dev/null)" ] && [ "$src" != "$EXPECTED_AT" ]; then
+        echo "[build.sh] mirroring browsers from $src -> $EXPECTED_AT"
+        cp -rn "$src"/. "$EXPECTED_AT/" || true
+    fi
+done
+
+echo "[build.sh] final contents of $EXPECTED_AT:"
+ls -la "$EXPECTED_AT"
 
 # Hard verify both binaries actually landed on disk. We have been bitten by
 # the install command "succeeding" without producing chrome-headless-shell;
@@ -50,9 +56,8 @@ with sync_playwright() as pw:
     else:
         print(f"[playwright] chromium ok: {chromium_path}")
 
-    # chrome-headless-shell lives next to chromium under ms-playwright/.
-    # Resolve it by walking up to the browsers root and globbing for it
-    # so we don't hard-code the build number.
+    # chrome-headless-shell lives next to chromium under the same browsers
+    # root. Glob for it (build number isn't hard-coded).
     browsers_root = chromium_path.parents[2]
     shells = sorted(browsers_root.glob("chromium_headless_shell-*/chrome-headless-shell-*/chrome-headless-shell"))
     if not shells:
