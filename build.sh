@@ -5,16 +5,17 @@ set -o pipefail
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Install Playwright browsers INSIDE the .venv directory. Render's
-# Python service preserves .venv as the pip-cache artifact between build
-# and runtime; arbitrary project-root subdirs (like /opt/render/project/
-# src/.ms-playwright) DON'T survive the snapshot — we tried that and the
-# runtime found an empty dir. PLAYWRIGHT_BROWSERS_PATH=0 also misbehaved
-# (install vs launch resolved to different sub-paths in 1.60). An
-# explicit absolute path inside .venv is what actually sticks.
-# The same value must be set at runtime (render.yaml + the os.environ
-# force-set in content_optimisation.py).
-export PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.venv/ms-playwright
+# Install Playwright browsers inside the playwright PACKAGE itself —
+# that's the ONE path Render's deploy snapshot actually preserves
+# verbatim (it's pip-installed content). We tried .ms-playwright/ in the
+# project root and .venv/ms-playwright/; both were empty at runtime even
+# though build.sh wrote to them. PLAYWRIGHT_BROWSERS_PATH=0 had a
+# different bug (install → driver/.local-browsers, launch → driver/
+# package/.local-browsers — mismatch). Resolving the path dynamically
+# from the installed playwright package and pointing both install AND
+# launch at it sidesteps both bugs.
+export PLAYWRIGHT_BROWSERS_PATH=$(python -c "import os, playwright; print(os.path.join(os.path.dirname(playwright.__file__), 'driver', 'package', '.local-browsers'))")
+echo "[build.sh] PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH"
 
 # Chromium for Playwright-based page screenshots (content optimisation preview).
 # --with-deps installs the system libraries Chromium needs on Render's Linux image.

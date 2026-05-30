@@ -28,16 +28,23 @@ from urllib.parse import urlparse
 import requests
 from django.utils import timezone
 
-# Pin Playwright's browser-lookup path to the explicit path where build.sh
-# installs chromium. Render preserves /opt/render/project/src/ between build
-# and runtime but wipes ~/.cache/ms-playwright. Using PLAYWRIGHT_BROWSERS_PATH=0
-# also resolved to mismatched sub-paths at install vs launch in this Playwright
-# version, so we pin to an unambiguous absolute path on both sides.
-# Force-set (not setdefault): a leftover manual `=0` in the Render dashboard
-# was overriding setdefault and sending Playwright to a path the build never
-# installed to.
-_PLAYWRIGHT_BROWSERS_PATH = "/opt/render/project/src/.venv/ms-playwright"
-os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _PLAYWRIGHT_BROWSERS_PATH
+# Resolve the playwright browsers install directory dynamically from the
+# playwright package location. Must match build.sh's export so install and
+# launch agree on the same path. Going through the package itself is the
+# only sub-path Render's deploy snapshot reliably preserves — bare
+# project-root or .venv/ subdirs we created during build kept coming up
+# empty at runtime.
+try:
+    import playwright as _pw_pkg
+
+    _PLAYWRIGHT_BROWSERS_PATH = os.path.join(
+        os.path.dirname(_pw_pkg.__file__), "driver", "package", ".local-browsers"
+    )
+    # Force-set (not setdefault): a leftover manual entry in the Render
+    # dashboard would otherwise win and send Playwright somewhere stale.
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _PLAYWRIGHT_BROWSERS_PATH
+except ImportError:
+    _PLAYWRIGHT_BROWSERS_PATH = ""
 
 from apps.analyzer.auto_fix import (  # noqa: E402  (env var above must be set first)
     _call_llm,
@@ -89,6 +96,21 @@ def _resolve_chromium_executable() -> str:
         "/opt/render/project/src/.ms-playwright",
         os.path.expanduser("~/.cache/ms-playwright"),
     ]
+    # Also walk any candidate subpath under the playwright package itself,
+    # in case the install actually wrote to driver/.local-browsers/ instead
+    # of driver/package/.local-browsers/ (the 1.49+ install/launch mismatch).
+    try:
+        import playwright as _pw_pkg
+
+        _pw_dir = os.path.dirname(_pw_pkg.__file__)
+        roots.extend(
+            [
+                os.path.join(_pw_dir, "driver", ".local-browsers"),
+                os.path.join(_pw_dir, "driver", "package", ".local-browsers"),
+            ]
+        )
+    except ImportError:
+        pass
     for root in roots:
         if not root or not os.path.isdir(root):
             continue
