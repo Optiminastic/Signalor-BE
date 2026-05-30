@@ -13,21 +13,25 @@ services:
 
   - type: web
     name: signalor-backend
-    runtime: python
+    runtime: docker
     plan: starter
     region: oregon
-    buildCommand: ./build.sh
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # Migrations + drift reconciliation run once per deploy before traffic
+    # cuts over. Replaces the corresponding steps that used to live in
+    # build.sh (no longer used since the web service runs from the image).
+    preDeployCommand: "python scripts/reconcile_migrations.py && python manage.py migrate --no-input"
     startCommand: opentelemetry-instrument gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 600
     healthCheckPath: /api/auth/get-session
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.0
-      # PLAYWRIGHT_BROWSERS_PATH is now resolved DYNAMICALLY at runtime
-      # in apps/analyzer/services/content_optimisation.py (computed from
-      # the playwright package location, matching what build.sh wrote).
-      # Don't set it here — a stale value here would override the dynamic
-      # one. Keep it as a placeholder so anyone reading render.yaml sees
-      # that this used to be configured here.
+      # Re-enable the Playwright-backed screenshot capture in
+      # apps/analyzer/services/content_optimisation.py. We disabled it
+      # while the binary was getting wiped on the Python runtime; on
+      # this Docker image chromium is baked into the layer so the
+      # capture works reliably.
+      - key: ENABLE_SERVER_SCREENSHOTS
+        value: "1"
       # --- OpenTelemetry → Better Stack ---
       - key: OTEL_SERVICE_NAME
         value: signalor-backend
@@ -172,9 +176,9 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
-      # PLAYWRIGHT_BROWSERS_PATH is resolved dynamically at runtime by
-      # content_optimisation.py (see web service note above). Don't pin
-      # a static value here.
+      # Worker stays on the Python runtime — sitemap audits use plain
+      # requests, no Playwright needed here. If that ever changes, switch
+      # this service to runtime: docker too (using ./Dockerfile).
       - key: DJANGO_SETTINGS_MODULE
         value: config.settings.production
       - key: SECRET_KEY
