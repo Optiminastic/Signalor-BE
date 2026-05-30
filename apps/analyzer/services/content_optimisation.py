@@ -33,16 +33,19 @@ from django.utils import timezone
 # and runtime but wipes ~/.cache/ms-playwright. Using PLAYWRIGHT_BROWSERS_PATH=0
 # also resolved to mismatched sub-paths at install vs launch in this Playwright
 # version, so we pin to an unambiguous absolute path on both sides.
-# setdefault so render.yaml or a manual env var can still override.
-os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "/opt/render/project/src/.ms-playwright")
+# Force-set (not setdefault): a leftover manual `=0` in the Render dashboard
+# was overriding setdefault and sending Playwright to a path the build never
+# installed to.
+_PLAYWRIGHT_BROWSERS_PATH = "/opt/render/project/src/.ms-playwright"
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _PLAYWRIGHT_BROWSERS_PATH
 
-from apps.analyzer.auto_fix import (
+from apps.analyzer.auto_fix import (  # noqa: E402  (env var above must be set first)
     _call_llm,
     _normalize_plugin_status,
     _send_to_plugin,
 )
-from apps.analyzer.integration_resolve import resolve_store_integration_for_run
-from apps.analyzer.models import (
+from apps.analyzer.integration_resolve import resolve_store_integration_for_run  # noqa: E402
+from apps.analyzer.models import (  # noqa: E402
     AnalysisRun,
     ContentSuggestion,
     SitemapAudit,
@@ -69,6 +72,30 @@ _FIELD_TO_FIX_TYPE = {
 
 class ContentOptimisationError(Exception):
     """Raised on unrecoverable failures (no plugin + no public HTML, etc.)."""
+
+
+def _resolve_chromium_executable() -> str:
+    """Find the installed chromium binary on disk under the build's install
+    directory. Empty string if nothing matches — caller falls back to
+    Playwright's own lookup. We do this manually so the launch never
+    depends on PLAYWRIGHT_BROWSERS_PATH being honoured at runtime
+    (Render dashboard env vars have bitten us here).
+    """
+    import glob
+
+    roots = [
+        _PLAYWRIGHT_BROWSERS_PATH,
+        "/opt/render/project/src/.ms-playwright",
+        os.path.expanduser("~/.cache/ms-playwright"),
+    ]
+    for root in roots:
+        if not root or not os.path.isdir(root):
+            continue
+        # Prefer the newest chromium-XXXX/ in that root.
+        matches = sorted(glob.glob(os.path.join(root, "chromium-*/chrome-linux*/chrome")))
+        if matches:
+            return matches[-1]
+    return ""
 
 
 # ── Page list ────────────────────────────────────────────────────────────
@@ -322,20 +349,23 @@ def _capture_page_render(url: str, storefront_password: str = "") -> dict:
     try:
         with sync_playwright() as pw:
             # Playwright 1.49+ uses chrome-headless-shell (a separate binary)
-            # by default when launching headless. On Render we've seen the
-            # build's install of chrome-headless-shell silently skip on a
-            # stale cache. Try the default first; if the shell is missing,
-            # fall back to the full chromium binary which `playwright install
-            # chromium` always lays down. Either path works for screenshots.
+            # by default when launching headless. On Render we've seen
+            # Playwright look in the wrong directory because a leftover
+            # PLAYWRIGHT_BROWSERS_PATH=0 in the dashboard was overriding our
+            # env config — so the env-var lookup found nothing even after
+            # build.sh installed browsers at /opt/render/project/src/.ms-playwright.
+            # Resolve the actual installed binary on disk and pass it via
+            # executable_path so the launch never depends on env var state.
+            executable_path = _resolve_chromium_executable() or None
             try:
-                browser = pw.chromium.launch(headless=True)
+                browser = pw.chromium.launch(headless=True, executable_path=executable_path)
             except Exception as launch_exc:
                 msg = str(launch_exc)
                 if "chrome-headless-shell" in msg or "chromium_headless_shell" in msg:
                     logger.warning("chrome-headless-shell missing; falling back to chromium binary")
                     browser = pw.chromium.launch(
                         headless=True,
-                        executable_path=pw.chromium.executable_path,
+                        executable_path=executable_path or pw.chromium.executable_path,
                     )
                 else:
                     raise
