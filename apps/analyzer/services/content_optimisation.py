@@ -21,11 +21,20 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 from urllib.parse import urlparse
 
 import requests
 from django.utils import timezone
+
+# Pin Playwright's browser-lookup path to the in-venv install location BEFORE
+# any playwright code runs. Render preserves the venv between build and
+# runtime but wipes ~/.cache/ms-playwright, so the default path lookup fails
+# at runtime even when build.sh successfully installed chromium. Setting this
+# here (in code) instead of relying on render.yaml env vars makes the fix
+# self-contained — works regardless of whether the Blueprint sync ran.
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
 
 from apps.analyzer.auto_fix import (
     _call_llm,
