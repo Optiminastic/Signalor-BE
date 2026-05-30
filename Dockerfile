@@ -11,7 +11,30 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DJANGO_SETTINGS_MODULE=config.settings.production \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+# System packages: the python:3.11-slim base strips out compilers, but
+# several deps need to build from source on install or load shared libs
+# at runtime:
+#   - pycairo (via xhtml2pdf > svglib): build-essential, pkg-config,
+#     libcairo2-dev — slim has no `cc`, install fails with "Unknown
+#     compiler(s): [['cc'], ['gcc'], ...]"
+#   - weasyprint: libpango, libgdk-pixbuf (loaded at runtime)
+#   - playwright `install --with-deps` shells out to apt-get itself, which
+#     needs the package manager available
+# Keep build tools in the final image for now — chromium dominates size
+# (~1.5 GB), shaving 200 MB off doesn't change the deploy economics.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    pkg-config \
+    libcairo2-dev \
+    libpango1.0-dev \
+    libffi-dev \
+    libgdk-pixbuf2.0-dev \
+    shared-mime-info \
+    fontconfig \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
