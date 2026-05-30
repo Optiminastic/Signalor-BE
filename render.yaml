@@ -26,7 +26,7 @@ services:
       # for chromium / chrome-headless-shell inside the venv (preserved by
       # Render) instead of ~/.cache (wiped between build and deploy).
       - key: PLAYWRIGHT_BROWSERS_PATH
-        value: /opt/render/project/src/.ms-playwright
+        value: /opt/render/project/src/.venv/ms-playwright
       # --- OpenTelemetry → Better Stack ---
       - key: OTEL_SERVICE_NAME
         value: signalor-backend
@@ -174,7 +174,7 @@ services:
       # Sitemap audits run Playwright in the worker too; same in-venv path
       # as the web service so the browsers we install in build.sh are found.
       - key: PLAYWRIGHT_BROWSERS_PATH
-        value: /opt/render/project/src/.ms-playwright
+        value: /opt/render/project/src/.venv/ms-playwright
       - key: DJANGO_SETTINGS_MODULE
         value: config.settings.production
       - key: SECRET_KEY

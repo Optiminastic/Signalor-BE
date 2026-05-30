@@ -36,7 +36,7 @@ from django.utils import timezone
 # Force-set (not setdefault): a leftover manual `=0` in the Render dashboard
 # was overriding setdefault and sending Playwright to a path the build never
 # installed to.
-_PLAYWRIGHT_BROWSERS_PATH = "/opt/render/project/src/.ms-playwright"
+_PLAYWRIGHT_BROWSERS_PATH = "/opt/render/project/src/.venv/ms-playwright"
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _PLAYWRIGHT_BROWSERS_PATH
 
 from apps.analyzer.auto_fix import (  # noqa: E402  (env var above must be set first)
@@ -85,6 +85,7 @@ def _resolve_chromium_executable() -> str:
 
     roots = [
         _PLAYWRIGHT_BROWSERS_PATH,
+        "/opt/render/project/src/.venv/ms-playwright",
         "/opt/render/project/src/.ms-playwright",
         os.path.expanduser("~/.cache/ms-playwright"),
     ]

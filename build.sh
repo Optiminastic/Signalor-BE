@@ -5,15 +5,16 @@ set -o pipefail
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Install Playwright browsers into an EXPLICIT path under the project
-# directory (preserved by Render between build and runtime). The default
-# ~/.cache/ms-playwright is wiped on deploy, and PLAYWRIGHT_BROWSERS_PATH=0
-# resolves to different sub-paths at install vs launch in 1.49+ (install
-# wrote one location, launch looked under .../driver/package/.local-browsers/
-# and 404'd). An explicit path is unambiguous on both sides.
-# The same value must be set on the runtime services (see render.yaml and
-# the os.environ.setdefault in content_optimisation.py).
-export PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.ms-playwright
+# Install Playwright browsers INSIDE the .venv directory. Render's
+# Python service preserves .venv as the pip-cache artifact between build
+# and runtime; arbitrary project-root subdirs (like /opt/render/project/
+# src/.ms-playwright) DON'T survive the snapshot — we tried that and the
+# runtime found an empty dir. PLAYWRIGHT_BROWSERS_PATH=0 also misbehaved
+# (install vs launch resolved to different sub-paths in 1.60). An
+# explicit absolute path inside .venv is what actually sticks.
+# The same value must be set at runtime (render.yaml + the os.environ
+# force-set in content_optimisation.py).
+export PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.venv/ms-playwright
 
 # Chromium for Playwright-based page screenshots (content optimisation preview).
 # --with-deps installs the system libraries Chromium needs on Render's Linux image.
@@ -24,6 +25,12 @@ export PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.ms-playwright
 # Install both in a single call with --force so a stale cache directory can't
 # cause the second binary to be silently skipped on a partial cache hit.
 python -m playwright install --with-deps --force chromium chromium-headless-shell
+
+# Show what landed at the install root so build logs make it obvious if
+# the dir is empty or contains a different chromium build number than
+# the runtime expects.
+echo "[build.sh] installed browsers at $PLAYWRIGHT_BROWSERS_PATH:"
+ls -la "$PLAYWRIGHT_BROWSERS_PATH" 2>&1 || echo "(directory missing)"
 
 # Hard verify both binaries actually landed on disk. We have been bitten by
 # the install command "succeeding" without producing chrome-headless-shell;
