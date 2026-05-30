@@ -104,7 +104,6 @@ urlpatterns = [
         CompetitorPromptListView.as_view(),
         name="competitor-prompt-list",
     ),
-    path("runs/s/<str:slug>/competitor-prompts/", CompetitorPromptListView.as_view(), name="competitor-prompt-list"),
     path(
         "runs/s/<str:slug>/prompts/<int:track_id>/results/<int:result_id>/",
         PromptResultDetailView.as_view(),
