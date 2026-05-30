@@ -832,6 +832,16 @@ class StartAnalysisView(APIView):
         )
 
 
+# The analysis pipeline runs in a background thread (no Celery), so a worker
+# restart — redeploy, crash, instance recycle — kills it mid-run and leaves the
+# AnalysisRun stuck in a non-terminal status forever, which the frontend polls
+# indefinitely. If a run hasn't advanced (updated_at) within this window, the
+# worker is gone; we mark it failed on the next poll so the UI recovers on its
+# own. A single-page analysis normally finishes in well under a minute.
+_TERMINAL_RUN_STATUSES = {AnalysisRun.Status.COMPLETE, AnalysisRun.Status.FAILED}
+_STALE_RUN_TIMEOUT = timedelta(minutes=5)
+
+
 class AnalysisRunBySlugView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [PollingThrottle]
@@ -853,6 +863,16 @@ class AnalysisRunBySlugView(APIView):
                 {"error": "Project not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+        # Self-heal orphaned runs whose background worker died (see note above).
+        if run.status not in _TERMINAL_RUN_STATUSES and run.updated_at < timezone.now() - _STALE_RUN_TIMEOUT:
+            run.status = AnalysisRun.Status.FAILED
+            if not run.error_message:
+                run.error_message = (
+                    "Analysis stalled — no progress for over 5 minutes, so the "
+                    "background worker likely restarted. Please re-run the analysis."
+                )
+            run.save(update_fields=["status", "error_message", "updated_at"])
 
         serializer = AnalysisRunDetailSerializer(run)
         return Response(serializer.data)
@@ -2047,8 +2067,7 @@ class CompetitorPromptListView(APIView):
         # Prompts whose AI responses cited a competitor domain — the signal
         # is recorded on PromptCitation.is_competitor at scoring time.
         competitive_prompt_ids = (
-            PromptCitation.objects
-            .filter(
+            PromptCitation.objects.filter(
                 prompt_result__prompt_track__analysis_run=run,
                 is_competitor=True,
             )
@@ -2060,15 +2079,13 @@ class CompetitorPromptListView(APIView):
         # where the prompt was classified but its AI results haven't been
         # scored yet, so no PromptCitation rows exist).
         tracks = (
-            run.prompt_tracks
-               .filter(deleted_at__isnull=True)
-               .filter(
-                   Q(id__in=competitive_prompt_ids)
-                   | Q(prompt_type=PromptTrack.PromptSurfaceType.COMPETITIVE)
-               )
-               .select_related("analysis_run")
-               .prefetch_related("results", "results__citations")
-               .order_by("-score", "-created_at")
+            run.prompt_tracks.filter(deleted_at__isnull=True)
+            .filter(
+                Q(id__in=competitive_prompt_ids) | Q(prompt_type=PromptTrack.PromptSurfaceType.COMPETITIVE)
+            )
+            .select_related("analysis_run")
+            .prefetch_related("results", "results__citations")
+            .order_by("-score", "-created_at")
         )
 
         # Build a {domain -> competitor payload} map once for cheap lookup
@@ -2082,7 +2099,7 @@ class CompetitorPromptListView(APIView):
         serialized = PromptTrackSerializer(tracks, many=True).data
         # Decorate each serialized prompt with the distinct competitors its
         # AI citations actually surfaced. Keyed by id to dedupe across engines.
-        for payload, track in zip(serialized, tracks):
+        for payload, track in zip(serialized, tracks, strict=True):
             mentioned: dict[int, dict] = {}
             for pr in track.results.all():
                 for cit in pr.citations.all():
