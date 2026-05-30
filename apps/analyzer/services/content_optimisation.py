@@ -28,35 +28,32 @@ from urllib.parse import urlparse
 import requests
 from django.utils import timezone
 
-# Resolve the playwright browsers install directory dynamically from the
-# playwright package location. Must match build.sh's export so install and
-# launch agree on the same path. Going through the package itself is the
-# only sub-path Render's deploy snapshot reliably preserves — bare
-# project-root or .venv/ subdirs we created during build kept coming up
-# empty at runtime.
-try:
-    import playwright as _pw_pkg
-
-    _PLAYWRIGHT_BROWSERS_PATH = os.path.join(
-        os.path.dirname(_pw_pkg.__file__), "driver", "package", ".local-browsers"
-    )
-    # Force-set (not setdefault): a leftover manual entry in the Render
-    # dashboard would otherwise win and send Playwright somewhere stale.
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _PLAYWRIGHT_BROWSERS_PATH
-except ImportError:
-    _PLAYWRIGHT_BROWSERS_PATH = ""
-
-from apps.analyzer.auto_fix import (  # noqa: E402  (env var above must be set first)
+from apps.analyzer.auto_fix import (
     _call_llm,
     _normalize_plugin_status,
     _send_to_plugin,
 )
-from apps.analyzer.integration_resolve import resolve_store_integration_for_run  # noqa: E402
-from apps.analyzer.models import (  # noqa: E402
+from apps.analyzer.integration_resolve import resolve_store_integration_for_run
+from apps.analyzer.models import (
     AnalysisRun,
     ContentSuggestion,
     SitemapAudit,
     SitemapAuditPage,
+)
+
+# Server-side screenshot capture via Playwright is disabled by default
+# because Render's deploy snapshot does not reliably preserve the
+# chromium binary across deploys — install succeeded at build time but
+# the file vanished at runtime no matter where we pointed
+# PLAYWRIGHT_BROWSERS_PATH (project root, .venv/, even inside the
+# playwright package itself). Set ENABLE_SERVER_SCREENSHOTS=1 on a
+# host where the binary actually persists (e.g. local dev, Docker image
+# with chromium baked in) to re-enable. The FE handles the empty
+# preview cleanly with a "Couldn't generate a visual preview" placeholder.
+_SERVER_SCREENSHOTS_ENABLED = os.environ.get("ENABLE_SERVER_SCREENSHOTS", "").lower() in (
+    "1",
+    "true",
+    "yes",
 )
 
 logger = logging.getLogger("apps")
@@ -79,46 +76,6 @@ _FIELD_TO_FIX_TYPE = {
 
 class ContentOptimisationError(Exception):
     """Raised on unrecoverable failures (no plugin + no public HTML, etc.)."""
-
-
-def _resolve_chromium_executable() -> str:
-    """Find the installed chromium binary on disk under the build's install
-    directory. Empty string if nothing matches — caller falls back to
-    Playwright's own lookup. We do this manually so the launch never
-    depends on PLAYWRIGHT_BROWSERS_PATH being honoured at runtime
-    (Render dashboard env vars have bitten us here).
-    """
-    import glob
-
-    roots = [
-        _PLAYWRIGHT_BROWSERS_PATH,
-        "/opt/render/project/src/.venv/ms-playwright",
-        "/opt/render/project/src/.ms-playwright",
-        os.path.expanduser("~/.cache/ms-playwright"),
-    ]
-    # Also walk any candidate subpath under the playwright package itself,
-    # in case the install actually wrote to driver/.local-browsers/ instead
-    # of driver/package/.local-browsers/ (the 1.49+ install/launch mismatch).
-    try:
-        import playwright as _pw_pkg
-
-        _pw_dir = os.path.dirname(_pw_pkg.__file__)
-        roots.extend(
-            [
-                os.path.join(_pw_dir, "driver", ".local-browsers"),
-                os.path.join(_pw_dir, "driver", "package", ".local-browsers"),
-            ]
-        )
-    except ImportError:
-        pass
-    for root in roots:
-        if not root or not os.path.isdir(root):
-            continue
-        # Prefer the newest chromium-XXXX/ in that root.
-        matches = sorted(glob.glob(os.path.join(root, "chromium-*/chrome-linux*/chrome")))
-        if matches:
-            return matches[-1]
-    return ""
 
 
 # ── Page list ────────────────────────────────────────────────────────────
@@ -363,6 +320,10 @@ def _capture_page_render(url: str, storefront_password: str = "") -> dict:
     Returns empty fields on any failure — caller falls back gracefully.
     """
     empty = {"image": "", "elements": [], "viewport_width": _SCREENSHOT_VIEWPORT["width"]}
+    if not _SERVER_SCREENSHOTS_ENABLED:
+        # Disabled on hosts where chromium can't be relied on (Render today).
+        # FE renders the "Couldn't generate a visual preview" placeholder.
+        return empty
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -371,27 +332,7 @@ def _capture_page_render(url: str, storefront_password: str = "") -> dict:
 
     try:
         with sync_playwright() as pw:
-            # Playwright 1.49+ uses chrome-headless-shell (a separate binary)
-            # by default when launching headless. On Render we've seen
-            # Playwright look in the wrong directory because a leftover
-            # PLAYWRIGHT_BROWSERS_PATH=0 in the dashboard was overriding our
-            # env config — so the env-var lookup found nothing even after
-            # build.sh installed browsers at /opt/render/project/src/.ms-playwright.
-            # Resolve the actual installed binary on disk and pass it via
-            # executable_path so the launch never depends on env var state.
-            executable_path = _resolve_chromium_executable() or None
-            try:
-                browser = pw.chromium.launch(headless=True, executable_path=executable_path)
-            except Exception as launch_exc:
-                msg = str(launch_exc)
-                if "chrome-headless-shell" in msg or "chromium_headless_shell" in msg:
-                    logger.warning("chrome-headless-shell missing; falling back to chromium binary")
-                    browser = pw.chromium.launch(
-                        headless=True,
-                        executable_path=executable_path or pw.chromium.executable_path,
-                    )
-                else:
-                    raise
+            browser = pw.chromium.launch(headless=True)
             try:
                 context = browser.new_context(
                     viewport=_SCREENSHOT_VIEWPORT,
