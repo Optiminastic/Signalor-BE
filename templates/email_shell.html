@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="x-apple-disable-message-reformatting">
+  <meta name="color-scheme" content="light only">
+  <meta name="supported-color-schemes" content="light only">
+  <title>{% block title %}Signalor{% endblock %}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f7f7f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#171717;-webkit-font-smoothing:antialiased;">
+
+  {# Hidden inbox-preview snippet — overridden per template for better open rates #}
+  <div style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:#f7f7f7;opacity:0;">
+    {% block preheader %}{% endblock %}
+  </div>
+
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#f7f7f7;">
+    <tr>
+      <td align="center" style="padding:32px 16px 40px 16px;">
+
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="max-width:560px;">
+
+          {# ── Card ── #}
+          <tr>
+            <td style="background-color:#ffffff;border-radius:14px;border:1px solid rgba(0,0,0,0.06);box-shadow:0 1px 2px rgba(0,0,0,0.04);overflow:hidden;">
+              <div style="padding:32px 32px 36px 32px;">
+
+                {# Brand strip: logo + wordmark, top-left of card #}
+                <a href="{{ frontend_url }}" style="text-decoration:none;display:block;margin:0 0 24px 0;">
+                  <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+                    <tr>
+                      <td style="vertical-align:middle;padding:0;">
+                        <img src="{{ logo_url }}" alt="Signalor" width="28" height="28" style="display:block;border:0;outline:none;">
+                      </td>
+                      <td style="vertical-align:middle;padding:0 0 0 10px;">
+                        <span style="font-size:16px;font-weight:600;color:#171717;letter-spacing:-0.01em;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">Signalor.ai</span>
+                      </td>
+                    </tr>
+                  </table>
+                </a>
+
+                {% block body %}{% endblock %}
+              </div>
+            </td>
+          </tr>
+
+          {# ── Footer ── #}
+          <tr>
+            <td align="center" style="padding:24px 16px 0 16px;">
+              <p style="margin:0 0 6px 0;font-size:12px;color:#737373;line-height:1.6;">
+                {% block footer_blurb %}You're receiving this because you signed up at <a href="{{ frontend_url }}" style="color:#737373;text-decoration:underline;">Signalor.ai</a>.{% endblock %}
+              </p>
+              <p style="margin:0 0 6px 0;font-size:11px;color:#a3a3a3;line-height:1.6;">
+                &copy; Signalor &middot; AI search visibility platform
+              </p>
+              {% if unsubscribe_url %}
+              <p style="margin:0;font-size:11px;color:#a3a3a3;line-height:1.6;">
+                <a href="{{ unsubscribe_url }}" style="color:#a3a3a3;text-decoration:underline;">Unsubscribe</a>
+              </p>
+              {% endif %}
+            </td>
+          </tr>
+
+        </table>
+
+      </td>
+    </tr>
+  </table>
+
+</body>
+</html>

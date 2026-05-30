@@ -1,0 +1,12 @@
+Hey {{ first_name|default:"there" }},
+
+I saw you ran an audit for {{ domain|default:"your site" }} a few days ago but didn't activate.
+
+If something's blocking — pricing, an integration concern, just not the right week — would you tell me what it is? Even a one-line reply helps me figure out where Signalor is falling short.
+
+Not trying to sell you anything in this email. Just want to understand.
+
+Rishi
+Founder, Signalor
+
+To stop receiving these: reply STOP.

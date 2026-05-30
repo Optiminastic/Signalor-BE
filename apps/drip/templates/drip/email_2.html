@@ -1,0 +1,54 @@
+{% extends "email_shell.html" %}
+
+{% block title %}How Signalor pricing actually works{% endblock %}
+
+{% block preheader %}Four common questions answered before you activate.{% endblock %}
+
+{% block body %}
+  <p style="margin:0 0 6px 0;font-size:12px;font-weight:600;color:#e04a3d;letter-spacing:0.04em;text-transform:uppercase;">Before you activate</p>
+  <h1 style="margin:0 0 18px 0;font-size:22px;font-weight:700;color:#171717;letter-spacing:-0.01em;line-height:1.3;">
+    Quick answers, {{ first_name|default:"there" }}
+  </h1>
+
+  <p style="margin:0 0 22px 0;font-size:15px;color:#404040;line-height:1.65;">
+    A few things people ask before activating Signalor for <strong style="color:#171717;">{{ domain|default:"their domain" }}</strong>:
+  </p>
+
+  <div style="margin:0 0 16px 0;">
+    <p style="margin:0 0 6px 0;font-size:14.5px;font-weight:600;color:#171717;">Is there a contract?</p>
+    <p style="margin:0;font-size:14px;color:#404040;line-height:1.7;">
+      No. Monthly billing, cancel any time from your dashboard.
+    </p>
+  </div>
+
+  <div style="margin:0 0 16px 0;">
+    <p style="margin:0 0 6px 0;font-size:14.5px;font-weight:600;color:#171717;">What's the difference between plans?</p>
+    <p style="margin:0;font-size:14px;color:#404040;line-height:1.7;">
+      Starter covers single-brand GEO tracking. Pro adds multi-platform integrations (Shopify, WordPress) and scheduled re-analysis. Max adds Claude visibility and citation trend tracking for agencies.
+    </p>
+  </div>
+
+  <div style="margin:0 0 16px 0;">
+    <p style="margin:0 0 6px 0;font-size:14.5px;font-weight:600;color:#171717;">Do my recommendations expire?</p>
+    <p style="margin:0;font-size:14px;color:#404040;line-height:1.7;">
+      No. Once you activate, your audit and all {% if fix_count %}{{ fix_count }} {% endif %}fixes stay in your dashboard.
+    </p>
+  </div>
+
+  <div style="margin:0 0 28px 0;">
+    <p style="margin:0 0 6px 0;font-size:14.5px;font-weight:600;color:#171717;">Is the score auditable?</p>
+    <p style="margin:0;font-size:14px;color:#404040;line-height:1.7;">
+      Yes &mdash; every fix is sourced from a specific prompt response, and you can re-run any audit on demand.
+    </p>
+  </div>
+
+  <div style="text-align:left;margin:0;">
+    <a href="{{ pricing_url }}" style="display:inline-block;padding:13px 28px;background-color:#e04a3d;color:#ffffff;text-decoration:none;border-radius:9px;font-size:14px;font-weight:600;letter-spacing:-0.01em;">
+      See plans &rarr;
+    </a>
+  </div>
+{% endblock %}
+
+{% block footer_blurb %}
+  Reply with any other questions &mdash; we read every email.
+{% endblock %}

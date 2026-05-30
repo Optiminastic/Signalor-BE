@@ -1,0 +1,14 @@
+Hey {{ first_name|default:"there" }},
+
+Your Signalor workspace for {{ domain|default:"your domain" }} is configured and waiting. Here's what's in it:
+{% if geo_score %}
+- GEO Score: {{ geo_score|floatformat:0 }}/100 baseline{% endif %}{% if issue_count %}
+- {{ issue_count }} fixable issues detected{% if domain %} on {{ domain }}{% endif %}{% endif %}{% if top_recommendation_title %}
+- Top recommendation: {{ top_recommendation_title }}{% endif %}{% if competitor_count %}
+- {{ competitor_count }} competitors tracked{% if competitor_list %}: {{ competitor_list }}{% endif %}{% endif %}
+
+{% if cms_platform == "shopify" %}Your Shopify integration is ready to connect. One click and Signalor starts auto-applying schema, citations, and content fixes ranked by impact.{% elif cms_platform == "wordpress" %}Your WordPress plugin is ready to connect. Once linked, fixes auto-apply with one click — no copy-paste, no devs.{% else %}Your recommendations are ready. Activate to unlock guided fixes and weekly tracking.{% endif %}
+
+Activate Signalor: {{ pricing_url }}
+
+— Signalor

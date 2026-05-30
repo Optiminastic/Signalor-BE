@@ -1,0 +1,13 @@
+Hey {{ first_name|default:"there" }},
+
+{% if geo_score %}Your GEO audit for {{ domain|default:"your site" }} scored {{ geo_score|floatformat:0 }}/100.{% else %}Your GEO audit for {{ domain|default:"your site" }} is ready.{% endif %}
+
+Activating unlocks:
+
+- Live citation tracking across ChatGPT, Perplexity, Gemini, Copilot
+- Your top {% if fix_count %}{{ fix_count }} {% endif %}prioritized fixes (ranked by citation impact)
+- Weekly competitor delta{% if top_competitor %} vs. {{ top_competitor }}{% endif %}
+
+Continue to checkout: {{ pricing_url }}
+
+— Signalor

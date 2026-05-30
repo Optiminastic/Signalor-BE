@@ -1,0 +1,61 @@
+{% extends "email_shell.html" %}
+
+{% block title %}Your Signalor workspace for {{ domain }} is configured{% endblock %}
+
+{% block preheader %}{% if issue_count %}{{ issue_count }} fixable issues detected. {% endif %}Activate to start fixing.{% endblock %}
+
+{% block body %}
+  <p style="margin:0 0 6px 0;font-size:12px;font-weight:600;color:#e04a3d;letter-spacing:0.04em;text-transform:uppercase;">Workspace ready</p>
+  <h1 style="margin:0 0 18px 0;font-size:22px;font-weight:700;color:#171717;letter-spacing:-0.01em;line-height:1.3;">
+    {{ first_name|default:"Hey" }}, your workspace is waiting
+  </h1>
+
+  <p style="margin:0 0 20px 0;font-size:15px;color:#404040;line-height:1.65;">
+    Your Signalor workspace for <strong style="color:#171717;">{{ domain|default:"your domain" }}</strong> is configured and ready. Here's what's in it:
+  </p>
+
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#f7f7f7;border:1px solid rgba(0,0,0,0.06);border-radius:10px;margin:0 0 24px 0;">
+    <tr><td style="padding:16px 18px;">
+      {% if geo_score %}
+      <p style="margin:0 0 10px 0;font-size:14px;color:#404040;line-height:1.55;">
+        <span style="color:#737373;">GEO Score:</span> <strong style="color:#e04a3d;">{{ geo_score|floatformat:0 }}/100</strong> baseline
+      </p>
+      {% endif %}
+      {% if issue_count %}
+      <p style="margin:0 0 10px 0;font-size:14px;color:#404040;line-height:1.55;">
+        <span style="color:#737373;">Fixable issues:</span> <strong style="color:#171717;">{{ issue_count }}</strong>{% if domain %} on {{ domain }}{% endif %}
+      </p>
+      {% endif %}
+      {% if top_recommendation_title %}
+      <p style="margin:0 0 10px 0;font-size:14px;color:#404040;line-height:1.55;">
+        <span style="color:#737373;">Top recommendation:</span> <strong style="color:#171717;">{{ top_recommendation_title }}</strong>
+      </p>
+      {% endif %}
+      {% if competitor_count %}
+      <p style="margin:0;font-size:14px;color:#404040;line-height:1.55;">
+        <span style="color:#737373;">Competitors tracked:</span> <strong style="color:#171717;">{{ competitor_count }}</strong>{% if competitor_list %} &mdash; {{ competitor_list }}{% endif %}
+      </p>
+      {% endif %}
+    </td></tr>
+  </table>
+
+  {% if cms_platform == "shopify" %}
+  <p style="margin:0 0 22px 0;font-size:14.5px;color:#404040;line-height:1.7;">
+    Your Shopify integration is ready to connect. One click and Signalor starts auto-applying schema, citations, and content fixes ranked by impact.
+  </p>
+  {% elif cms_platform == "wordpress" %}
+  <p style="margin:0 0 22px 0;font-size:14.5px;color:#404040;line-height:1.7;">
+    Your WordPress plugin is ready to connect. Once linked, fixes auto-apply with one click &mdash; no copy-paste, no devs.
+  </p>
+  {% else %}
+  <p style="margin:0 0 22px 0;font-size:14.5px;color:#404040;line-height:1.7;">
+    Your recommendations are ready. Activate to unlock guided fixes and weekly tracking.
+  </p>
+  {% endif %}
+
+  <div style="text-align:left;margin:0;">
+    <a href="{{ pricing_url }}" style="display:inline-block;padding:13px 28px;background-color:#e04a3d;color:#ffffff;text-decoration:none;border-radius:9px;font-size:14px;font-weight:600;letter-spacing:-0.01em;">
+      Activate Signalor &rarr;
+    </a>
+  </div>
+{% endblock %}
