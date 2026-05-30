@@ -51,8 +51,14 @@ RUN playwright install --with-deps chromium chromium-headless-shell
 # App source last so code changes don't bust the chromium install layer.
 COPY . .
 
-# Collect static at build time so the runtime container is read-only-ish.
-RUN python manage.py collectstatic --no-input
+# Collect static at build time so the staticfiles ship with the image.
+# Override DJANGO_SETTINGS_MODULE for this step only: production settings
+# require SECRET_KEY, CORS_ALLOWED_ORIGINS, REDIS_URL to even import, and
+# none of those exist during a Docker build (Render injects them at
+# runtime). collectstatic just walks STATIC dirs — both settings produce
+# the same output. The container's runtime DJANGO_SETTINGS_MODULE
+# remains production (set by ENV above).
+RUN DJANGO_SETTINGS_MODULE=config.settings.development python manage.py collectstatic --no-input
 
 # Render injects $PORT; fall back to 10000 for local docker run.
 CMD opentelemetry-instrument gunicorn config.wsgi:application \
