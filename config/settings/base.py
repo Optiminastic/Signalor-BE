@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+from corsheaders.defaults import default_headers as default_cors_headers
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -275,6 +276,11 @@ CORS_ALLOWED_ORIGINS = [
     for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000").split(",")
     if origin.strip()
 ]
+# The onboarding gate sends a custom X-Onboarding-Token header. It isn't in
+# django-cors-headers' default allow-list, so without this the browser passes
+# the preflight (OPTIONS 200) but blocks the actual request — the FE then shows
+# "Cannot reach the server." Extend the defaults rather than replace them.
+CORS_ALLOW_HEADERS = (*default_cors_headers, "x-onboarding-token")
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
