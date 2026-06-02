@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     "apps.accounts.apps.AccountsConfig",
     "apps.organizations.apps.OrganizationsConfig",
     "apps.analyzer.apps.AnalyzerConfig",
+    "apps.drip.apps.DripConfig",
     "apps.integrations.apps.IntegrationsConfig",
     "apps.visibility.apps.VisibilityConfig",
     "apps.recommendation.apps.RecommendationConfig",
@@ -250,18 +251,52 @@ ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", "")
 DATAFORSEO_LOGIN = os.getenv("DATAFORSEO_LOGIN", "")
 DATAFORSEO_PASSWORD = os.getenv("DATAFORSEO_PASSWORD", "")
 
+# Scraping-API fallback for the crawler. When a direct crawl is hard-blocked
+# (e.g. 403 from a Cloudflare/WAF against our datacenter IPs), the crawler
+# re-fetches via this API from residential IPs. Disabled (no behavior change)
+# until SCRAPER_API_KEY is set. Provider: "scrapingbee" (default) or "scraperapi".
+# SCRAPER_RENDER_JS toggles JS rendering (more expensive; off by default since
+# the common block is IP-reputation based, not a JS challenge).
+SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "")
+SCRAPER_API_PROVIDER = os.getenv("SCRAPER_API_PROVIDER", "scrapingbee")
+SCRAPER_RENDER_JS = os.getenv("SCRAPER_RENDER_JS", "false").lower() == "true"
+
 # Cloudflare Turnstile (anti-bot for public AI endpoints). When unset the
 # server-side check is skipped — useful for dev/staging without a CF account.
 # The frontend respects NEXT_PUBLIC_TURNSTILE_SITE_KEY independently.
 TURNSTILE_SECRET = os.getenv("TURNSTILE_SECRET", "")
 
+AMPLITUDE_API_KEY = os.getenv("AMPLITUDE_API_KEY", "")
+
+# Drip + transactional emails relay through SendGrid SMTP when configured;
+# otherwise the legacy SMTP_USER/SMTP_PASS path stays active.
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
+
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
-EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
+if SENDGRID_API_KEY:
+    EMAIL_HOST = "smtp.sendgrid.net"
+    EMAIL_HOST_USER = "apikey"
+    EMAIL_HOST_PASSWORD = SENDGRID_API_KEY
+else:
+    EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
+    EMAIL_HOST_USER = os.getenv("SMTP_USER", "")
+    EMAIL_HOST_PASSWORD = os.getenv("SMTP_PASS", "")
 EMAIL_PORT = int(os.getenv("EMAIL_PORT", 587))
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = os.getenv("SMTP_USER", "")
-EMAIL_HOST_PASSWORD = os.getenv("SMTP_PASS", "")
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@example.com")
+FOUNDER_FROM_EMAIL = os.getenv("FOUNDER_FROM_EMAIL", "rishi@signalor.ai")
+FOUNDER_FROM_NAME = os.getenv("FOUNDER_FROM_NAME", "Rishi")
+
+# Branding used by drip + welcome HTML email templates.
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000").rstrip("/")
+BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "http://localhost:8000").rstrip("/")
+# Cloudinary-hosted with f_auto so email clients that don't render SVG
+# (Outlook etc.) get a PNG fallback automatically.
+SIGNALOR_LOGO_URL = (
+    os.getenv("SIGNALOR_LOGO_URL")
+    or "https://res.cloudinary.com/dui7h1n3d/image/upload/q_auto/f_auto/v1779273045/icon_mitiu2.svg"
+)
+SIGNALOR_BRAND_PRIMARY = "#e04a3d"
 
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"

@@ -1,0 +1,21 @@
+Hey {{ first_name|default:"there" }},
+
+A few things people ask before activating Signalor for {{ domain|default:"their domain" }}:
+
+Is there a contract?
+No. Monthly billing, cancel any time from your dashboard.
+
+What's the difference between plans?
+Starter covers single-brand GEO tracking. Pro adds multi-platform integration (Shopify, WordPress) and scheduled re-analysis. Max adds Claude visibility and citation trend tracking for agencies.
+
+Do my recommendations expire?
+No. Once you activate, your audit and all {% if fix_count %}{{ fix_count }} {% endif %}fixes stay in your dashboard.
+
+Is the score auditable?
+Yes — every fix is sourced from a specific prompt response, and you can re-run any audit on demand.
+
+See plans: {{ pricing_url }}
+
+— Signalor
+
+Reply to this email if you have other questions.

@@ -1,0 +1,42 @@
+{% extends "email_shell.html" %}
+
+{% block title %}Your GEO audit for {{ domain }} is ready{% endblock %}
+
+{% block preheader %}Activate Signalor to unlock live citation tracking and your prioritised fixes.{% endblock %}
+
+{% block body %}
+  <p style="margin:0 0 6px 0;font-size:12px;font-weight:600;color:#e04a3d;letter-spacing:0.04em;text-transform:uppercase;">Your audit is ready</p>
+  <h1 style="margin:0 0 18px 0;font-size:22px;font-weight:700;color:#171717;letter-spacing:-0.01em;line-height:1.3;">
+    Hey {{ first_name|default:"there" }} &mdash; finish setting up Signalor
+  </h1>
+
+  {% if geo_score %}
+  <p style="margin:0 0 16px 0;font-size:15px;color:#404040;line-height:1.65;">
+    Your GEO audit for <strong style="color:#171717;">{{ domain }}</strong> scored <strong style="color:#e04a3d;">{{ geo_score|floatformat:0 }}/100</strong>.
+  </p>
+  {% else %}
+  <p style="margin:0 0 16px 0;font-size:15px;color:#404040;line-height:1.65;">
+    Your GEO audit for <strong style="color:#171717;">{{ domain }}</strong> is ready to act on.
+  </p>
+  {% endif %}
+
+  <p style="margin:0 0 14px 0;font-size:14px;color:#404040;line-height:1.65;">
+    Activating unlocks:
+  </p>
+
+  <ul style="margin:0 0 26px 0;padding-left:22px;font-size:14px;color:#404040;line-height:1.85;">
+    <li>Live citation tracking across ChatGPT, Perplexity, Gemini, and Copilot</li>
+    <li>Your top {% if fix_count %}{{ fix_count }} {% endif %}prioritised fixes (ranked by citation impact)</li>
+    {% if top_competitor %}
+    <li>Weekly competitor delta vs. <strong style="color:#171717;">{{ top_competitor }}</strong></li>
+    {% else %}
+    <li>Weekly competitor delta tracking</li>
+    {% endif %}
+  </ul>
+
+  <div style="text-align:left;margin:8px 0 0 0;">
+    <a href="{{ pricing_url }}" style="display:inline-block;padding:13px 28px;background-color:#e04a3d;color:#ffffff;text-decoration:none;border-radius:9px;font-size:14px;font-weight:600;letter-spacing:-0.01em;">
+      Continue to checkout &rarr;
+    </a>
+  </div>
+{% endblock %}

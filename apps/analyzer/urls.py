@@ -32,6 +32,7 @@ from .views import (
     CitationTrendView,
     CompetitorDetailView,
     CompetitorListCreateView,
+    CompetitorPromptListView,
     ContentApplyElementView,
     ContentPageFieldsView,
     # Content optimisation (Cursor-style edit + save)
@@ -98,6 +99,11 @@ urlpatterns = [
     path("runs/", AnalysisRunListView.as_view(), name="run-list"),
     path("runs/<int:run_id>/", AnalysisRunDetailView.as_view(), name="run-detail"),
     path("runs/s/<str:slug>/prompts/", PromptListCreateView.as_view(), name="prompt-list-create"),
+    path(
+        "runs/s/<str:slug>/competitor-prompts/",
+        CompetitorPromptListView.as_view(),
+        name="competitor-prompt-list",
+    ),
     path(
         "runs/s/<str:slug>/prompts/<int:track_id>/results/<int:result_id>/",
         PromptResultDetailView.as_view(),

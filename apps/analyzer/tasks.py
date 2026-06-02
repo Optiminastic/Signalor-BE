@@ -846,12 +846,167 @@ def run_single_page_analysis(run_id: int):
         run.llm_logs = get_collected_logs()
         run.save()
         logger.info("Analysis complete for run %d: score %.1f", run_id, composite)
+        _generate_and_fire_competitive_prompts(run)
 
     except Exception as exc:
         logger.error("Analysis failed for run %d: %s", run_id, exc, exc_info=True)
         run.status = AnalysisRun.Status.FAILED
         run.error_message = str(exc)
         run.save()
+
+
+def _domain_label(url: str) -> str:
+    """Cheap fallback brand label when AnalysisRun.brand_name is empty."""
+    from urllib.parse import urlparse
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = f"https://{raw}"
+    try:
+        host = urlparse(raw).netloc.removeprefix("www.")
+    except Exception:
+        return ""
+    return host.split(".")[0] if host else ""
+
+
+def _fire_competitive_prompt_fast(track: PromptTrack, brand_name: str, brand_url: str) -> None:
+    """Light-weight fire for auto-generated competitive prompts. Uses runs=1
+    instead of the default 3 (3x fewer LLM calls per prompt) since the
+    Competitive Prompts page is a discovery surface, not a precision-ranking
+    one — the user values "see prompts and which engines mention competitors"
+    over "average across 3 runs"."""
+    from django.db import close_old_connections
+    from .pipeline.prompt_tracker import (
+        fire_prompt_across_engines,
+        compute_prompt_score,
+    )
+    from .pipeline.citations import (
+        persist_prompt_result,
+        host_of,
+        competitor_hosts_for_run,
+    )
+
+    close_old_connections()
+    try:
+        engine_results = fire_prompt_across_engines(
+            track.prompt_text,
+            brand_name,
+            brand_url,
+            runs=1,  # ← key speed win
+            allowed_engines=None,
+        )
+        brand_host = host_of(brand_url)
+        rival_hosts = competitor_hosts_for_run(track.analysis_run)
+        for r in engine_results:
+            persist_prompt_result(track, r, brand_host, rival_hosts)
+
+        all_res = list(track.results.values(
+            "brand_mentioned", "sentiment", "rank_position", "confidence", "engine"
+        ))
+        sd = compute_prompt_score(all_res)
+        track.score = sd["score"]
+        track.authority_score = sd["authority_score"]
+        track.content_quality_score = sd["content_quality_score"]
+        track.structural_score = sd["structural_score"]
+        track.semantic_score = sd["semantic_score"]
+        track.third_party_score = sd["third_party_score"]
+        track.save(update_fields=[
+            "score", "authority_score", "content_quality_score",
+            "structural_score", "semantic_score", "third_party_score",
+        ])
+    except Exception:
+        logger.exception(
+            "Fast competitive fire failed for track %d (run %d)",
+            track.id, track.analysis_run_id,
+        )
+
+
+def _generate_and_fire_competitive_prompts(run: AnalysisRun) -> None:
+    """Auto-generate 10 buyer-intent prompts for this brand and fire them
+    through the existing engine pipeline. Runs once per AnalysisRun (idempotent
+    on prompt_type=COMPETITIVE rows) and dispatches the actual engine fires to
+    a background thread pool so it never delays run completion.
+
+    Speed budget: runs=1 (vs default 3) on each prompt fire + 4-way parallel
+    pool over the 10 prompts → roughly the time of 3 prompts firing serially.
+
+    Result: the per-brand Competitive Prompt Insights page populates without
+    the user having to trigger anything from the UI.
+    """
+    try:
+        # Idempotency: count-based, not existence-based. Onboarding can plant a
+        # single COMPETITIVE-typed prompt (e.g. the hardcoded "Compare X with
+        # competitors" fallback from GeneratePromptsView), which would trip a
+        # naive .exists() check and skip generation entirely. Our auto-gen
+        # always produces 10 prompts, so saturation = >=10 already present.
+        existing_competitive = run.prompt_tracks.filter(
+            prompt_type=PromptTrack.PromptSurfaceType.COMPETITIVE,
+            is_custom=False,
+            deleted_at__isnull=True,
+        ).count()
+        if existing_competitive >= 10:
+            logger.info(
+                "Competitive prompts at saturation (%d>=10) for run %d; skipping auto-gen.",
+                existing_competitive, run.id,
+            )
+            return
+
+        from .pipeline.prompt_tracker import (
+            generate_brand_prompts,
+            classify_prompt_intent_and_type,
+        )
+
+        brand = (run.brand_name or "").strip() or _domain_label(run.url)
+        url = (run.url or "").strip()
+
+        prompts = generate_brand_prompts(
+            brand_name=brand,
+            brand_url=url,
+            country=(run.country or "").strip(),
+            count=10,
+        )
+        if not prompts:
+            logger.info("Auto-gen returned no competitive prompts for run %d.", run.id)
+            return
+
+        # Persist tracks first so the Prompts page renders the queue immediately
+        # while engine fires populate results asynchronously.
+        tracks: list[PromptTrack] = []
+        for prompt_text in prompts:
+            intent, _ = classify_prompt_intent_and_type(prompt_text, brand, url)
+            tracks.append(PromptTrack.objects.create(
+                analysis_run=run,
+                prompt_text=prompt_text,
+                is_custom=False,
+                intent=intent,
+                prompt_type=PromptTrack.PromptSurfaceType.COMPETITIVE,
+            ))
+
+        def _fire_all():
+            # Parallel pool: 4 prompts in flight, each one fires its engines
+            # in parallel internally. Keeps total wall-clock to ~3x slowest
+            # engine round-trip instead of 10x.
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                futures = [
+                    pool.submit(_fire_competitive_prompt_fast, t, brand, url)
+                    for t in tracks
+                ]
+                for fut in as_completed(futures):
+                    try:
+                        fut.result()
+                    except Exception:
+                        # _fire_competitive_prompt_fast already logs internally.
+                        pass
+
+        threading.Thread(target=_fire_all, daemon=True).start()
+        logger.info(
+            "Queued %d competitive prompts for run %d (runs=1, pool=4).",
+            len(tracks), run.id,
+        )
+
+    except Exception:
+        logger.exception("Auto-competitive prompt generation failed for run %d", run.id)
 
 
 def _kickoff_sitemap_audit(run_id: int) -> None:

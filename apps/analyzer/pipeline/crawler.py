@@ -39,6 +39,63 @@ class CrawlResult:
         return self.status_code == 200 and self.soup is not None
 
 
+def _populate_from_html(result: CrawlResult, html: str, url: str) -> bool:
+    """Fill ``result`` (html/soup/text/internal_links) from raw HTML.
+
+    Returns ``False`` and sets ``result.error`` for Shopify-password / WordPress
+    maintenance pages; ``True`` for a real, scoreable page. Shared by the direct
+    200 path and the scraping-API fallback so they never diverge.
+    """
+    # Detect Shopify password-protected stores (returns 200 with login form)
+    if (
+        "shopify" in html.lower()
+        and "password" in html.lower()
+        and ('id="password"' in html or "storefront-password" in html)
+    ):
+        result.error = "This Shopify store is password-protected. Remove the storefront password in Shopify Admin -> Online Store -> Preferences to analyze it."
+        return False
+
+    # Detect WordPress maintenance mode
+    if "maintenance mode" in html.lower() and len(html) < 5000:
+        result.error = "This site is in maintenance mode. Disable maintenance mode to analyze it."
+        return False
+
+    result.html = html
+    result.soup = BeautifulSoup(html, "html.parser")
+    text_soup = BeautifulSoup(html, "html.parser")
+    result.text = extract_text(text_soup)
+    result.internal_links = extract_internal_links(result.soup, url)
+    return True
+
+
+def _try_scraper_fallback(result: CrawlResult, url: str) -> bool:
+    """Re-fetch ``url`` once through the scraping-API fallback (residential IPs).
+
+    Returns ``True`` if it produced a scoreable page — in which case ``result`` is
+    populated, ``status_code`` is forced to 200, and ``error`` is cleared so the
+    full analysis pipeline runs. No-op (returns ``False``) when the fallback isn't
+    configured. Calls the scraper service directly, so there is no recursion.
+    """
+    from apps.integrations.services import scraper
+
+    if not scraper.is_configured():
+        return False
+    try:
+        status, html = scraper.fetch_via_scraper(url)
+    except scraper.ScraperNotConfigured:
+        return False
+    except scraper.ScraperError as exc:
+        logger.warning("scraper fallback failed for %s: %s", url, exc)
+        return False
+
+    if status == 200 and _populate_from_html(result, html, url):
+        result.status_code = 200
+        result.error = ""
+        logger.info("scraper fallback SUCCESS for %s", url)
+        return True
+    return False
+
+
 def crawl_page(url: str, storefront_password: str = "") -> CrawlResult:
     result = CrawlResult(url=url)
     parsed = urlparse(url)
@@ -85,29 +142,19 @@ def crawl_page(url: str, storefront_password: str = "") -> CrawlResult:
                     resp.encoding = resp.apparent_encoding or "utf-8"
                     html = resp.text or ""
 
-                # Detect Shopify password-protected stores (returns 200 with login form)
-                if ("shopify" in html.lower() and "password" in html.lower()
-                        and ('id="password"' in html or "storefront-password" in html)):
-                    result.error = "This Shopify store is password-protected. Remove the storefront password in Shopify Admin -> Online Store -> Preferences to analyze it."
-                    return result
-
-                # Detect WordPress maintenance mode
-                if "maintenance mode" in html.lower() and len(html) < 5000:
-                    result.error = "This site is in maintenance mode. Disable maintenance mode to analyze it."
-                    return result
-
-                result.html = html
-                result.soup = BeautifulSoup(html, "html.parser")
-                text_soup = BeautifulSoup(html, "html.parser")
-                result.text = extract_text(text_soup)
-                result.internal_links = extract_internal_links(result.soup, url)
+                _populate_from_html(result, html, url)
                 return result
 
             # Retry on server errors (5xx) or rate limiting (429)
             if resp.status_code in (429, 500, 502, 503, 504):
                 last_error = f"HTTP {resp.status_code}"
-                logger.info("Crawl attempt %d/%d got %d for %s, retrying...",
-                            attempt + 1, MAX_RETRIES + 1, resp.status_code, url)
+                logger.info(
+                    "Crawl attempt %d/%d got %d for %s, retrying...",
+                    attempt + 1,
+                    MAX_RETRIES + 1,
+                    resp.status_code,
+                    url,
+                )
                 time.sleep(2 * (attempt + 1))  # Backoff: 2s, 4s
                 continue
 
@@ -120,6 +167,10 @@ def crawl_page(url: str, storefront_password: str = "") -> CrawlResult:
                 451: "Page unavailable for legal reasons (451).",
             }
             result.error = error_messages.get(resp.status_code, f"HTTP {resp.status_code}")
+            # Hard block (Cloudflare/WAF on our datacenter IP) — try the
+            # scraping-API fallback once. 404/410 are genuinely-missing pages.
+            if resp.status_code in (401, 403, 451) and _try_scraper_fallback(result, url):
+                return result
             return result
 
         except requests.Timeout:
@@ -133,7 +184,7 @@ def crawl_page(url: str, storefront_password: str = "") -> CrawlResult:
             time.sleep(1)
             continue
         except requests.exceptions.SSLError as exc:
-            last_error = f"SSL certificate error: The site's SSL certificate is invalid or expired. Fix your SSL certificate to analyze this site."
+            last_error = "SSL certificate error: The site's SSL certificate is invalid or expired. Fix your SSL certificate to analyze this site."
             logger.warning("SSL error for %s: %s", url, exc)
             break
         except requests.RequestException as exc:
@@ -147,7 +198,10 @@ def crawl_page(url: str, storefront_password: str = "") -> CrawlResult:
             logger.warning("Crawl error for %s: %s", url, exc)
             break
 
-    # All retries exhausted
+    # All retries exhausted — some blocks manifest as connection resets / timeouts
+    # rather than a clean 403, so try the scraping-API fallback once here too.
+    if _try_scraper_fallback(result, url):
+        return result
     result.error = last_error
     return result
 
@@ -182,7 +236,9 @@ def fetch_file_content(base_url: str, path: str, session: requests.Session | Non
         if resp.status_code == 200:
             text = resp.text
             # Guard: if the response is an HTML page (password, app install, etc.), it's not the file
-            if "storefront-password" in text or ('id="password"' in text and "password protected" in text.lower()):
+            if "storefront-password" in text or (
+                'id="password"' in text and "password protected" in text.lower()
+            ):
                 return ""
             # Shopify app proxy returns HTML when store has password or app not installed
             if text.strip().startswith("<!DOCTYPE") or text.strip().startswith("<html"):
@@ -197,13 +253,15 @@ def fetch_file_content(base_url: str, path: str, session: requests.Session | Non
 
 # ── Multi-page site discovery ─────────────────────────────────────────────
 
+
 @dataclass
 class SiteMap:
     """Discovered pages from a site, categorized by type."""
+
     homepage: str = ""
     products: list[str] = field(default_factory=list)
     collections: list[str] = field(default_factory=list)
-    pages: list[str] = field(default_factory=list)       # static pages (about, contact, etc.)
+    pages: list[str] = field(default_factory=list)  # static pages (about, contact, etc.)
     blog_posts: list[str] = field(default_factory=list)
     other: list[str] = field(default_factory=list)
 
@@ -275,7 +333,10 @@ def discover_site_pages(
             site_map.blog_posts.append(url)
         elif "/pages/" in path or path.startswith("pages/"):
             site_map.pages.append(url)
-        elif any(kw in path for kw in ["about", "contact", "shipping", "faq", "privacy", "terms", "policy", "team", "story"]):
+        elif any(
+            kw in path
+            for kw in ["about", "contact", "shipping", "faq", "privacy", "terms", "policy", "team", "story"]
+        ):
             site_map.pages.append(url)
         elif any(kw in path for kw in ["category", "categories", "shop", "store"]):
             site_map.collections.append(url)
@@ -294,8 +355,11 @@ def discover_site_pages(
 
     logger.info(
         "Site discovery complete: %d products, %d collections, %d pages, %d blog, %d other",
-        len(site_map.products), len(site_map.collections),
-        len(site_map.pages), len(site_map.blog_posts), len(site_map.other),
+        len(site_map.products),
+        len(site_map.collections),
+        len(site_map.pages),
+        len(site_map.blog_posts),
+        len(site_map.other),
     )
 
     return site_map

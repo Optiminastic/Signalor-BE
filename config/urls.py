@@ -9,6 +9,7 @@ urlpatterns = [
     path("api/health/", HealthCheckView.as_view(), name="health-check"),
     path("api/", include("apps.organizations.urls")),
     path("api/analyzer/", include("apps.analyzer.urls")),
+    path("api/drip/", include("apps.drip.urls")),
     path("api/integrations/", include("apps.integrations.urls")),
     path("api/integrations/nextjs/", include("apps.public_api.nextjs_dashboard_urls")),
     path("api/v1/public/", include("apps.public_api.urls")),
