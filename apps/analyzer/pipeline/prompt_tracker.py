@@ -11,6 +11,7 @@ extracts signals, and computes 5-factor weighted AI visibility scores.
 
   Final Score = authority×0.40 + content_quality×0.35 + structural×0.25
 """
+
 import json
 import logging
 
@@ -90,12 +91,7 @@ def _collect_brand_tokens(brand_name: str, brand_url: str = "") -> list[str]:
                     if len(sld) >= 3 and sld not in {"localhost", "127"}:
                         toks.append(sld)
                     root = parts[0]
-                    if (
-                        root not in junk_sub
-                        and len(root) >= 3
-                        and root != sld
-                        and root not in _TOKEN_STOP
-                    ):
+                    if root not in junk_sub and len(root) >= 3 and root != sld and root not in _TOKEN_STOP:
                         toks.append(root)
                 elif len(parts) == 2:
                     root = parts[0]
@@ -219,9 +215,7 @@ def classify_prompt_intent_and_type(
 
     has_brand = _prompt_mentions_brand(t, tokens)
     is_transactional = any(k in t for k in transactional_kw)
-    is_competitive = any(k in t for k in competitive_kw) or (
-        "how does" in t and "compare" in t
-    )
+    is_competitive = any(k in t for k in competitive_kw) or ("how does" in t and "compare" in t)
 
     if is_competitive:
         query_type = "competitive"
@@ -240,7 +234,9 @@ def classify_prompt_intent_and_type(
     return intent, query_type
 
 
-def _providers_and_search_from_plan_engines(allowed_engines: list[str] | None) -> tuple[list[str], bool, bool]:
+def _providers_and_search_from_plan_engines(
+    allowed_engines: list[str] | None,
+) -> tuple[list[str], bool, bool]:
     """
     Map PLAN_LIMITS engine ids to OpenRouter provider keys and whether to run
     Google (Serper) and/or Bing searches.
@@ -281,8 +277,9 @@ def _search_bing(query: str, brand_name: str, brand_url: str) -> dict:
     Returns a PromptResult-compatible dict with engine="bing", or None on failure.
     """
     import os
-    import requests as _requests
     from urllib.parse import urlparse
+
+    import requests as _requests
 
     api_key = os.getenv("BING_API_KEY", "")
     if not api_key:
@@ -306,7 +303,6 @@ def _search_bing(query: str, brand_name: str, brand_url: str) -> dict:
     brand_lower = brand_name.lower()
     domain = urlparse(brand_url).netloc.lower().replace("www.", "")
     web_pages = data.get("webPages", {}).get("value", [])
-    answer_box = data.get("computation", {}) or data.get("answerBox", {})
     entities = data.get("entities", {}).get("value", [])
 
     mentioned = False
@@ -339,12 +335,14 @@ def _search_bing(query: str, brand_name: str, brand_url: str) -> dict:
             response_parts.append(f"[#{i}] {result.get('name', '')}")
 
         if result.get("url"):
-            citations.append({
-                "url": result["url"],
-                "title": result.get("name", "") or "",
-                "snippet": result.get("snippet", "") or "",
-                "position": i,
-            })
+            citations.append(
+                {
+                    "url": result["url"],
+                    "title": result.get("name", "") or "",
+                    "snippet": result.get("snippet", "") or "",
+                    "position": i,
+                }
+            )
 
     sentiment = "neutral"
     if mentioned:
@@ -377,8 +375,9 @@ def _search_google_serper(query: str, brand_name: str, brand_url: str) -> dict:
     Returns a PromptResult-compatible dict with engine="google".
     """
     import os
-    import requests as _requests
     from urllib.parse import urlparse
+
+    import requests as _requests
 
     api_key = os.getenv("SERPER_API_KEY", "")
     if not api_key:
@@ -392,7 +391,9 @@ def _search_google_serper(query: str, brand_name: str, brand_url: str) -> dict:
             timeout=10,
         )
         if not resp.ok:
-            logger.warning("Serper search failed: %d", resp.status_code)
+            # Serper puts the reason in the body (e.g. {"message": "..."}). Log it
+            # so a 400/403 is actionable instead of an opaque status code.
+            logger.warning("Serper search failed: %d %s", resp.status_code, (resp.text or "")[:200])
             return None
 
         data = resp.json()
@@ -426,7 +427,9 @@ def _search_google_serper(query: str, brand_name: str, brand_url: str) -> dict:
         mentioned = True
         if rank_position == 0:
             rank_position = 1
-        response_parts.append(f"[Knowledge Graph] {knowledge_graph.get('title', '')}: {knowledge_graph.get('description', '')}")
+        response_parts.append(
+            f"[Knowledge Graph] {knowledge_graph.get('title', '')}: {knowledge_graph.get('description', '')}"
+        )
 
     # Check organic results
     for i, result in enumerate(organic[:10], 1):
@@ -444,12 +447,14 @@ def _search_google_serper(query: str, brand_name: str, brand_url: str) -> dict:
             response_parts.append(f"[#{i}] {result.get('title', '')}")
 
         if result.get("link"):
-            citations.append({
-                "url": result["link"],
-                "title": result.get("title", "") or "",
-                "snippet": result.get("snippet", "") or "",
-                "position": i,
-            })
+            citations.append(
+                {
+                    "url": result["link"],
+                    "title": result.get("title", "") or "",
+                    "snippet": result.get("snippet", "") or "",
+                    "position": i,
+                }
+            )
 
     # Determine sentiment from snippets
     sentiment = "neutral"
@@ -511,12 +516,22 @@ def generate_brand_prompts(
 
     # Detect TLD for location hints
     from urllib.parse import urlparse
+
     try:
         tld = urlparse(brand_url).netloc.split(".")[-1].lower()
         tld_locations = {
-            "in": "India", "uk": "United Kingdom", "au": "Australia", "ca": "Canada",
-            "de": "Germany", "fr": "France", "jp": "Japan", "br": "Brazil",
-            "sg": "Singapore", "ae": "UAE", "sa": "Saudi Arabia", "ng": "Nigeria",
+            "in": "India",
+            "uk": "United Kingdom",
+            "au": "Australia",
+            "ca": "Canada",
+            "de": "Germany",
+            "fr": "France",
+            "jp": "Japan",
+            "br": "Brazil",
+            "sg": "Singapore",
+            "ae": "UAE",
+            "sa": "Saudi Arabia",
+            "ng": "Nigeria",
         }
         if tld in tld_locations and not country:
             context_parts.append(f"TLD suggests location: {tld_locations[tld]}")
@@ -610,8 +625,13 @@ def fire_prompt_across_engines(
     allowed_engines: PLAN_LIMITS["engines"] list; None = all configured.
     Returns list of dicts: engine, response_text, brand_mentioned, sentiment, confidence, rank_position
     """
+    from .ai_visibility import (
+        _analyze_mention_quality,
+        _build_brand_aliases,
+        _check_ranking_position,
+        _match_brand,
+    )
     from .llm import ask_multiple_llms_with_citations
-    from .ai_visibility import _build_brand_aliases, _match_brand, _analyze_mention_quality, _check_ranking_position
 
     provider_keys, include_google, include_bing = _providers_and_search_from_plan_engines(allowed_engines)
 
@@ -638,15 +658,17 @@ def fire_prompt_across_engines(
             provider_citations = (payload or {}).get("citations", []) if isinstance(payload, dict) else []
 
             if not response_text:
-                all_results.append({
-                    "engine": engine,
-                    "response_text": "",
-                    "brand_mentioned": False,
-                    "sentiment": "neutral",
-                    "confidence": 0.0,
-                    "rank_position": 0,
-                    "citations": provider_citations,
-                })
+                all_results.append(
+                    {
+                        "engine": engine,
+                        "response_text": "",
+                        "brand_mentioned": False,
+                        "sentiment": "neutral",
+                        "confidence": 0.0,
+                        "rank_position": 0,
+                        "citations": provider_citations,
+                    }
+                )
                 continue
 
             found, confidence, _ = _match_brand(brand_aliases, response_text)
@@ -659,15 +681,17 @@ def fire_prompt_across_engines(
                 ranking = _check_ranking_position(response_text, brand_aliases)
                 rank_position = ranking.get("rank_position", 0)
 
-            all_results.append({
-                "engine": engine,
-                "response_text": response_text[:3000],
-                "brand_mentioned": found,
-                "sentiment": sentiment,
-                "confidence": round(confidence, 3),
-                "rank_position": rank_position,
-                "citations": provider_citations,
-            })
+            all_results.append(
+                {
+                    "engine": engine,
+                    "response_text": response_text[:3000],
+                    "brand_mentioned": found,
+                    "sentiment": sentiment,
+                    "confidence": round(confidence, 3),
+                    "rank_position": rank_position,
+                    "citations": provider_citations,
+                }
+            )
 
     # Search engines run once per prompt (not per run) for authoritative signals
     if include_google:
@@ -738,12 +762,11 @@ def compute_prompt_score(results: list[dict]) -> dict:
     cited_engines = {r.get("engine") for r in results if r.get("brand_mentioned") and r.get("engine")}
     engine_coverage = len(cited_engines) / len(all_engines) if all_engines else 0.0
 
-    avg_confidence = (
-        sum(r.get("confidence", 0.0) for r in results) / total if total else 0.0
-    )
+    avg_confidence = sum(r.get("confidence", 0.0) for r in results) / total if total else 0.0
     avg_confidence_when_mentioned = (
         sum(r.get("confidence", 0.0) for r in results if r.get("brand_mentioned")) / mentions
-        if mentions else 0.0
+        if mentions
+        else 0.0
     )
 
     # Position helpers
@@ -763,16 +786,12 @@ def compute_prompt_score(results: list[dict]) -> dict:
     # mentioned — otherwise the neutral baseline of unrelated responses
     # inflates the score (e.g. 0 mentions would yield 20 from norm_sentiment=0.5).
     mentioned_sentiments = [
-        sentiment_map.get(r.get("sentiment", "neutral"), 0)
-        for r in results if r.get("brand_mentioned")
+        sentiment_map.get(r.get("sentiment", "neutral"), 0) for r in results if r.get("brand_mentioned")
     ]
     if mentioned_sentiments:
         raw_sentiment_avg_m = sum(mentioned_sentiments) / len(mentioned_sentiments)
         norm_sentiment_m = (raw_sentiment_avg_m + 1) / 2
-        pos_count_m = sum(
-            1 for r in results
-            if r.get("brand_mentioned") and r.get("sentiment") == "positive"
-        )
+        pos_count_m = sum(1 for r in results if r.get("brand_mentioned") and r.get("sentiment") == "positive")
         pos_rate_m = pos_count_m / len(mentioned_sentiments)
         # Dampen by mention_rate so a single mention out of many runs
         # doesn't max out content quality.
@@ -806,9 +825,7 @@ def compute_prompt_score(results: list[dict]) -> dict:
 
     # ── Composite score ───────────────────────────────────────────────────
     score = min(
-        authority_score * 0.40
-        + content_quality_score * 0.35
-        + structural_score * 0.25,
+        authority_score * 0.40 + content_quality_score * 0.35 + structural_score * 0.25,
         1.0,
     )
 
@@ -855,16 +872,14 @@ def recheck_track(track, brand_name: str, brand_url: str) -> int:
     Returns the number of new PromptResult rows created.
     """
     from django.db import close_old_connections
+
     from apps.accounts.subscription_utils import get_plan_limits, is_plan_limits_enforcement_enabled
-    from .citations import persist_prompt_result, host_of, competitor_hosts_for_run
+
+    from .citations import competitor_hosts_for_run, host_of, persist_prompt_result
 
     close_old_connections()
     email = (track.analysis_run.email or "").strip()
-    allowed = (
-        get_plan_limits(email)["engines"]
-        if is_plan_limits_enforcement_enabled() and email
-        else None
-    )
+    allowed = get_plan_limits(email)["engines"] if is_plan_limits_enforcement_enabled() and email else None
     engine_results = fire_prompt_across_engines(
         track.prompt_text, brand_name, brand_url, allowed_engines=allowed
     )
@@ -886,18 +901,29 @@ def recheck_track(track, brand_name: str, brand_url: str) -> int:
     track.structural_score = score_data["structural_score"]
     track.semantic_score = score_data["semantic_score"]
     track.third_party_score = score_data["third_party_score"]
-    track.save(update_fields=[
-        "score", "authority_score", "content_quality_score",
-        "structural_score", "semantic_score", "third_party_score",
-    ])
+    track.save(
+        update_fields=[
+            "score",
+            "authority_score",
+            "content_quality_score",
+            "structural_score",
+            "semantic_score",
+            "third_party_score",
+        ]
+    )
 
     # Drop cached run-level aggregates so the dashboard reflects new results
     # on the next page load instead of waiting for the 5-10 min TTL to expire.
     from apps.analyzer._cache import invalidate_run_aggregates
+
     invalidate_run_aggregates(track.analysis_run.slug)
 
     logger.info(
         "recheck_track #%d ('%s'): %d new results, score=%.3f (%s)",
-        track.pk, track.prompt_text[:60], created, score_data["score"], score_data["label"],
+        track.pk,
+        track.prompt_text[:60],
+        created,
+        score_data["score"],
+        score_data["label"],
     )
     return created
