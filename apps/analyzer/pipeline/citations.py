@@ -8,6 +8,7 @@ Google/Bing callers may pass pre-structured citations (url+title+snippet) direct
 Phase 2 will add per-provider structured extraction (Perplexity citations[],
 Gemini grounding_metadata, OpenAI annotations, Claude web-search citations).
 """
+
 from __future__ import annotations
 
 import logging
@@ -109,9 +110,7 @@ def classify(url: str, brand_host: str, competitor_hosts: set[str]) -> tuple[boo
     is_brand = bool(brand_host) and (h == brand_host or h.endswith("." + brand_host))
     if is_brand:
         return (True, False)
-    is_competitor = any(
-        ch and (h == ch or h.endswith("." + ch)) for ch in competitor_hosts
-    )
+    is_competitor = any(ch and (h == ch or h.endswith("." + ch)) for ch in competitor_hosts)
     return (False, is_competitor)
 
 
@@ -130,7 +129,7 @@ def persist_prompt_result(
 
     Other keys in result_dict go through unchanged as PromptResult fields.
     """
-    from apps.analyzer.models import PromptResult, PromptCitation
+    from apps.analyzer.models import PromptCitation, PromptResult
 
     data = dict(result_dict)
     structured = data.pop("citations", []) or []
@@ -150,12 +149,14 @@ def persist_prompt_result(
         if not host or host in _SKIP_HOSTS:
             continue
         seen_urls.add(url)
-        merged.append({
-            "url": url[:2048],
-            "title": (c.get("title") or "")[:512],
-            "snippet": (c.get("snippet") or "")[:2000],
-            "position": int(c.get("position") or (len(merged) + 1)),
-        })
+        merged.append(
+            {
+                "url": url[:2048],
+                "title": (c.get("title") or "")[:512],
+                "snippet": (c.get("snippet") or "")[:2000],
+                "position": int(c.get("position") or (len(merged) + 1)),
+            }
+        )
 
     for c in extract_citations_from_text(response_text):
         if c["url"] in seen_urls:
@@ -197,3 +198,28 @@ def competitor_hosts_for_run(run) -> set[str]:
         if h:
             hosts.add(h)
     return hosts
+
+
+def reclassify_competitor_citations(run) -> int:
+    """Flag this run's citations whose domain matches a discovered competitor.
+
+    Prompts are fired (and their citations persisted) BEFORE competitor
+    discovery runs, so at persist time the competitor-host set is empty and
+    ``is_competitor`` is always False. Call this AFTER competitors are saved to
+    back-fill the flag, so share-of-voice / competitor-gap rollups (and the
+    Competitors page) see where rivals are cited. Returns the number of rows
+    updated. ``domain`` is stored already-normalized (``host_of``), matching the
+    normalized hosts from ``competitor_hosts_for_run``.
+    """
+    from apps.analyzer.models import PromptCitation
+
+    hosts = competitor_hosts_for_run(run)
+    if not hosts:
+        return 0
+    updated = PromptCitation.objects.filter(
+        prompt_result__prompt_track__analysis_run=run,
+        domain__in=hosts,
+    ).update(is_competitor=True)
+    if updated:
+        logger.info("reclassified %d competitor citations for run %s", updated, run.pk)
+    return updated

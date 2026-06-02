@@ -905,6 +905,16 @@ def run_single_page_analysis(run_id: int):
         except Exception as exc:
             logger.warning("Competitor discovery failed for run %d: %s", run_id, exc)
 
+        # Competitors are discovered AFTER the prompts fired, so their citations
+        # were persisted with is_competitor=False (empty host set at the time).
+        # Back-fill the flag now that we know the competitor hosts.
+        try:
+            from .pipeline.citations import reclassify_competitor_citations
+
+            reclassify_competitor_citations(run)
+        except Exception as exc:
+            logger.warning("Competitor citation reclassify failed for run %d: %s", run_id, exc)
+
         # Finalize
         run.composite_score = composite
         run.status = AnalysisRun.Status.COMPLETE
