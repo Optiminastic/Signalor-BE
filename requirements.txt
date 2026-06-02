@@ -89,3 +89,4 @@ apscheduler>=3.10,<4
 # (apps.analyzer.celery_tasks). All other background work still uses
 # threading.Thread; migrate piecemeal as new tasks land.
 celery[redis]>=5.4,<6
+sentry-sdk>=2.0,<3

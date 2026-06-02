@@ -15,6 +15,22 @@ if _env_path.exists():
 if _env_local.exists():
     load_dotenv(_env_local, override=True)
 
+# ── Sentry (error monitoring) ──────────────────────────────────────────────
+# No-op unless SENTRY_DSN is set, so local/dev/tests never report. Set the DSN
+# in the staging/prod environment to capture unhandled exceptions + DRF 500s.
+SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+if SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.django import DjangoIntegration
+
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[DjangoIntegration()],
+        traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0")),
+        send_default_pii=False,
+        environment=os.getenv("SENTRY_ENVIRONMENT", "production"),
+    )
+
 LOGS_DIR = BASE_DIR / "logs"
 LOGS_DIR.mkdir(exist_ok=True)
 
