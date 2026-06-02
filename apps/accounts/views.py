@@ -1353,6 +1353,7 @@ class ProfileView(APIView):
                     "last_name": "",
                     "phone_number": "",
                     "photo_url": None,
+                    "has_seen_product_tour": False,
                 }
             )
 
@@ -1363,6 +1364,7 @@ class ProfileView(APIView):
                 "last_name": user.last_name or "",
                 "phone_number": user.phone_number or "",
                 "photo_url": photo_url(user.profile_photo_key) if user.profile_photo_key else None,
+                "has_seen_product_tour": user.has_seen_product_tour,
             }
         )
 
@@ -1386,6 +1388,12 @@ class ProfileView(APIView):
                 if getattr(user, field) != value:
                     setattr(user, field, value)
                     changed.append(field)
+        # Boolean flag — coerce truthy rather than .strip() it as a string.
+        if "has_seen_product_tour" in request.data:
+            value = bool(request.data.get("has_seen_product_tour"))
+            if user.has_seen_product_tour != value:
+                user.has_seen_product_tour = value
+                changed.append("has_seen_product_tour")
         if changed:
             user.save(update_fields=changed)
         return Response({"updated": changed})

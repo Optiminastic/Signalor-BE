@@ -85,6 +85,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     # Google OAuth photo from the better-auth session.
     profile_photo_key = models.CharField(max_length=255, blank=True, default="")
     phone_number = models.CharField(max_length=32, blank=True, default="")
+    # Dashboard product tour: shown once per user, then suppressed everywhere
+    # (set true when the user Skips or finishes the tour). DB-backed so it
+    # doesn't re-trigger on a new browser/device/cache-clear.
+    has_seen_product_tour = models.BooleanField(default=False)
 
     objects = UserManager()
 
