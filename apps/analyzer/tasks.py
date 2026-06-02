@@ -1122,4 +1122,8 @@ def start_analysis_task(run_id: int):
     thread.start()
 
     # Sibling sitemap audit — runs concurrently with the main analysis above.
-    _kickoff_sitemap_audit(run_id)
+    # Dispatch in its own thread: with no Celery broker (local dev) .delay()
+    # runs EAGERLY in-process, so calling it inline would block the HTTP
+    # response for the full sitemap crawl and trip the frontend's request
+    # timeout. A thread keeps /analyze/ fast in both eager and brokered modes.
+    threading.Thread(target=_kickoff_sitemap_audit, args=(run_id,), daemon=True).start()
