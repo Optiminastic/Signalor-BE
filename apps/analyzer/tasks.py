@@ -28,13 +28,37 @@ from .pipeline.technical import score_technical
 logger = logging.getLogger("apps")
 
 
-def _crawl_via_integration(run: AnalysisRun) -> CrawlResult | None:
-    """Fallback: fetch page content via Shopify/WordPress API when public crawl fails."""
+def _crawl_result_from_html(url: str, html: str, *, min_len: int = 50) -> CrawlResult | None:
+    """Build a scoreable CrawlResult from pre-fetched HTML (no live crawl).
+
+    Returns None when the HTML is too short to analyze meaningfully. Shared by
+    the integration and Next.js-snapshot fallbacks so they populate the exact
+    same fields the live crawler would (html/soup/text/internal_links/is_https).
+    """
     from bs4 import BeautifulSoup
 
-    from apps.integrations.models import Integration
-
     from .pipeline.utils import extract_internal_links, extract_text
+
+    if not html or len(html.strip()) < min_len:
+        return None
+    soup = BeautifulSoup(html, "html.parser")
+    text = extract_text(soup)
+    return CrawlResult(
+        url=url,
+        status_code=200,
+        html=html,
+        soup=soup,
+        text=text,
+        internal_links=extract_internal_links(soup, url),
+        load_time=0.0,
+        error="",
+        is_https=url.startswith("https"),
+    )
+
+
+def _crawl_via_integration(run: AnalysisRun) -> CrawlResult | None:
+    """Fallback: fetch page content via Shopify/WordPress API when public crawl fails."""
+    from apps.integrations.models import Integration
 
     if not run.organization:
         return None
@@ -53,41 +77,74 @@ def _crawl_via_integration(run: AnalysisRun) -> CrawlResult | None:
 
         html_content = _read_page_content(integration, run.url)
 
-        if not html_content:
+        result = _crawl_result_from_html(run.url, html_content or "")
+        if result is None:
+            logger.warning("Run %d: integration content missing/too short, skipping", run.id)
             return None
 
-        # Reject content too short to analyze meaningfully
-        if len(html_content.strip()) < 50:
-            logger.warning(
-                "Run %d: integration content too short (%d chars), skipping", run.id, len(html_content)
-            )
-            return None
-
-        # Build a CrawlResult from the API content
-        soup = BeautifulSoup(html_content, "html.parser")
-        text = extract_text(soup)
-        result = CrawlResult(
-            url=run.url,
-            status_code=200,
-            html=html_content,
-            soup=soup,
-            text=text,
-            internal_links=extract_internal_links(soup, run.url),
-            load_time=0.0,
-            error="",
-            is_https=run.url.startswith("https"),
-        )
         logger.info(
             "Run %d: crawled via %s integration (API fallback, %d chars, %d text chars)",
             run.id,
             integration.provider,
-            len(html_content),
-            len(text),
+            len(result.html),
+            len(result.text),
         )
         return result
     except Exception as e:
         logger.warning("Run %d: integration crawl fallback failed: %s", run.id, e)
         return None
+
+
+def _crawl_via_nextjs_snapshot(
+    run: AnalysisRun,
+) -> tuple[CrawlResult, list[CrawlResult]] | None:
+    """Fetch homepage + key routes via the @signalor/nextjs snapshot route.
+
+    Returns ``(homepage_crawl, additional_crawls)`` when the homepage renders,
+    else None so the caller falls back to the live crawl. Bypasses Cloudflare /
+    Turnstile because the SDK serves the site's own rendered HTML from its
+    deployment origin (e.g. *.vercel.app), not the public CDN-fronted URL.
+    """
+    from .services import nextjs_snapshot
+
+    config = nextjs_snapshot.get_config(run)
+    if config is None:
+        return None
+
+    origin, key_hash = config["origin"], config["key_hash"]
+    base = run.url.rstrip("/")
+
+    def _pull(path: str) -> CrawlResult | None:
+        try:
+            status, html = nextjs_snapshot.fetch_snapshot(origin, path, key_hash)
+        except Exception as exc:  # noqa: BLE001 — transport/JSON error → treat as miss
+            logger.warning("Run %d: snapshot pull failed for %s: %s", run.id, path, exc)
+            return None
+        if status != 200:
+            return None
+        # Map the route back onto the run's public URL so scorers and saved
+        # PageScores reference the real site, not the deployment origin.
+        page_url = f"{base}/" if path == "/" else f"{base}{path}"
+        return _crawl_result_from_html(page_url, html)
+
+    homepage = _pull("/")
+    if homepage is None or not homepage.ok:
+        return None
+
+    additional: list[CrawlResult] = []
+    for path in nextjs_snapshot.routes_for_run(run):
+        if path == "/":
+            continue
+        extra = _pull(path)
+        if extra is not None and extra.ok:
+            additional.append(extra)
+
+    logger.info(
+        "Run %d: snapshot crawl ok — homepage + %d pages via @signalor/nextjs",
+        run.id,
+        len(additional),
+    )
+    return homepage, additional
 
 
 def _save_probes_and_tracks(
@@ -454,14 +511,23 @@ def run_single_page_analysis(run_id: int):
         if not storefront_password:
             storefront_password = run.storefront_password or ""
 
-        from .pipeline.crawler import crawl_site
+        from .pipeline.crawler import SiteMap, crawl_site
 
-        homepage_crawl, site_map, additional_crawls = crawl_site(
-            run.url,
-            storefront_password=storefront_password,
-            max_pages=12,
-        )
-        crawl = homepage_crawl  # Primary crawl for backward compatibility
+        # Prefer the @signalor/nextjs snapshot when available — it serves the
+        # site's own rendered HTML from its deployment origin, bypassing
+        # Cloudflare/Turnstile that would block a live crawl. Falls through to
+        # the normal crawl when the SDK isn't installed or the pull fails.
+        snapshot = _crawl_via_nextjs_snapshot(run)
+        if snapshot is not None:
+            crawl, additional_crawls = snapshot
+            site_map = SiteMap(homepage=run.url, pages=[c.url for c in additional_crawls])
+        else:
+            homepage_crawl, site_map, additional_crawls = crawl_site(
+                run.url,
+                storefront_password=storefront_password,
+                max_pages=12,
+            )
+            crawl = homepage_crawl  # Primary crawl for backward compatibility
 
         if not crawl.ok:
             # Try fetching via connected integration (handles password-protected stores)
@@ -858,6 +924,7 @@ def run_single_page_analysis(run_id: int):
 def _domain_label(url: str) -> str:
     """Cheap fallback brand label when AnalysisRun.brand_name is empty."""
     from urllib.parse import urlparse
+
     raw = (url or "").strip()
     if not raw:
         return ""
@@ -877,14 +944,15 @@ def _fire_competitive_prompt_fast(track: PromptTrack, brand_name: str, brand_url
     one — the user values "see prompts and which engines mention competitors"
     over "average across 3 runs"."""
     from django.db import close_old_connections
-    from .pipeline.prompt_tracker import (
-        fire_prompt_across_engines,
-        compute_prompt_score,
-    )
+
     from .pipeline.citations import (
-        persist_prompt_result,
-        host_of,
         competitor_hosts_for_run,
+        host_of,
+        persist_prompt_result,
+    )
+    from .pipeline.prompt_tracker import (
+        compute_prompt_score,
+        fire_prompt_across_engines,
     )
 
     close_old_connections()
@@ -901,9 +969,9 @@ def _fire_competitive_prompt_fast(track: PromptTrack, brand_name: str, brand_url
         for r in engine_results:
             persist_prompt_result(track, r, brand_host, rival_hosts)
 
-        all_res = list(track.results.values(
-            "brand_mentioned", "sentiment", "rank_position", "confidence", "engine"
-        ))
+        all_res = list(
+            track.results.values("brand_mentioned", "sentiment", "rank_position", "confidence", "engine")
+        )
         sd = compute_prompt_score(all_res)
         track.score = sd["score"]
         track.authority_score = sd["authority_score"]
@@ -911,14 +979,21 @@ def _fire_competitive_prompt_fast(track: PromptTrack, brand_name: str, brand_url
         track.structural_score = sd["structural_score"]
         track.semantic_score = sd["semantic_score"]
         track.third_party_score = sd["third_party_score"]
-        track.save(update_fields=[
-            "score", "authority_score", "content_quality_score",
-            "structural_score", "semantic_score", "third_party_score",
-        ])
+        track.save(
+            update_fields=[
+                "score",
+                "authority_score",
+                "content_quality_score",
+                "structural_score",
+                "semantic_score",
+                "third_party_score",
+            ]
+        )
     except Exception:
         logger.exception(
             "Fast competitive fire failed for track %d (run %d)",
-            track.id, track.analysis_run_id,
+            track.id,
+            track.analysis_run_id,
         )
 
 
@@ -948,13 +1023,14 @@ def _generate_and_fire_competitive_prompts(run: AnalysisRun) -> None:
         if existing_competitive >= 10:
             logger.info(
                 "Competitive prompts at saturation (%d>=10) for run %d; skipping auto-gen.",
-                existing_competitive, run.id,
+                existing_competitive,
+                run.id,
             )
             return
 
         from .pipeline.prompt_tracker import (
-            generate_brand_prompts,
             classify_prompt_intent_and_type,
+            generate_brand_prompts,
         )
 
         brand = (run.brand_name or "").strip() or _domain_label(run.url)
@@ -975,23 +1051,22 @@ def _generate_and_fire_competitive_prompts(run: AnalysisRun) -> None:
         tracks: list[PromptTrack] = []
         for prompt_text in prompts:
             intent, _ = classify_prompt_intent_and_type(prompt_text, brand, url)
-            tracks.append(PromptTrack.objects.create(
-                analysis_run=run,
-                prompt_text=prompt_text,
-                is_custom=False,
-                intent=intent,
-                prompt_type=PromptTrack.PromptSurfaceType.COMPETITIVE,
-            ))
+            tracks.append(
+                PromptTrack.objects.create(
+                    analysis_run=run,
+                    prompt_text=prompt_text,
+                    is_custom=False,
+                    intent=intent,
+                    prompt_type=PromptTrack.PromptSurfaceType.COMPETITIVE,
+                )
+            )
 
         def _fire_all():
             # Parallel pool: 4 prompts in flight, each one fires its engines
             # in parallel internally. Keeps total wall-clock to ~3x slowest
             # engine round-trip instead of 10x.
             with ThreadPoolExecutor(max_workers=4) as pool:
-                futures = [
-                    pool.submit(_fire_competitive_prompt_fast, t, brand, url)
-                    for t in tracks
-                ]
+                futures = [pool.submit(_fire_competitive_prompt_fast, t, brand, url) for t in tracks]
                 for fut in as_completed(futures):
                     try:
                         fut.result()
@@ -1002,7 +1077,8 @@ def _generate_and_fire_competitive_prompts(run: AnalysisRun) -> None:
         threading.Thread(target=_fire_all, daemon=True).start()
         logger.info(
             "Queued %d competitive prompts for run %d (runs=1, pool=4).",
-            len(tracks), run.id,
+            len(tracks),
+            run.id,
         )
 
     except Exception:

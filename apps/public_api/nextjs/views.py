@@ -137,6 +137,13 @@ class DeployView(PublicApiView):
         # known URL if the SDK couldn't determine it (e.g. local builds).
         deploy_url = (data.get("url") or org.url or "").strip()
 
+        # The HMAC secret the analyzer will use to authenticate snapshot pulls
+        # is the key_hash of the API key the SDK is calling with right now — the
+        # SDK has the plaintext, we store only the hash. (request.auth is the
+        # ApiKey set by BearerTokenAuthentication.)
+        api_key = getattr(request, "auth", None)
+        signing_key_hash = getattr(api_key, "key_hash", "") or ""
+
         deployment = NextJsDeployment.objects.create(
             organization=org,
             commit_sha=data.get("commit_sha", ""),
@@ -145,6 +152,10 @@ class DeployView(PublicApiView):
             host=data.get("host", ""),
             build_metadata=data.get("build_metadata") or {},
             deployed_at=timezone.now(),
+            snapshot_supported=data.get("snapshot_supported", False),
+            snapshot_origin=(data.get("snapshot_origin") or "").strip(),
+            snapshot_routes=data.get("routes") or [],
+            signing_key_hash=signing_key_hash,
         )
         _ensure_integration(org)
 

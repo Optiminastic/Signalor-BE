@@ -298,6 +298,21 @@ class NextJsDeployment(models.Model):
     # Lets the analyzer skip crawling pages we already have data for.
     pages_metadata = models.JSONField(default=list, blank=True)
 
+    # Snapshot pull (Cloudflare bypass): when the SDK mounts the snapshot
+    # route, the analyzer fetches the site's own rendered HTML from
+    # ``snapshot_origin`` instead of crawling the public URL.
+    #   snapshot_supported — SDK advertised the route on this deploy.
+    #   snapshot_origin     — direct deployment origin (e.g. *.vercel.app),
+    #                         NOT behind the customer's Cloudflare.
+    #   snapshot_routes     — key paths to pull (homepage + sitemap routes).
+    #   signing_key_hash    — key_hash of the ApiKey the SDK used; the HMAC
+    #                         secret both sides share (SDK has the plaintext,
+    #                         we store only this hash). Never the plaintext.
+    snapshot_supported = models.BooleanField(default=False)
+    snapshot_origin = models.URLField(max_length=2048, blank=True, default="")
+    snapshot_routes = models.JSONField(default=list, blank=True)
+    signing_key_hash = models.CharField(max_length=64, blank=True, default="")
+
     status = models.CharField(
         max_length=20,
         choices=Status.choices,

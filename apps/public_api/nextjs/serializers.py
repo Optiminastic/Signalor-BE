@@ -24,6 +24,16 @@ class DeployRequestSerializer(serializers.Serializer):
     host = serializers.CharField(max_length=40, required=False, allow_blank=True, default="")
     build_metadata = serializers.DictField(required=False, default=dict)
 
+    # Snapshot pull capability advertised by the SDK (optional — older SDKs omit).
+    snapshot_supported = serializers.BooleanField(required=False, default=False)
+    snapshot_origin = serializers.URLField(max_length=2048, required=False, allow_blank=True, default="")
+    routes = serializers.ListField(
+        child=serializers.CharField(max_length=2048),
+        required=False,
+        default=list,
+        max_length=50,
+    )
+
 
 class DeploymentResponseSerializer(serializers.ModelSerializer):
     analysis_slug = serializers.SerializerMethodField()
