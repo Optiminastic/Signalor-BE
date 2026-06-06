@@ -1,66 +1,97 @@
 # syntax=docker/dockerfile:1
 
-# Python 3.11 to match the previous Render Python-runtime config. Playwright
-# image variants only ship 3.10 (jammy) and 3.12 (noble), so we build on a
-# clean python:3.11 base and install chromium ourselves — chromium lands
-# IN the image so Render's deploy phase can't wipe it (the entire reason
-# we abandoned the non-Docker build).
-FROM python:3.11-slim-bookworm
+###############################################################################
+# Stage 1 — builder
+#
+# Carries the heavy build toolchain (gcc + -dev headers) needed to compile any
+# sdist-only deps, and installs everything into an isolated venv. None of the
+# compilers or header packages reach the final image — the runtime stage only
+# receives the finished /opt/venv tree.
+#
+# Python 3.11 to match the rest of the Render config. We install chromium
+# ourselves in the runtime stage so the binary lands IN the image and Render's
+# deploy phase can't wipe it — the whole reason this service runs from Docker.
+###############################################################################
+FROM python:3.11-slim-bookworm AS builder
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    DJANGO_SETTINGS_MODULE=config.settings.production \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1 \
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
     DEBIAN_FRONTEND=noninteractive
 
-# System packages: the python:3.11-slim base strips out compilers, but
-# several deps need to build from source on install or load shared libs
-# at runtime:
-#   - pycairo (via xhtml2pdf > svglib): build-essential, pkg-config,
-#     libcairo2-dev — slim has no `cc`, install fails with "Unknown
-#     compiler(s): [['cc'], ['gcc'], ...]"
-#   - weasyprint: libpango, libgdk-pixbuf (loaded at runtime)
-#   - playwright `install --with-deps` shells out to apt-get itself, which
-#     needs the package manager available
-# Keep build tools in the final image for now — chromium dominates size
-# (~1.5 GB), shaving 200 MB off doesn't change the deploy economics.
+# Build-only system deps. pycairo (via xhtml2pdf > svglib) needs a compiler +
+# cairo/pango/gdk-pixbuf headers; slim has no `cc`. These stay in the builder.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    pkg-config \
-    libcairo2-dev \
-    libpango1.0-dev \
-    libffi-dev \
-    libgdk-pixbuf2.0-dev \
-    shared-mime-info \
-    fontconfig \
+        build-essential \
+        pkg-config \
+        libcairo2-dev \
+        libpango1.0-dev \
+        libffi-dev \
+        libgdk-pixbuf2.0-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Self-contained venv so the runtime stage can grab a single copyable tree.
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 
-# Python deps first so this layer caches independently of source changes.
+# Requirements first → this layer caches until requirements.txt changes.
+# The pip cache mount makes rebuilds fast without bloating the image layer.
 COPY requirements.txt ./
-RUN pip install --upgrade pip && pip install -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip && pip install -r requirements.txt
 
-# Install chromium + chrome-headless-shell with system deps. --with-deps
-# needs root (we're root inside Docker). Runs AFTER pip install so the
-# chromium build number matches whatever playwright pip resolved — no
-# version drift between package and binary.
-RUN playwright install --with-deps chromium chromium-headless-shell
 
-# App source last so code changes don't bust the chromium install layer.
+###############################################################################
+# Stage 2 — runtime
+#
+# Slim base + the prebuilt venv + chromium. No build-essential, no -dev
+# headers — that's the size win over the previous single-stage image.
+###############################################################################
+FROM python:3.11-slim-bookworm AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    DJANGO_SETTINGS_MODULE=config.settings.production \
+    PATH="/opt/venv/bin:$PATH"
+
+# Runtime-only shared libs — the non-dev counterparts of the builder's headers,
+# so the PDF/cairo path loads at runtime. (Chromium's own deps overlap these,
+# but listing them explicitly keeps the runtime contract independent of which
+# libs a given playwright version happens to pull.)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libcairo2 \
+        libpango-1.0-0 \
+        libpangocairo-1.0-0 \
+        libgdk-pixbuf-2.0-0 \
+        shared-mime-info \
+        fontconfig \
+    && rm -rf /var/lib/apt/lists/*
+
+# Bring the finished venv over from the builder (ships zero compilers).
+COPY --from=builder /opt/venv /opt/venv
+
+WORKDIR /app
+
+# Install chromium + chrome-headless-shell with their system deps INTO the
+# image (~1.5 GB). Runs before the source copy so code edits never bust this
+# layer. `--with-deps` shells out to apt; the browser version matches the
+# playwright pip package resolved in the builder (no package/binary drift).
+RUN playwright install --with-deps chromium chromium-headless-shell \
+    && rm -rf /var/lib/apt/lists/*
+
+# App source last — keeps the deps + chromium layers cached across edits.
 COPY . .
 
-# Collect static at build time so the staticfiles ship with the image.
-# Override DJANGO_SETTINGS_MODULE for this step only: production settings
-# require SECRET_KEY, CORS_ALLOWED_ORIGINS, REDIS_URL to even import, and
-# none of those exist during a Docker build (Render injects them at
-# runtime). collectstatic just walks STATIC dirs — both settings produce
-# the same output. The container's runtime DJANGO_SETTINGS_MODULE
-# remains production (set by ENV above).
+# Bake staticfiles into the image. Production settings require runtime secrets
+# (SECRET_KEY, REDIS_URL, …) just to import, and none exist during a build;
+# dev settings walk the same STATIC dirs and produce identical output. The
+# container's runtime DJANGO_SETTINGS_MODULE stays production (ENV above).
 RUN DJANGO_SETTINGS_MODULE=config.settings.development python manage.py collectstatic --no-input
 
-# Render injects $PORT; fall back to 10000 for local docker run.
+# Render injects $PORT; fall back to 10000 for a local `docker run`.
 CMD opentelemetry-instrument gunicorn config.wsgi:application \
     --bind 0.0.0.0:${PORT:-10000} \
     --workers 2 --threads 4 --timeout 600
