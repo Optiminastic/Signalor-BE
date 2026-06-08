@@ -154,7 +154,10 @@ def gate_onboarding_endpoint(request, email: str | None = None) -> tuple[bool, s
 
 
 def turnstile_enabled() -> bool:
-    return bool(getattr(settings, "TURNSTILE_SECRET", "") or "")
+    # Cloudflare Turnstile protection removed — force-disabled regardless of
+    # whether TURNSTILE_SECRET is set in the environment. Onboarding-start no
+    # longer verifies a turnstile token.
+    return False
 
 
 def verify_turnstile(token: str, client_ip: str) -> tuple[bool, str]:
