@@ -7,7 +7,7 @@
 # Replace api.signalor.ai with whatever hostname you point at this VPS.
 # (Django's ALLOWED_HOSTS in stack.env must include the same hostname.)
 
-api.signalor.ai {
+api2.signalor.ai {
 	encode zstd gzip
 
 	# reverse_proxy forwards the original Host and sets X-Forwarded-Proto=https,

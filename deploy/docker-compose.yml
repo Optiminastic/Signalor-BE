@@ -1,6 +1,6 @@
 # Signalor backend — single-VPS Docker Compose stack (Hetzner).
 #
-# Replicates the Render topology on one box:
+# Self-hosted, single box:
 #   caddy   → TLS termination + reverse proxy (Let's Encrypt, auto-renew)
 #   web     → Django + Gunicorn (built from ../Dockerfile, Chromium baked in)
 #   worker  → Celery worker (sitemap audits) — same image as web
@@ -10,19 +10,23 @@
 # The two Render cron jobs (run_scheduled_analyses, cleanup_stale_rewards) and
 # nightly pg_dump backups run from the HOST crontab — see DEPLOY.md.
 #
-# Durable state lives on the Hetzner volume mounted at /mnt/HC_Volume_105845076.
-# If you ever re-create the volume or move servers, update VOLUME below and the
-# bind-mount paths in `db` and `caddy`.
+# Durable state lives on the Hetzner volume mounted at /mnt/HC_Volume_105845076
+# (Postgres data, backups, Caddy certs).
 
 name: signalor
 
-# Shared definition for the two services that run the app image. Both build
-# from the same Dockerfile; Docker layer-caches so the second build is instant.
+# Shared definition for the two services that run the app image.
+#
+# In production the image is built by GitHub Actions and pulled from GHCR — the
+# deploy workflow writes APP_TAG=sha-xxxx into deploy/.env so compose pins the
+# exact built commit. The `build:` block is the local/manual fallback: with no
+# .env present, APP_TAG defaults to `latest` and `docker compose build` builds
+# the image locally under the same name.
 x-app: &app
+  image: ghcr.io/rishi-optiminastic/signalor-be:${APP_TAG:-latest}
   build:
     context: ..
     dockerfile: Dockerfile
-  image: signalor-backend:latest
   env_file: stack.env
   restart: unless-stopped
   networks: [internal]
