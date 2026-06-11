@@ -12,7 +12,7 @@ scheduled management commands and nightly DB backups run from the host crontab.
 - **App image:** built in CI, pulled from GHCR (Chromium baked in for screenshots)
 
 All paths below assume the repo lives at `/opt/signalor` and you run commands
-from `/opt/signalor/be/deploy`.
+from `/opt/signalor/deploy`.
 
 ---
 
@@ -62,7 +62,7 @@ mkdir -p /mnt/HC_Volume_105845076/{postgres,backups,caddy/data,caddy/config}
 ```bash
 mkdir -p /opt && cd /opt
 git clone <your-repo-url> signalor
-cd /opt/signalor/be/deploy
+cd /opt/signalor/deploy
 ```
 
 ---
@@ -133,7 +133,7 @@ These replace Render's two cron services and add DB backups. `exec` reuses the
 running `web` container (cheap; Chromium image already loaded).
 
 ```bash
-chmod +x /opt/signalor/be/deploy/backup.sh
+chmod +x /opt/signalor/deploy/backup.sh
 crontab -e
 ```
 
@@ -141,13 +141,13 @@ Add:
 
 ```cron
 # Scheduled analyses — every 30 min (matches Render's */30 schedule)
-*/30 * * * * cd /opt/signalor/be/deploy && /usr/bin/docker compose exec -T web python manage.py run_scheduled_analyses >> /var/log/signalor-cron.log 2>&1
+*/30 * * * * cd /opt/signalor/deploy && /usr/bin/docker compose exec -T web python manage.py run_scheduled_analyses >> /var/log/signalor-cron.log 2>&1
 
 # Cleanup stale rewards — daily 04:00
-0 4 * * * cd /opt/signalor/be/deploy && /usr/bin/docker compose exec -T web python manage.py cleanup_stale_rewards >> /var/log/signalor-cron.log 2>&1
+0 4 * * * cd /opt/signalor/deploy && /usr/bin/docker compose exec -T web python manage.py cleanup_stale_rewards >> /var/log/signalor-cron.log 2>&1
 
 # Postgres backup — daily 03:00 → /mnt/HC_Volume_105845076/backups (7-day retention)
-0 3 * * * /opt/signalor/be/deploy/backup.sh >> /var/log/signalor-backup.log 2>&1
+0 3 * * * /opt/signalor/deploy/backup.sh >> /var/log/signalor-backup.log 2>&1
 ```
 
 > The Celery **worker** (sitemap audits) runs as a long-lived container — it is
@@ -196,7 +196,7 @@ the box set `APP_TAG=sha-<older>` in `deploy/.env` and `docker compose up -d`.
 
 ```bash
 cd /opt/signalor && git pull
-cd be/deploy
+cd deploy
 docker compose build web worker      # builds locally instead of pulling from GHCR
 docker compose up -d                 # recreates changed services; migrations run on web start
 docker compose logs -f web
