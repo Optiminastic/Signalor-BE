@@ -35,10 +35,10 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${DB_NAME}
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    # POSTGRES_* come from stack.env (injected as container env). We do NOT use
+    # ${DB_*} here: compose-file interpolation reads the shell / default .env
+    # file, not stack.env, so it would silently blank the password.
+    env_file: stack.env
     volumes:
       # Postgres data on the Hetzner volume — THE durable state of the app.
       - /mnt/HC_Volume_105845076/postgres:/var/lib/postgresql/data
