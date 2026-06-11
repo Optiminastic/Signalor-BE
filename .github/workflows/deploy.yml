@@ -77,7 +77,7 @@ jobs:
           envs: APP_TAG,GHCR_USER,GHCR_TOKEN
           script: |
             set -euo pipefail
-            cd /opt/signalor/be/deploy
+            cd /opt/signalor/deploy
             # Authenticate to GHCR with the workflow's ephemeral token (valid for
             # this run only) so the box can pull the private image.
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin

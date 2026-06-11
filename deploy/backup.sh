@@ -4,7 +4,7 @@
 # using its own POSTGRES_* env, so no credentials are needed here.
 set -euo pipefail
 
-COMPOSE_DIR=/opt/signalor/be/deploy
+COMPOSE_DIR=/opt/signalor/deploy
 BACKUP_DIR=/mnt/HC_Volume_105845076/backups
 STAMP=$(date +%F_%H%M%S)
 RETAIN_DAYS=7
