@@ -112,6 +112,8 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Cloudflare Origin Certificate for api.signalor.ai (gitignored).
+      - ./certs:/etc/caddy/certs:ro
       # Certs + Caddy state on the volume so we don't re-issue LE certs on
       # every recreate (Let's Encrypt has issuance rate limits).
       - /mnt/HC_Volume_105845076/caddy/data:/data
