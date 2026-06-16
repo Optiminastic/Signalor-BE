@@ -1,0 +1,129 @@
+# Signalor backend — single-VPS Docker Compose stack (Hetzner).
+#
+# Self-hosted, single box:
+#   caddy   → TLS termination + reverse proxy (Let's Encrypt, auto-renew)
+#   web     → Django + Gunicorn (built from ../Dockerfile, Chromium baked in)
+#   worker  → Celery worker (sitemap audits) — same image as web
+#   db      → PostgreSQL 16, data dir on the Hetzner volume
+#   redis   → cache / throttling / Celery broker
+#
+# The two Render cron jobs (run_scheduled_analyses, cleanup_stale_rewards) and
+# nightly pg_dump backups run from the HOST crontab — see DEPLOY.md.
+#
+# Durable state lives on the Hetzner volume mounted at /mnt/HC_Volume_105845076
+# (Postgres data, backups, Caddy certs).
+
+name: signalor
+
+# Shared definition for the two services that run the app image.
+#
+# In production the image is built by GitHub Actions and pulled from GHCR — the
+# deploy workflow writes APP_TAG=sha-xxxx into deploy/.env so compose pins the
+# exact built commit. The `build:` block is the local/manual fallback: with no
+# .env present, APP_TAG defaults to `latest` and `docker compose build` builds
+# the image locally under the same name.
+x-app: &app
+  image: ghcr.io/rishi-optiminastic/signalor-be:${APP_TAG:-latest}
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  env_file: stack.env
+  restart: unless-stopped
+  networks: [internal]
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    # POSTGRES_* come from stack.env (injected as container env). We do NOT use
+    # ${DB_*} here: compose-file interpolation reads the shell / default .env
+    # file, not stack.env, so it would silently blank the password.
+    env_file: stack.env
+    volumes:
+      # Postgres data on the Hetzner volume — THE durable state of the app.
+      - /mnt/HC_Volume_105845076/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [internal]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Light persistence (RDB snapshot). Redis here is cache + throttle counters
+    # + Celery broker; losing it is recoverable, so it stays on local disk.
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [internal]
+
+  web:
+    <<: *app
+    environment:
+      PORT: "8000"
+      # scripts/reconcile_migrations.py runs as `python scripts/...`, which puts
+      # /app/scripts (not /app) on sys.path[0], so `import config` fails. Putting
+      # /app on PYTHONPATH makes the project package importable for that script.
+      PYTHONPATH: /app
+    # Migrate before serving, then exec gunicorn so it becomes PID 1 and
+    # receives signals cleanly. (We don't run scripts/reconcile_migrations.py:
+    # it patches Render/staging-specific migration drift that this fresh,
+    # self-hosted DB never has, and it assumes django_migrations already
+    # exists — which crashes the first boot on an empty DB.)
+    command:
+      - sh
+      - -c
+      - >
+        python manage.py migrate --no-input &&
+        exec opentelemetry-instrument gunicorn config.wsgi:application
+        --bind 0.0.0.0:8000 --workers 2 --threads 4 --timeout 600
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      # Just verify gunicorn is accepting connections. A full HTTP check would
+      # trip ALLOWED_HOSTS / SECURE_SSL_REDIRECT from inside the container.
+      test: ["CMD-SHELL", "python -c \"import socket; socket.create_connection(('127.0.0.1', 8000), timeout=5)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  worker:
+    <<: *app
+    command: ["celery", "-A", "config", "worker", "--loglevel=info", "--concurrency=2"]
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      web: {condition: service_started}
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Cloudflare Origin Certificate for api.signalor.ai (gitignored).
+      - ./certs:/etc/caddy/certs:ro
+      # Certs + Caddy state on the volume so we don't re-issue LE certs on
+      # every recreate (Let's Encrypt has issuance rate limits).
+      - /mnt/HC_Volume_105845076/caddy/data:/data
+      - /mnt/HC_Volume_105845076/caddy/config:/config
+    depends_on:
+      - web
+    networks: [internal]
+
+volumes:
+  redis_data:
+
+networks:
+  internal:

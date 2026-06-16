@@ -1,0 +1,27 @@
+# Caddy reverse proxy for the Signalor backend.
+#
+# Caddy obtains and renews a Let's Encrypt cert automatically for this domain,
+# as long as the domain's A record points at this server and ports 80/443 are
+# open. It terminates TLS and proxies plain HTTP to gunicorn on web:8000.
+#
+# Django's ALLOWED_HOSTS in stack.env must include each hostname served here.
+
+# Production — proxied behind Cloudflare (orange cloud), SSL mode Full (strict).
+# Caddy can't get a Let's Encrypt cert through the CF proxy, so we serve a
+# Cloudflare Origin Certificate (generate in CF dashboard → SSL/TLS → Origin
+# Server → Create Certificate; covers signalor.ai + *.signalor.ai). Drop the
+# PEM + key in deploy/certs/ (mounted into the caddy container, gitignored).
+api.signalor.ai {
+	encode zstd gzip
+	tls /etc/caddy/certs/cloudflare-origin.pem /etc/caddy/certs/cloudflare-origin.key
+	# reverse_proxy forwards the original Host and sets X-Forwarded-Proto=https,
+	# which Django's SECURE_PROXY_SSL_HEADER / USE_X_FORWARDED_HOST rely on.
+	reverse_proxy web:8000
+}
+
+# Transitional — keep api2 on the VPS (grey-cloud / Let's Encrypt) until Render
+# takes it over, then this block can be removed.
+api2.signalor.ai {
+	encode zstd gzip
+	reverse_proxy web:8000
+}
