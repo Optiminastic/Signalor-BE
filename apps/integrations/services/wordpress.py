@@ -2,11 +2,12 @@
 WordPress REST API integration service.
 Supports both self-hosted WordPress (Basic Auth) and WordPress.com (OAuth2 via public API).
 """
+
 from __future__ import annotations
 
 import base64
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from urllib.parse import urljoin
 
 import requests
@@ -15,7 +16,7 @@ logger = logging.getLogger("apps")
 
 
 def _auth_header(username: str, app_password: str) -> dict[str, str]:
-    raw = f"{username}:{app_password}".encode("utf-8")
+    raw = f"{username}:{app_password}".encode()
     token = base64.b64encode(raw).decode("ascii")
     return {"Authorization": f"Basic {token}"}
 
@@ -41,7 +42,7 @@ def _parse_wp_datetime(value: str) -> datetime | None:
     try:
         dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt
     except ValueError:
         return None
@@ -103,6 +104,7 @@ def validate_wpcom_token(access_token: str, blog_id: str) -> dict:
 # Self-hosted validation
 # ---------------------------------------------------------------------------
 
+
 def validate_wordpress_connection(site_url: str, username: str, app_password: str) -> dict:
     """Validate connectivity and credentials for self-hosted WordPress.
 
@@ -150,6 +152,7 @@ def validate_wordpress_connection(site_url: str, username: str, app_password: st
 # Data fetching (dual-path)
 # ---------------------------------------------------------------------------
 
+
 def fetch_wordpress_data(integration, days: int = 30) -> dict:
     """Fetch WordPress content metrics and trend data for snapshot storage."""
     if _is_wpcom(integration):
@@ -172,12 +175,21 @@ def _fetch_selfhosted_data(integration, days: int) -> dict:
     recent_by_date = _fetch_recent_posts(site_url, headers, "date")
     recent_by_modified = _fetch_recent_posts(site_url, headers, "modified")
 
-    start_dt = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
+    start_dt = datetime.combine(start_date, datetime.min.time(), tzinfo=UTC)
     published_posts_30d = sum(
-        1 for post in recent_by_date if (_parse_wp_datetime(post.get("date_gmt") or post.get("date")) or datetime.min.replace(tzinfo=timezone.utc)) >= start_dt
+        1
+        for post in recent_by_date
+        if (_parse_wp_datetime(post.get("date_gmt") or post.get("date")) or datetime.min.replace(tzinfo=UTC))
+        >= start_dt
     )
     updated_posts_30d = sum(
-        1 for post in recent_by_modified if (_parse_wp_datetime(post.get("modified_gmt") or post.get("modified")) or datetime.min.replace(tzinfo=timezone.utc)) >= start_dt
+        1
+        for post in recent_by_modified
+        if (
+            _parse_wp_datetime(post.get("modified_gmt") or post.get("modified"))
+            or datetime.min.replace(tzinfo=UTC)
+        )
+        >= start_dt
     )
 
     top_posts = []
@@ -250,12 +262,14 @@ def _fetch_wpcom_data(integration, days: int) -> dict:
 
     pages_url = f"{WPCOM_API_BASE}/sites/{blog_id}/pages"
     try:
-        pages_resp = requests.get(pages_url, headers=headers, params={"number": 1, "status": "publish"}, timeout=15)
+        pages_resp = requests.get(
+            pages_url, headers=headers, params={"number": 1, "status": "publish"}, timeout=15
+        )
         total_pages = pages_resp.json().get("found", 0) if pages_resp.status_code == 200 else 0
     except requests.RequestException:
         total_pages = 0
 
-    start_dt = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
+    start_dt = datetime.combine(start_date, datetime.min.time(), tzinfo=UTC)
     published_posts_30d = 0
     updated_posts_30d = 0
 
@@ -281,8 +295,7 @@ def _fetch_wpcom_data(integration, days: int) -> dict:
         )
 
     wpcom_posts_for_daily = [
-        {"date_gmt": post.get("date", ""), "date": post.get("date", "")}
-        for post in all_posts
+        {"date_gmt": post.get("date", ""), "date": post.get("date", "")} for post in all_posts
     ]
     daily_publishing = _compute_daily_publishing(wpcom_posts_for_daily, start_date, end_date)
 
@@ -296,6 +309,7 @@ def _fetch_wpcom_data(integration, days: int) -> dict:
         "top_posts": top_posts,
         "daily_publishing": daily_publishing,
     }
+
 
 def _get_collection_total(site_url: str, collection: str, headers: dict[str, str]) -> int:
     url = urljoin(site_url + "/", f"wp-json/wp/v2/{collection}")
@@ -371,6 +385,7 @@ def _compute_daily_publishing(posts: list[dict], start_date: date, end_date: dat
 # Publishing (dual-path)
 # ---------------------------------------------------------------------------
 
+
 def publish_wordpress_post(
     integration,
     title: str,
@@ -409,9 +424,7 @@ def _publish_selfhosted_post(integration, title, content, excerpt, status, slug)
         raise ValueError(f"Failed to reach WordPress publish API: {exc}") from exc
 
     if resp.status_code not in (200, 201):
-        raise ValueError(
-            f"WordPress publish failed (HTTP {resp.status_code}): {resp.text[:200]}"
-        )
+        raise ValueError(f"WordPress publish failed (HTTP {resp.status_code}): {resp.text[:200]}")
 
     data = resp.json()
     return {
@@ -445,9 +458,7 @@ def _publish_wpcom_post(integration, title, content, excerpt, status, slug) -> d
         raise ValueError(f"Failed to reach WordPress.com publish API: {exc}") from exc
 
     if resp.status_code not in (200, 201):
-        raise ValueError(
-            f"WordPress.com publish failed (HTTP {resp.status_code}): {resp.text[:200]}"
-        )
+        raise ValueError(f"WordPress.com publish failed (HTTP {resp.status_code}): {resp.text[:200]}")
 
     data = resp.json()
     return {
@@ -456,3 +467,71 @@ def _publish_wpcom_post(integration, title, content, excerpt, status, slug) -> d
         "status": data.get("status"),
         "title": data.get("title", title),
     }
+
+
+def upload_wordpress_media(integration, filename: str, data: bytes, content_type: str) -> dict:
+    """Upload an image to the WordPress media library. Returns {id, url}."""
+    safe_name = (filename or "image").replace('"', "").strip() or "image"
+    if _is_wpcom(integration):
+        access_token = integration.get_access_token()
+        headers = _wpcom_auth_header(access_token)
+        blog_id = integration.metadata.get("blog_id", "")
+        url = f"{WPCOM_API_BASE}/sites/{blog_id}/media/new"
+        try:
+            resp = requests.post(
+                url,
+                headers=headers,
+                files={"media[]": (safe_name, data, content_type)},
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise ValueError(f"Failed to reach WordPress.com media API: {exc}") from exc
+        if resp.status_code not in (200, 201):
+            raise ValueError(
+                f"WordPress.com media upload failed (HTTP {resp.status_code}): {resp.text[:200]}"
+            )
+        media = (resp.json().get("media") or [{}])[0]
+        return {"id": media.get("ID"), "url": media.get("URL", "")}
+
+    site_url = _normalize_site_url(integration.metadata.get("site_url", ""))
+    username = integration.metadata.get("username", "")
+    app_password = integration.get_access_token()
+    headers = _auth_header(username, app_password)
+    headers["Content-Disposition"] = f'attachment; filename="{safe_name}"'
+    headers["Content-Type"] = content_type or "application/octet-stream"
+
+    media_url = urljoin(site_url + "/", "wp-json/wp/v2/media")
+    try:
+        resp = requests.post(media_url, headers=headers, data=data, timeout=30)
+    except requests.RequestException as exc:
+        raise ValueError(f"Failed to reach WordPress media API: {exc}") from exc
+    if resp.status_code not in (200, 201):
+        raise ValueError(f"WordPress media upload failed (HTTP {resp.status_code}): {resp.text[:200]}")
+    body = resp.json()
+    return {"id": body.get("id"), "url": body.get("source_url", "")}
+
+
+def delete_wordpress_post(integration, post_id: int) -> None:
+    """Delete (trash/force) a post on WordPress (self-hosted or .com)."""
+    if _is_wpcom(integration):
+        access_token = integration.get_access_token()
+        headers = _wpcom_auth_header(access_token)
+        blog_id = integration.metadata.get("blog_id", "")
+        url = f"{WPCOM_API_BASE}/sites/{blog_id}/posts/{post_id}/delete"
+        try:
+            resp = requests.post(url, headers=headers, timeout=20)
+        except requests.RequestException as exc:
+            raise ValueError(f"Failed to reach WordPress.com delete API: {exc}") from exc
+    else:
+        site_url = _normalize_site_url(integration.metadata.get("site_url", ""))
+        username = integration.metadata.get("username", "")
+        app_password = integration.get_access_token()
+        headers = _auth_header(username, app_password)
+        url = urljoin(site_url + "/", f"wp-json/wp/v2/posts/{post_id}")
+        try:
+            resp = requests.delete(url, headers=headers, params={"force": "true"}, timeout=20)
+        except requests.RequestException as exc:
+            raise ValueError(f"Failed to reach WordPress delete API: {exc}") from exc
+
+    if resp.status_code not in (200, 201):
+        raise ValueError(f"WordPress delete failed (HTTP {resp.status_code}): {resp.text[:200]}")

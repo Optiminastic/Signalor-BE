@@ -27,6 +27,10 @@ from .views import (
     BlogAutomationGenerateView,
     BlogAutomationProcessDueView,
     BlogAutomationPublishView,
+    BlogComposerGenerateView,
+    BlogComposerPostsView,
+    BlogComposerPublishView,
+    BlogComposerUploadImageView,
     BulkCreateUserActionView,
     CitationSourcesView,
     CitationTrendView,
@@ -158,6 +162,28 @@ urlpatterns = [
         "runs/s/<str:slug>/domain-analytics/",
         DomainAnalyticsView.as_view(),
         name="domain-analytics",
+    ),
+    # Blog composer (dashboard "Blog Agent" page)
+    path("runs/s/<str:slug>/blog/posts/", BlogComposerPostsView.as_view(), name="blog-composer-posts"),
+    path(
+        "runs/s/<str:slug>/blog/posts/<int:post_id>/",
+        BlogComposerPostsView.as_view(),
+        name="blog-composer-post-delete",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/generate/",
+        BlogComposerGenerateView.as_view(),
+        name="blog-composer-generate",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/publish/",
+        BlogComposerPublishView.as_view(),
+        name="blog-composer-publish",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/upload-image/",
+        BlogComposerUploadImageView.as_view(),
+        name="blog-composer-upload-image",
     ),
     # Sitemap audit + AI agent log stub
     path("runs/s/<str:slug>/sitemap/", SitemapAuditDetailView.as_view(), name="sitemap-audit-detail"),

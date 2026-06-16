@@ -5519,3 +5519,308 @@ class ContentRawFileUpsertView(APIView):
         except RawFileError as exc:
             return Response({"detail": str(exc)}, status=502)
         return Response(saved)
+
+
+# ---------- Blog Composer endpoints (dashboard "Blog Agent" page) ----------
+#
+# Slug-scoped endpoints powering the dashboard blog composer at
+# runs/s/<slug>/blog/{posts,generate,publish}/. Distinct from the Actions
+# "AI Blog Automation" flow (BlogAutomation*Views): these return HTML drafts
+# directly and publish straight to the org's connected WordPress, with no job
+# persistence. The composer page sends only the run slug, so email + site URL
+# are resolved from the AnalysisRun.
+
+
+def _blog_run_email(slug: str):
+    """Resolve (run, email) for a blog-composer request from its run slug."""
+    run = _safe_first(AnalysisRun.objects.filter(slug=slug), context="blog composer run lookup")
+    if not run:
+        return None, ""
+    return run, (run.email or "").lower().strip()
+
+
+def _clean_blog_posts(top_posts) -> list[dict]:
+    """Coerce WordPress top_posts into the strict shape the frontend expects."""
+    cleaned = []
+    for post in top_posts or []:
+        if post.get("id") is None:
+            continue
+        cleaned.append(
+            {
+                "id": int(post["id"]),
+                "title": str(post.get("title") or ""),
+                "slug": str(post.get("slug") or ""),
+                "url": str(post.get("url") or ""),
+                "published_at": str(post.get("published_at") or ""),
+                "modified_at": str(post.get("modified_at") or ""),
+            }
+        )
+    return cleaned
+
+
+def _generate_blog_html(site_url: str, topic: str, tone: str, word_count: int) -> dict:
+    """Generate a blog draft with semantic HTML body, honoring tone + length."""
+    from .pipeline.llm import ask_llm
+
+    prompt = f"""
+You are an expert SEO + GEO content strategist.
+Write a complete, publish-ready blog post.
+
+Site URL: {site_url or "n/a"}
+Primary topic: {topic}
+Tone: {tone}
+Target length: approximately {word_count} words
+
+Return STRICT JSON only with keys:
+title, slug, meta_description, tags, content_html
+
+Requirements:
+- title: compelling and specific
+- slug: URL-safe, lowercase, hyphenated
+- meta_description: max 160 chars
+- tags: array of 4-8 short tags
+- content_html: clean semantic HTML using only <h2>, <h3>, <p>, <ul>, <ol>,
+  <li>, <strong>, <em>, <a>, <blockquote>. Do NOT include <html>, <head>,
+  <body>, markdown, or code fences. Use <h2>/<h3> for structure.
+"""
+
+    raw = ask_llm(
+        prompt=prompt.strip(),
+        preferred_provider="gemini",
+        max_tokens=2600,
+        temperature=0.6,
+        purpose="blog_agent.generate",
+    )
+
+    parsed = _extract_blog_json(raw) or {}
+    title = str(parsed.get("title") or f"{topic} — A Practical Guide").strip()
+    slug = _slugify(str(parsed.get("slug") or title))
+    meta_description = str(parsed.get("meta_description") or "")[:160].strip()
+
+    tags = parsed.get("tags")
+    if not isinstance(tags, list):
+        tags = []
+    tags = [str(t).strip() for t in tags if str(t).strip()][:8]
+
+    content_html = str(parsed.get("content_html") or "").strip()
+    if not content_html:
+        content_html = (
+            f"<h2>{title}</h2>"
+            f"<p>{meta_description or 'A practical guide on ' + topic + '.'}</p>"
+            "<h3>Why this matters</h3>"
+            "<p>AI-first search rewards clear, structured, credible content.</p>"
+        )
+
+    return {
+        "title": title,
+        "slug": slug,
+        "meta_description": meta_description,
+        "tags": tags,
+        "content_html": content_html,
+    }
+
+
+class BlogComposerPostsView(APIView):
+    """GET runs/s/<slug>/blog/posts/ — recent WordPress posts for the composer."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        _, email = _blog_run_email(slug)
+        if not email:
+            return Response({"connected": False, "posts": []})
+
+        integration, provider = _resolve_blog_integration(email)
+        if not integration or provider != "wordpress":
+            return Response({"connected": False, "posts": []})
+
+        from apps.integrations.services.wordpress import fetch_wordpress_data
+
+        meta = integration.metadata or {}
+        try:
+            data = fetch_wordpress_data(integration)
+        except Exception:
+            logger.exception("Blog composer posts fetch failed.")
+            return Response(
+                {
+                    "connected": True,
+                    "site_name": meta.get("site_name") or meta.get("site_url", ""),
+                    "site_url": meta.get("site_url", ""),
+                    "posts": [],
+                    "error": "Failed to load recent posts from WordPress.",
+                }
+            )
+
+        return Response(
+            {
+                "connected": True,
+                "site_name": meta.get("site_name") or meta.get("site_url", ""),
+                "site_url": meta.get("site_url", ""),
+                "total_posts": int(data.get("total_posts") or 0),
+                "published_posts_30d": int(data.get("published_posts_30d") or 0),
+                "posts": _clean_blog_posts(data.get("top_posts")),
+            }
+        )
+
+    def delete(self, request, slug, post_id):
+        _, email = _blog_run_email(slug)
+        if not email:
+            return Response({"error": "Run not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        integration, provider = _resolve_blog_integration(email)
+        if not integration or provider != "wordpress":
+            return Response({"error": "No connected WordPress site."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from apps.integrations.services.wordpress import delete_wordpress_post
+
+        try:
+            delete_wordpress_post(integration, int(post_id))
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            logger.exception("Blog composer delete failed.")
+            return Response(
+                {"error": "Unexpected error while deleting post."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class BlogComposerGenerateView(APIView):
+    """POST runs/s/<slug>/blog/generate/ — AI blog draft (HTML) for the composer."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request, slug):
+        run, _ = _blog_run_email(slug)
+        if not run:
+            return Response({"error": "Run not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        topic = str(request.data.get("topic", "")).strip()
+        if not topic:
+            return Response({"error": "Topic is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        tone = str(request.data.get("tone", "informative")).strip() or "informative"
+        try:
+            word_count = int(request.data.get("word_count") or 800)
+        except (TypeError, ValueError):
+            word_count = 800
+        word_count = max(300, min(word_count, 2500))
+
+        draft = _generate_blog_html(run.url or "", topic, tone, word_count)
+        return Response(draft)
+
+
+class BlogComposerPublishView(APIView):
+    """POST runs/s/<slug>/blog/publish/ — publish a draft to connected WordPress."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request, slug):
+        _, email = _blog_run_email(slug)
+        if not email:
+            return Response({"error": "Run not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        integration, provider = _resolve_blog_integration(email)
+        if not integration or provider != "wordpress":
+            return Response(
+                {"error": "No connected WordPress site. Connect WordPress during onboarding to publish."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        title = str(request.data.get("title", "")).strip()
+        content_html = str(request.data.get("content_html", "")).strip()
+        if not title or not content_html:
+            return Response({"error": "Title and content are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        publish_status = "publish" if request.data.get("status") == "publish" else "draft"
+
+        from apps.integrations.services.wordpress import publish_wordpress_post
+
+        try:
+            result = publish_wordpress_post(
+                integration,
+                title=title,
+                content=content_html,
+                excerpt=str(request.data.get("meta_description", "")).strip(),
+                status=publish_status,
+                slug=str(request.data.get("slug", "")).strip(),
+            )
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            logger.exception("Blog composer publish failed.")
+            return Response(
+                {"error": "Unexpected error while publishing draft."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        post_id = result.get("id") or 0
+        site_url = (integration.metadata or {}).get("site_url", "")
+        edit_url = (
+            f"{site_url.rstrip('/')}/wp-admin/post.php?post={post_id}&action=edit"
+            if post_id and site_url
+            else ""
+        )
+        return Response(
+            {
+                "post_id": int(post_id) if post_id else 0,
+                "post_url": result.get("url") or "",
+                "status": result.get("status") or publish_status,
+                "edit_url": edit_url,
+            }
+        )
+
+
+class BlogComposerUploadImageView(APIView):
+    """POST runs/s/<slug>/blog/upload-image/ — upload an image to WP media."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug):
+        _, email = _blog_run_email(slug)
+        if not email:
+            return Response({"error": "Run not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        file_obj = request.FILES.get("file")
+        if not file_obj:
+            return Response({"error": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
+        if file_obj.size > 8 * 1024 * 1024:
+            return Response({"error": "Image is larger than 8 MB."}, status=status.HTTP_400_BAD_REQUEST)
+        content_type = file_obj.content_type or "application/octet-stream"
+        if not content_type.startswith("image/"):
+            return Response({"error": "Only image files are allowed."}, status=status.HTTP_400_BAD_REQUEST)
+
+        integration, provider = _resolve_blog_integration(email)
+        if not integration or provider != "wordpress":
+            return Response(
+                {"error": "Connect WordPress to upload images to your media library."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from apps.integrations.services.wordpress import upload_wordpress_media
+
+        try:
+            result = upload_wordpress_media(
+                integration,
+                filename=file_obj.name,
+                data=file_obj.read(),
+                content_type=content_type,
+            )
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            logger.exception("Blog composer image upload failed.")
+            return Response(
+                {"error": "Unexpected error while uploading image."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if not result.get("url"):
+            return Response(
+                {"error": "Upload succeeded but no URL was returned."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response({"url": result["url"], "id": result.get("id") or 0})
