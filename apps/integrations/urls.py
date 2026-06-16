@@ -8,11 +8,19 @@ from .views import (
     GAPropertiesListView,
     GASelectPropertyView,
     GASyncView,
+    GSCAuthURLView,
+    GSCCallbackView,
+    GSCDataView,
+    GSCDisconnectView,
+    GSCSelectSiteView,
+    GSCSitesListView,
+    GSCSyncView,
+    GSCUrlInspectView,
     IntegrationStatusView,
     ScoreTrafficCorrelationView,
     ShopifyAppUninstalledWebhookView,
-    ShopifyBillingUpdateView,
     ShopifyAuthURLView,
+    ShopifyBillingUpdateView,
     ShopifyCallbackView,
     ShopifyConnectView,
     ShopifyDataView,
@@ -23,8 +31,8 @@ from .views import (
     WooCommerceDataView,
     WooCommerceDisconnectView,
     WooCommerceSyncView,
-    WordPressConnectView,
     WordPressCallbackView,
+    WordPressConnectView,
     WordPressDataView,
     WordPressDisconnectView,
     WordPressSyncView,
@@ -49,7 +57,6 @@ urlpatterns = [
         GADisconnectView.as_view(),
         name="ga-disconnect",
     ),
-
     path(
         "google-analytics/properties/",
         GAPropertiesListView.as_view(),
@@ -60,7 +67,6 @@ urlpatterns = [
         GASelectPropertyView.as_view(),
         name="ga-select-property",
     ),
-
     # Data sync
     path(
         "google-analytics/sync/",
@@ -72,14 +78,53 @@ urlpatterns = [
         GADataView.as_view(),
         name="ga-data",
     ),
-
     # Correlation
     path(
         "score-traffic-correlation/",
         ScoreTrafficCorrelationView.as_view(),
         name="score-traffic-correlation",
     ),
-
+    # Google Search Console
+    path(
+        "google-search-console/auth-url/",
+        GSCAuthURLView.as_view(),
+        name="gsc-auth-url",
+    ),
+    path(
+        "google-search-console/callback/",
+        GSCCallbackView.as_view(),
+        name="gsc-callback",
+    ),
+    path(
+        "google-search-console/disconnect/",
+        GSCDisconnectView.as_view(),
+        name="gsc-disconnect",
+    ),
+    path(
+        "google-search-console/sites/",
+        GSCSitesListView.as_view(),
+        name="gsc-sites",
+    ),
+    path(
+        "google-search-console/select-site/",
+        GSCSelectSiteView.as_view(),
+        name="gsc-select-site",
+    ),
+    path(
+        "google-search-console/sync/",
+        GSCSyncView.as_view(),
+        name="gsc-sync",
+    ),
+    path(
+        "google-search-console/data/",
+        GSCDataView.as_view(),
+        name="gsc-data",
+    ),
+    path(
+        "google-search-console/inspect/",
+        GSCUrlInspectView.as_view(),
+        name="gsc-inspect",
+    ),
     # Shopify
     path(
         "shopify/auth-url/",
@@ -151,13 +196,11 @@ urlpatterns = [
         WordPressDataView.as_view(),
         name="wordpress-data",
     ),
-
     # WooCommerce
-    path("woocommerce/connect/",    WooCommerceConnectView.as_view(),    name="woocommerce-connect"),
+    path("woocommerce/connect/", WooCommerceConnectView.as_view(), name="woocommerce-connect"),
     path("woocommerce/disconnect/", WooCommerceDisconnectView.as_view(), name="woocommerce-disconnect"),
-    path("woocommerce/sync/",       WooCommerceSyncView.as_view(),       name="woocommerce-sync"),
-    path("woocommerce/data/",       WooCommerceDataView.as_view(),       name="woocommerce-data"),
-
+    path("woocommerce/sync/", WooCommerceSyncView.as_view(), name="woocommerce-sync"),
+    path("woocommerce/data/", WooCommerceDataView.as_view(), name="woocommerce-data"),
     # Status
     path("status/", IntegrationStatusView.as_view(), name="status"),
 ]

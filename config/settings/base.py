@@ -262,6 +262,13 @@ GOOGLE_ANALYTICS_REDIRECT_URI = os.getenv(
     "GOOGLE_ANALYTICS_REDIRECT_URI",
     "http://localhost:3000/settings/integrations/callback/google-analytics",
 )
+# Search Console uses a server-side OAuth callback (the backend exchanges the
+# code, then redirects the browser back to the frontend) — point this at the
+# backend endpoint, not the frontend.
+GOOGLE_SEARCH_CONSOLE_REDIRECT_URI = os.getenv(
+    "GOOGLE_SEARCH_CONSOLE_REDIRECT_URI",
+    "http://localhost:8000/api/integrations/google-search-console/callback/",
+)
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", "")
 
 DATAFORSEO_LOGIN = os.getenv("DATAFORSEO_LOGIN", "")
