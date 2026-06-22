@@ -5303,14 +5303,20 @@ class WeeklyTestEmailView(APIView):
 
         from apps.analyzer.email_utils import send_weekly_email
 
-        to_email = request.data.get("email", "").strip()
-        if not to_email:
-            return Response({"error": "email is required."}, status=400)
-
         try:
             run = AnalysisRun.objects.get(slug=slug)
         except AnalysisRun.DoesNotExist:
             return Response({"error": "Run not found."}, status=404)
+
+        # Send only to the run's own owner — never an address from the request
+        # body. Accepting a caller-supplied recipient made this an open relay:
+        # anyone could POST an arbitrary `email` and have us mail a victim
+        # (inbox-bombing / spam). The recipient is now server-derived.
+        to_email = (run.email or "").strip()
+        if not to_email:
+            return Response(
+                {"error": "This run has no owner email on file."}, status=400
+            )
 
         def _domain(url: str) -> str:
             try:
