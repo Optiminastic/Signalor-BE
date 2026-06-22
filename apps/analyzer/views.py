@@ -839,7 +839,14 @@ class StartAnalysisView(APIView):
 # worker is gone; we mark it failed on the next poll so the UI recovers on its
 # own. A single-page analysis normally finishes in well under a minute.
 _TERMINAL_RUN_STATUSES = {AnalysisRun.Status.COMPLETE, AnalysisRun.Status.FAILED}
-_STALE_RUN_TIMEOUT = timedelta(minutes=5)
+# Two timeouts, because a run can sit in two very different "not done" states:
+#   • PENDING  → queued in RabbitMQ, waiting for a free worker. This is normal
+#     and can legitimately last minutes during a burst, so give it a long grace
+#     before declaring it dead (otherwise we false-fail valid queued jobs).
+#   • running (crawling/analyzing/scoring) → a worker picked it up and refreshes
+#     updated_at as it progresses; 5 min of silence means that worker died.
+_STALE_PENDING_TIMEOUT = timedelta(minutes=30)
+_STALE_RUNNING_TIMEOUT = timedelta(minutes=5)
 
 
 class AnalysisRunBySlugView(APIView):
@@ -865,14 +872,21 @@ class AnalysisRunBySlugView(APIView):
             )
 
         # Self-heal orphaned runs whose background worker died (see note above).
-        if run.status not in _TERMINAL_RUN_STATUSES and run.updated_at < timezone.now() - _STALE_RUN_TIMEOUT:
-            run.status = AnalysisRun.Status.FAILED
-            if not run.error_message:
-                run.error_message = (
-                    "Analysis stalled — no progress for over 5 minutes, so the "
-                    "background worker likely restarted. Please re-run the analysis."
-                )
-            run.save(update_fields=["status", "error_message", "updated_at"])
+        # PENDING runs are still queued waiting for a worker, so they get the
+        # longer grace; only runs that actually started and went silent are
+        # failed at the short timeout.
+        if run.status not in _TERMINAL_RUN_STATUSES:
+            is_pending = run.status == AnalysisRun.Status.PENDING
+            timeout = _STALE_PENDING_TIMEOUT if is_pending else _STALE_RUNNING_TIMEOUT
+            if run.updated_at < timezone.now() - timeout:
+                run.status = AnalysisRun.Status.FAILED
+                if not run.error_message:
+                    mins = int(timeout.total_seconds() // 60)
+                    run.error_message = (
+                        f"Analysis stalled — no progress for over {mins} minutes, so the "
+                        "background worker likely restarted. Please re-run the analysis."
+                    )
+                run.save(update_fields=["status", "error_message", "updated_at"])
 
         serializer = AnalysisRunDetailSerializer(run)
         return Response(serializer.data)
@@ -5220,6 +5234,59 @@ class RunBacklinkFreeView(APIView):
         kit.payload = {**(kit.payload or {}), "site_backlink_opportunities": rows}
         kit.save(update_fields=["payload", "updated_at"])
         return Response({"rows": rows, "has_generated": True})
+
+
+class DomainRatingFreeView(APIView):
+    """POST /api/analyzer/tools/domain-rating/
+
+    Public, no-auth Domain Rating tool for the marketing site. Body: {domain}.
+    Validates the domain format, then returns a 0-100 Domain Rating plus the
+    domain's global rank, sourced from the free Open PageRank API.
+
+    Results are cached per-domain for 7 days; the endpoint is throttled to keep
+    abuse off the upstream free-tier quota.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request):
+        from apps.integrations.services.openpagerank import (
+            OpenPageRankError,
+            OpenPageRankNotConfigured,
+        )
+
+        from .services.domain_rating import InvalidDomain, get_or_generate
+
+        domain = (request.data.get("domain") or "").strip()
+        if not domain:
+            return Response(
+                {"detail": "A domain is required.", "code": "invalid_domain"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            return Response(get_or_generate(domain))
+        except InvalidDomain as exc:
+            return Response(
+                {"detail": str(exc), "code": "invalid_domain"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except OpenPageRankNotConfigured:
+            return Response(
+                {
+                    "detail": "Domain rating is temporarily unavailable.",
+                    "code": "openpagerank_not_configured",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except OpenPageRankError:
+            return Response(
+                {
+                    "detail": "Couldn't fetch domain rating right now. Try again shortly.",
+                    "code": "openpagerank_upstream",
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
 
 
 class ContentRewriteElementView(APIView):

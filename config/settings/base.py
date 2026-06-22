@@ -267,6 +267,10 @@ ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", "")
 DATAFORSEO_LOGIN = os.getenv("DATAFORSEO_LOGIN", "")
 DATAFORSEO_PASSWORD = os.getenv("DATAFORSEO_PASSWORD", "")
 
+# Open PageRank — free, Common Crawl–based domain authority metric powering the
+# public Domain Rating tool. Free key from domcop.com/openpagerank.
+OPENPAGERANK_API_KEY = os.getenv("OPENPAGERANK_API_KEY", "")
+
 # Scraping-API fallback for the crawler. When a direct crawl is hard-blocked
 # (e.g. 403 from a Cloudflare/WAF against our datacenter IPs), the crawler
 # re-fetches via this API from residential IPs. Disabled (no behavior change)

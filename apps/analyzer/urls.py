@@ -46,6 +46,7 @@ from .views import (
     CrawlEssentialsStatusView,
     CreateUserActionView,
     DomainAnalyticsView,
+    DomainRatingFreeView,
     ExportPDFView,
     GeneratePromptsView,
     GeoImprovementsView,
@@ -91,6 +92,7 @@ app_name = "analyzer"
 
 urlpatterns = [
     path("health/", HealthCheckView.as_view(), name="health-check"),
+    path("tools/domain-rating/", DomainRatingFreeView.as_view(), name="domain-rating-free"),
     path("onboarding-start/", OnboardingStartView.as_view(), name="onboarding-start"),
     path("analyze/", StartAnalysisView.as_view(), name="start-analysis"),
     path("generate-prompts/", GeneratePromptsView.as_view(), name="generate-prompts"),

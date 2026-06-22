@@ -919,6 +919,9 @@ def run_single_page_analysis(run_id: int):
         run.composite_score = composite
         run.status = AnalysisRun.Status.COMPLETE
         run.progress = 100
+        # Clear any stale error (e.g. a "stalled" message the watchdog set while
+        # this run was waiting in the queue) — it completed cleanly after all.
+        run.error_message = ""
         run.llm_logs = get_collected_logs()
         run.save()
         logger.info("Analysis complete for run %d: score %.1f", run_id, composite)
@@ -1123,13 +1126,26 @@ def _kickoff_sitemap_audit(run_id: int) -> None:
 
 
 def start_analysis_task(run_id: int):
-    """Start the main analysis in a background thread and fire the sitemap
-    audit in parallel so the Sitemap tab is populated as soon as possible."""
+    """Dispatch the main analysis and fire the sitemap audit in parallel so the
+    Sitemap tab is populated as soon as possible.
+
+    The main analysis goes onto the RabbitMQ queue (``analyzer.run_analysis``)
+    when a broker is configured, so it runs on a dedicated worker off the web
+    process. When no broker is set (local dev / tests) the RabbitMQ app is in
+    eager mode, which would block the HTTP response for the whole run — so we
+    fall back to the original daemon thread to keep ``/analyze/`` fast.
+    """
     if not AnalysisRun.objects.filter(pk=run_id).exists():
         return
 
-    thread = threading.Thread(target=run_single_page_analysis, args=(run_id,), daemon=True)
-    thread.start()
+    from config.celery_rabbit import analysis_app
+
+    from .analysis_tasks import run_analysis_task
+
+    if analysis_app.conf.task_always_eager:
+        threading.Thread(target=run_single_page_analysis, args=(run_id,), daemon=True).start()
+    else:
+        run_analysis_task.delay(run_id)
 
     # Sibling sitemap audit — runs concurrently with the main analysis above.
     # Dispatch in its own thread: with no Celery broker (local dev) .delay()
