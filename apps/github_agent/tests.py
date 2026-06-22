@@ -135,6 +135,43 @@ class WebhookSignatureTests(SimpleTestCase):
         self.assertFalse(webhook.verify_signature(b"{}", ""))
 
 
+class WebhookMergeIdempotencyTests(SimpleTestCase):
+    """A redelivered 'merged' PR event must re-crawl only once (no DB needed:
+    the query manager and _trigger_recrawl are mocked)."""
+
+    def test_redelivered_merge_recrawls_once(self):
+        from unittest.mock import patch
+
+        from .models import GithubFixJob
+
+        class _Job:
+            def __init__(self):
+                self.status = GithubFixJob.Status.OPEN
+                self.saves = 0
+
+            def save(self, **kwargs):
+                self.saves += 1
+
+        job = _Job()
+        payload = {"action": "closed", "pull_request": {"number": 7, "merged": True}}
+
+        with (
+            patch.object(webhook, "_trigger_recrawl") as mock_recrawl,
+            patch.object(webhook, "GithubFixJob") as MockJob,
+        ):
+            MockJob.Status = GithubFixJob.Status
+            chain = MockJob.objects.filter.return_value.select_related.return_value.order_by.return_value
+            chain.first.return_value = job
+
+            webhook._handle_pull_request(payload)  # first delivery
+            webhook._handle_pull_request(payload)  # redelivery
+            webhook._handle_pull_request(payload)  # redelivery
+
+        self.assertEqual(job.status, GithubFixJob.Status.MERGED)
+        self.assertEqual(mock_recrawl.call_count, 1)  # not 3
+        self.assertEqual(job.saves, 1)  # status persisted once
+
+
 class BuildEditsTests(SimpleTestCase):
     """build_edits with a fake client (no network/DB)."""
 

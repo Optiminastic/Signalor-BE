@@ -52,11 +52,16 @@ def _handle_pull_request(payload: dict) -> None:
         return
 
     if action == "closed":
+        # GitHub redelivers webhooks (manual replay, or retry on a slow ack).
+        # Guard on the current status so a redelivered "merged" event can't
+        # fire a second re-crawl (a full analysis run) and clobber the
+        # already-recorded score_after. Both branches are now idempotent.
         if pr.get("merged"):
-            job.status = GithubFixJob.Status.MERGED
-            job.save(update_fields=["status", "updated_at"])
-            _trigger_recrawl(job)
-        else:
+            if job.status != GithubFixJob.Status.MERGED:
+                job.status = GithubFixJob.Status.MERGED
+                job.save(update_fields=["status", "updated_at"])
+                _trigger_recrawl(job)
+        elif job.status != GithubFixJob.Status.CLOSED:
             job.status = GithubFixJob.Status.CLOSED
             job.save(update_fields=["status", "updated_at"])
 
