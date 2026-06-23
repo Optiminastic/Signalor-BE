@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from . import spider_cloud
+from . import firecrawl_crawl
 from .utils import extract_internal_links, extract_text
 
 logger = logging.getLogger("apps")
@@ -438,67 +438,66 @@ def crawl_site(
 ) -> tuple[CrawlResult, SiteMap, list[CrawlResult]]:
     """Crawl a full site: homepage + discovered pages.
 
-    Routes through the hosted spider.cloud crawler when ``SPIDER_API_KEY`` is
+    Routes through the hosted Firecrawl crawler when ``FIRECRAWL_API_KEY`` is
     configured, falling back to the built-in direct crawler on any failure (or
     for password-protected stores, which need our authenticated session).
     Returns the same ``(homepage, SiteMap, additional)`` contract regardless of
     which path runs.
     """
-    if spider_cloud.is_configured() and not storefront_password:
+    if firecrawl_crawl.is_configured() and not storefront_password:
         try:
-            spidered = _crawl_site_via_spider(base_url, max_pages)
-        except spider_cloud.SpiderError as exc:
-            logger.warning("spider.cloud crawl failed for %s, using direct crawler: %s", base_url, exc)
-            spidered = None
-        if spidered is not None:
-            homepage_result, site_map, additional = spidered
+            crawled = _crawl_site_via_firecrawl(base_url, max_pages)
+        except firecrawl_crawl.FirecrawlError as exc:
+            logger.warning("Firecrawl crawl failed for %s, using direct crawler: %s", base_url, exc)
+            crawled = None
+        if crawled is not None:
+            homepage_result, site_map, additional = crawled
             if homepage_result.ok:
                 logger.info(
-                    "Site crawl via spider.cloud: homepage + %d additional pages", len(additional)
+                    "Site crawl via Firecrawl: homepage + %d additional pages", len(additional)
                 )
                 return homepage_result, site_map, additional
             logger.info(
-                "spider.cloud homepage not scoreable for %s, using direct crawler", base_url
+                "Firecrawl homepage not scoreable for %s, using direct crawler", base_url
             )
 
     return _crawl_site_direct(base_url, storefront_password, max_pages)
 
 
-def _crawl_site_via_spider(
+def _crawl_site_via_firecrawl(
     base_url: str, max_pages: int
 ) -> tuple[CrawlResult, SiteMap, list[CrawlResult]] | None:
-    """Crawl via spider.cloud and adapt the response into our crawl contract.
+    """Crawl via Firecrawl and adapt the response into our crawl contract.
 
     Returns ``None`` (signalling a fallback) when the API yields nothing usable.
     """
     # +1 so the page budget covers the homepage plus ``max_pages`` extras.
-    pages = spider_cloud.crawl(base_url, limit=max_pages + 1, return_format="raw")
+    pages = firecrawl_crawl.crawl(base_url, limit=max_pages + 1)
     if not pages:
         return None
 
     # A shared session lets the technical scorer fetch robots.txt / sitemap.xml
-    # downstream (spider.cloud doesn't return those).
+    # downstream (Firecrawl doesn't return those).
     session = requests.Session()
 
     def _to_result(page: dict) -> CrawlResult | None:
-        page_url = (page.get("url") or "").strip()
+        meta = page.get("metadata") or {}
+        page_url = (meta.get("sourceURL") or meta.get("url") or page.get("url") or "").strip()
         if not page_url:
             return None
         result = CrawlResult(url=page_url)
         result.session = session
         result.is_https = urlparse(page_url).scheme == "https"
         try:
-            result.status_code = int(page.get("status") or 0)
+            result.status_code = int(meta.get("statusCode") or 0)
         except (TypeError, ValueError):
             result.status_code = 0
-        content = page.get("content")
-        if isinstance(content, bytes):
-            content = content.decode("utf-8", "replace")
-        html = content or ""
+        # Prefer raw HTML so JSON-LD / <script> blocks survive for the schema scorer.
+        html = page.get("rawHtml") or page.get("html") or ""
+        if isinstance(html, bytes):
+            html = html.decode("utf-8", "replace")
         if result.status_code == 200 and html:
             _populate_from_html(result, html, page_url)
-        elif page.get("error"):
-            result.error = str(page.get("error"))
         return result
 
     results = [r for r in (_to_result(p) for p in pages) if r is not None]
