@@ -118,7 +118,9 @@ class Subscription(models.Model):
     email = models.EmailField(unique=True, db_index=True)
     plan = models.CharField(max_length=20, choices=Plan.choices, default=Plan.STARTER)
     payment_customer_id = models.CharField(max_length=255, blank=True, default="")
-    payment_subscription_id = models.CharField(max_length=255, blank=True, default="")
+    # Looked up on every Dodo billing webhook via _find_subscription() before
+    # falling back to email. Indexed so that hot path isn't a full table scan.
+    payment_subscription_id = models.CharField(max_length=255, blank=True, default="", db_index=True)
     # Latest Dodo payment_id — used to download invoice PDF (webhooks update this)
     last_invoice_payment_id = models.CharField(max_length=255, blank=True, default="")
     # Keep old Stripe fields for backwards compatibility during migration
