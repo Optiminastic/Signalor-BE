@@ -1716,3 +1716,63 @@ class ContentSuggestion(models.Model):
 
     def __str__(self):
         return f"ContentSuggestion<{self.target_field} {self.url}>"
+
+
+class SatelliteBlogPost(models.Model):
+    """An AI-generated blog post published to one of our satellite blog sites.
+
+    The satellite Next.js sites have no DB of their own — they pull these rows
+    via the public site API. Each published post links back to ``brand_url``
+    (that's the backlink); its live URL is shown in the dashboard's
+    "Our Backlinks" tab. One satellite site == one category.
+    """
+
+    class Site(models.TextChoices):
+        RESEARCH = "research", "Research"
+        LISTICALS = "listicals", "Listicals"
+        MARKET_TRENDS = "market_trends", "Market Trends"
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        PUBLISHED = "published", "Published"
+
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="satellite_blog_posts",
+        null=True,
+        blank=True,
+    )
+    analysis_run = models.ForeignKey(
+        AnalysisRun,
+        on_delete=models.SET_NULL,
+        related_name="satellite_blog_posts",
+        null=True,
+        blank=True,
+    )
+    site = models.CharField(max_length=20, choices=Site.choices, db_index=True)
+    slug = models.CharField(max_length=160, db_index=True)
+    title = models.CharField(max_length=300)
+    meta_description = models.CharField(max_length=320, blank=True, default="")
+    excerpt = models.TextField(blank=True, default="")
+    content_html = models.TextField(blank=True, default="")
+    content_markdown = models.TextField(blank=True, default="")
+    # Brand domain the post links back to (the backlink target).
+    brand_url = models.URLField(max_length=2048, blank=True, default="")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+    published_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-published_at", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["site", "slug"], name="uniq_satellite_site_slug"),
+        ]
+        indexes = [
+            models.Index(fields=["site", "status"]),
+            models.Index(fields=["organization", "status"]),
+        ]
+
+    def __str__(self):
+        return f"SatelliteBlogPost<{self.site}/{self.slug}>"

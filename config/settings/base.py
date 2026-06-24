@@ -341,6 +341,18 @@ CORS_ALLOWED_ORIGINS = [
 # the preflight (OPTIONS 200) but blocks the actual request — the FE then shows
 # "Cannot reach the server." Extend the defaults rather than replace them.
 CORS_ALLOW_HEADERS = (*default_cors_headers, "x-onboarding-token")
+
+# ── Satellite blog network ────────────────────────────────────────────────────
+# Domains of our external Next.js blog sites (category == site). Used to build
+# the public backlink URL (``<domain>/blog/<slug>``) shown in "Our Backlinks".
+# Override per env, e.g. SATELLITE_SITE_RESEARCH_URL=https://research.example.com
+SATELLITE_SITES = {
+    "research": os.getenv("SATELLITE_SITE_RESEARCH_URL", "http://localhost:3002").rstrip("/"),
+    "listicals": os.getenv("SATELLITE_SITE_LISTICALS_URL", "http://localhost:3003").rstrip("/"),
+    "market_trends": os.getenv("SATELLITE_SITE_MARKET_TRENDS_URL", "http://localhost:3004").rstrip("/"),
+}
+# Shared secret the satellite sites send as X-Signalor-Site-Key to read posts.
+SIGNALOR_SITE_KEY = os.getenv("SIGNALOR_SITE_KEY", "")
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",

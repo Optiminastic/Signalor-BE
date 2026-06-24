@@ -4,6 +4,8 @@ from .views import (
     CreateAnalysisView,
     GetAnalysisRecommendationsView,
     GetAnalysisView,
+    PublicSitePostDetailView,
+    PublicSitePostsView,
     UsageView,
 )
 
@@ -18,5 +20,12 @@ urlpatterns = [
         name="analyses-recommendations",
     ),
     path("usage/", UsageView.as_view(), name="usage"),
+    # Satellite blog network (consumed by the external blog sites, no DB).
+    path("sites/<str:site>/posts/", PublicSitePostsView.as_view(), name="site-posts"),
+    path(
+        "sites/<str:site>/posts/<str:slug>/",
+        PublicSitePostDetailView.as_view(),
+        name="site-post-detail",
+    ),
     path("nextjs/", include("apps.public_api.nextjs.urls")),
 ]

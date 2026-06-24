@@ -4,6 +4,8 @@ from .views import (
     AchievementsView,
     ActionStatsView,
     ActionTemplatesView,
+    BlogPublishNetworkView,
+    OurBacklinksView,
     # Sitemap audit
     AgentLogView,
     AiChatView,
@@ -179,6 +181,12 @@ urlpatterns = [
     path("runs/s/<str:slug>/prompts/<int:track_id>/rank/", PromptRankView.as_view(), name="prompt-rank"),
     # Backlink marketplace
     path("runs/s/<str:slug>/backlinks/free/", RunBacklinkFreeView.as_view(), name="backlink-free"),
+    path("runs/s/<str:slug>/backlinks/our/", OurBacklinksView.as_view(), name="backlink-our"),
+    path(
+        "runs/s/<str:slug>/blog/publish-network/",
+        BlogPublishNetworkView.as_view(),
+        name="blog-publish-network",
+    ),
     path("runs/s/<str:slug>/backlinks/catalog/", BacklinkCatalogView.as_view(), name="backlink-catalog"),
     path(
         "runs/s/<str:slug>/backlinks/orders/", BacklinkOrderListCreateView.as_view(), name="backlink-orders"

@@ -5586,3 +5586,111 @@ class ContentRawFileUpsertView(APIView):
         except RawFileError as exc:
             return Response({"detail": str(exc)}, status=502)
         return Response(saved)
+
+
+# ── Satellite blog network ("Our Backlinks") ─────────────────────────────────
+
+
+class BlogPublishNetworkView(APIView):
+    """POST /runs/s/<slug>/blog/publish-network/ — publish a generated blog to a
+    satellite site (research/listicals/market_trends). Stores a published
+    SatelliteBlogPost (the satellite site pulls it via the public site API) and
+    returns the live URL, which is the backlink shown in "Our Backlinks"."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug):
+        from django.conf import settings as dj_settings
+        from django.utils import timezone
+
+        from .models import SatelliteBlogPost
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        data = request.data or {}
+        site = (data.get("site") or "").strip()
+        if site not in dict(SatelliteBlogPost.Site.choices):
+            return Response(
+                {"error": "site must be one of: research, listicals, market_trends."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        title = (data.get("title") or "").strip()
+        if not title:
+            return Response({"error": "title is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        base_slug = _slugify(data.get("slug") or title)
+        slug_val = base_slug
+        n = 2
+        while SatelliteBlogPost.objects.filter(site=site, slug=slug_val).exists():
+            slug_val = f"{base_slug}-{n}"
+            n += 1
+
+        content_markdown = data.get("content_markdown") or ""
+        content_html = data.get("content_html") or ""
+        if not content_html and content_markdown:
+            content_html = _to_html_from_markdownish(content_markdown)
+
+        brand_url = (run.organization.url if run.organization else "") or run.url or ""
+
+        post = SatelliteBlogPost.objects.create(
+            organization=run.organization,
+            analysis_run=run,
+            site=site,
+            slug=slug_val,
+            title=title[:300],
+            meta_description=(data.get("meta_description") or "")[:320],
+            excerpt=(data.get("excerpt") or "")[:1000],
+            content_html=content_html,
+            content_markdown=content_markdown,
+            brand_url=brand_url,
+            status=SatelliteBlogPost.Status.PUBLISHED,
+            published_at=timezone.now(),
+        )
+        domain = (dj_settings.SATELLITE_SITES.get(site) or "").rstrip("/")
+        public_url = f"{domain}/blog/{post.slug}" if domain else ""
+        return Response(
+            {
+                "id": post.id,
+                "site": post.site,
+                "slug": post.slug,
+                "title": post.title,
+                "url": public_url,
+                "brand_url": post.brand_url,
+                "status": post.status,
+                "published_at": post.published_at,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class OurBacklinksView(APIView):
+    """GET /runs/s/<slug>/backlinks/our/ — backlinks created for this brand by
+    publishing blogs to the satellite network."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        from django.conf import settings as dj_settings
+
+        from .models import SatelliteBlogPost
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        if run.organization_id:
+            qs = SatelliteBlogPost.objects.filter(organization_id=run.organization_id)
+        else:
+            qs = SatelliteBlogPost.objects.filter(analysis_run=run)
+        rows = []
+        for p in qs.order_by("-published_at", "-created_at"):
+            domain = (dj_settings.SATELLITE_SITES.get(p.site) or "").rstrip("/")
+            rows.append(
+                {
+                    "id": p.id,
+                    "site": p.site,
+                    "category": p.site,
+                    "title": p.title,
+                    "url": f"{domain}/blog/{p.slug}" if domain else "",
+                    "brand_url": p.brand_url,
+                    "status": p.status,
+                    "published_at": p.published_at,
+                }
+            )
+        return Response({"rows": rows})

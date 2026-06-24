@@ -14,7 +14,7 @@ from datetime import timedelta
 from django.db.models import Count
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -227,5 +227,82 @@ class UsageView(PublicApiView):
                 "window": "30d",
                 "requests_by_route": list(org_usage),
                 "requests_this_key": key_total,
+            }
+        )
+
+
+# ── Satellite blog network (consumed by the external blog sites) ──────────────
+# These power the satellite Next.js sites, which have no DB and pull published
+# blog posts from here. Guarded by a shared site key (X-Signalor-Site-Key)
+# rather than per-org bearer tokens.
+
+
+def _check_site_key(request) -> bool:
+    from django.conf import settings
+
+    key = request.headers.get("X-Signalor-Site-Key", "")
+    return bool(settings.SIGNALOR_SITE_KEY) and key == settings.SIGNALOR_SITE_KEY
+
+
+class PublicSitePostsView(APIView):
+    """GET /api/v1/public/sites/<site>/posts/ — published posts for a satellite site."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def get(self, request, site):
+        from apps.analyzer.models import SatelliteBlogPost
+
+        if not _check_site_key(request):
+            return Response({"error": "invalid site key"}, status=status.HTTP_401_UNAUTHORIZED)
+        if site not in dict(SatelliteBlogPost.Site.choices):
+            return Response({"error": "unknown site"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            limit = min(max(int(request.GET.get("limit", 50)), 1), 100)
+            offset = max(int(request.GET.get("offset", 0)), 0)
+        except (TypeError, ValueError):
+            limit, offset = 50, 0
+        qs = SatelliteBlogPost.objects.filter(
+            site=site, status=SatelliteBlogPost.Status.PUBLISHED
+        ).order_by("-published_at")[offset : offset + limit]
+        posts = [
+            {
+                "slug": p.slug,
+                "title": p.title,
+                "meta_description": p.meta_description,
+                "excerpt": p.excerpt,
+                "published_at": p.published_at,
+            }
+            for p in qs
+        ]
+        return Response({"site": site, "posts": posts})
+
+
+class PublicSitePostDetailView(APIView):
+    """GET /api/v1/public/sites/<site>/posts/<slug>/ — full published post."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def get(self, request, site, slug):
+        from apps.analyzer.models import SatelliteBlogPost
+
+        if not _check_site_key(request):
+            return Response({"error": "invalid site key"}, status=status.HTTP_401_UNAUTHORIZED)
+        try:
+            p = SatelliteBlogPost.objects.get(
+                site=site, slug=slug, status=SatelliteBlogPost.Status.PUBLISHED
+            )
+        except SatelliteBlogPost.DoesNotExist:
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {
+                "slug": p.slug,
+                "title": p.title,
+                "meta_description": p.meta_description,
+                "content_html": p.content_html,
+                "brand_url": p.brand_url,
+                "published_at": p.published_at,
+                "site": p.site,
             }
         )
