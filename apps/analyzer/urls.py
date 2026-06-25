@@ -6,6 +6,8 @@ from .views import (
     ActionTemplatesView,
     BlogGenerateView,
     BlogPublishNetworkView,
+    BlogSourcesView,
+    BlogTitleIdeasView,
     OurBacklinksView,
     # Sitemap audit
     AgentLogView,
@@ -187,6 +189,16 @@ urlpatterns = [
         "runs/s/<str:slug>/blog/generate/",
         BlogGenerateView.as_view(),
         name="blog-generate",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/sources/",
+        BlogSourcesView.as_view(),
+        name="blog-sources",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/title-ideas/",
+        BlogTitleIdeasView.as_view(),
+        name="blog-title-ideas",
     ),
     path(
         "runs/s/<str:slug>/blog/publish-network/",

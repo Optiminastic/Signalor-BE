@@ -321,8 +321,33 @@ def _generate_blog_draft(
     topic: str,
     keywords: list[str],
     recommendations: list[str],
+    length: str = "medium",
+    sources: list | None = None,
 ) -> dict:
     from .pipeline.llm import ask_llm
+
+    word_target = {
+        "short": "around 500 words",
+        "medium": "1000-1500 words",
+        "long": "1500-3000 words",
+    }.get((length or "medium").lower(), "1000-1500 words")
+
+    src_lines = []
+    for s in sources or []:
+        if isinstance(s, dict):
+            name = (s.get("name") or "").strip()
+            url = (s.get("url") or "").strip()
+            label = f"{name} ({url})" if url else name
+        else:
+            label = str(s).strip()
+        if label:
+            src_lines.append(label)
+    sources_block = (
+        "\nTake reference and inspiration from these sources (cite or link a couple "
+        "where it reads naturally):\n" + "\n".join(f"- {x}" for x in src_lines)
+        if src_lines
+        else ""
+    )
 
     prompt = f"""
 You are an expert SEO + GEO content strategist.
@@ -333,6 +358,7 @@ Primary Topic: {topic}
 Target Keywords: {", ".join(keywords) if keywords else "none"}
 Technical recommendations to align with:
 {chr(10).join(f"- {item}" for item in recommendations[:6]) if recommendations else "- Improve AI visibility and crawlability"}
+{sources_block}
 
 Return STRICT JSON only with keys:
 title, slug, meta_description, excerpt, content_markdown, tags
@@ -342,7 +368,7 @@ Requirements:
 - slug: URL-safe
 - meta_description: max 160 chars
 - excerpt: 2-3 sentences
-- content_markdown: 1200-1800 words, clear H2/H3 headings, actionable sections
+- content_markdown: {word_target}, clear H2/H3 headings, actionable sections
 - content_markdown MUST include 1-2 natural, contextual links back to the brand
   site ({site_url}) using markdown link syntax [anchor]({site_url}), placed where
   they read naturally — these are the backlinks.
@@ -5648,9 +5674,138 @@ def _brand_ref_for_run(run) -> str:
     return f"run:{run.slug}"
 
 
+def _blog_source_candidates(run) -> list:
+    """Reference sources for blog generation, shown as a selectable table.
+
+    Recommended (pre-selected): top 3 competitors + Google + Reddit. Then the
+    run's top cited pages (real domains AI engines surface for this brand) so the
+    user can pick richer references.
+    """
+    from .pipeline.citations import host_of
+
+    rows: list = []
+    seen: set = set()
+
+    def add(name, url, type_, pos, recommended):
+        dom = host_of(url or "") or (name or "").lower()
+        if not dom or dom in seen:
+            return
+        seen.add(dom)
+        rows.append(
+            {
+                "name": name or dom,
+                "domain": dom,
+                "url": url or "",
+                "type": type_,
+                "pos": pos,
+                "recommended": recommended,
+            }
+        )
+
+    try:
+        for c in run.competitors.all().order_by("-scored", "-composite_score")[:3]:
+            add(c.name or urlparse(c.url or "").netloc or "Competitor", c.url or "", "Competitor", 1, True)
+    except Exception:
+        pass
+    add("Google", "https://www.google.com", "Google", 1, True)
+    add("Reddit", "https://www.reddit.com", "Reddit", 1, True)
+
+    try:
+        from .models import PromptCitation
+
+        cites = (
+            PromptCitation.objects.filter(
+                prompt_result__prompt_track__analysis_run=run, is_brand=False
+            )
+            .order_by("position")
+            .values("url", "domain", "position", "is_competitor")
+        )
+        for ct in cites:
+            if len(rows) >= 20:
+                break
+            dom = ct.get("domain") or host_of(ct.get("url") or "")
+            add(
+                dom,
+                ct.get("url") or "",
+                "Competitor" if ct.get("is_competitor") else "Source",
+                ct.get("position") or 1,
+                False,
+            )
+    except Exception:
+        pass
+
+    return rows
+
+
+class BlogSourcesView(APIView):
+    """GET /runs/s/<slug>/blog/sources/ — candidate reference sources (3 competitors + Google + Reddit)."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        return Response({"sources": _blog_source_candidates(run)})
+
+
+class BlogTitleIdeasView(APIView):
+    """POST /runs/s/<slug>/blog/title-ideas/ — ~5 blog title ideas from the run's
+    tracked prompts + brand analysis."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        from .pipeline.llm import ask_llm
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        site_url = (run.organization.url if run.organization else "") or run.url or ""
+        brand = (
+            getattr(run, "brand_name", "")
+            or (run.organization.name if run.organization else "")
+            or urlparse(site_url).netloc
+        )
+        try:
+            prompts = list(
+                run.prompt_tracks.filter(deleted_at__isnull=True)
+                .order_by("-score")
+                .values_list("prompt_text", flat=True)[:10]
+            )
+        except Exception:
+            prompts = []
+
+        prompt = f"""You are a content strategist for the brand "{brand}" ({site_url}).
+These are the real AI-search queries people ask in this brand's space:
+{chr(10).join(f"- {p}" for p in prompts) if prompts else "- (no tracked prompts yet)"}
+
+Generate 5 compelling, specific blog post titles that would help this brand get
+cited in AI search for these topics. Click-worthy, SEO/GEO-friendly, no numbering.
+Return STRICT JSON only: {{"titles": ["...", "...", "...", "...", "..."]}}"""
+
+        raw = ask_llm(
+            prompt=prompt,
+            preferred_provider="gemini",
+            max_tokens=600,
+            temperature=0.85,
+            purpose="actions.blog_automation.title_ideas",
+        )
+        parsed = _extract_blog_json(raw) or {}
+        titles = []
+        if isinstance(parsed.get("titles"), list):
+            titles = [str(t).strip() for t in parsed["titles"] if str(t).strip()][:5]
+        if not titles:
+            titles = [str(p).strip()[:90] for p in prompts[:5] if str(p).strip()]
+        if not titles:
+            titles = [f"{brand}: A Practical Guide to AI Search Visibility"]
+        return Response({"titles": titles})
+
+
 class BlogGenerateView(APIView):
     """POST /runs/s/<slug>/blog/generate/ — AI-generate a blog draft for a run
-    (used by the Our-backlinks tab). Wraps _generate_blog_draft and returns HTML."""
+    (used by the Our-backlinks tab). Wraps _generate_blog_draft and returns HTML.
+    Accepts optional title (forced), length (short|medium|long), sources (list)."""
 
     permission_classes = [AllowAny]
 
@@ -5659,23 +5814,30 @@ class BlogGenerateView(APIView):
 
         run = get_object_or_404(AnalysisRun, slug=slug)
         data = request.data or {}
-        topic = (data.get("topic") or "").strip()
+        forced_title = (data.get("title") or "").strip()
+        topic = (data.get("topic") or forced_title or "").strip()
         site_url = (run.organization.url if run.organization else "") or run.url or ""
         if not topic:
             brand = getattr(run, "brand_name", "") or urlparse(site_url).netloc
             topic = f"{brand} AI search strategy"
         keywords = data.get("keywords") if isinstance(data.get("keywords"), list) else []
+        length = (data.get("length") or "medium").strip()
+        sources = data.get("sources") if isinstance(data.get("sources"), list) else None
         try:
             recommendations = list(run.recommendations.values_list("title", flat=True)[:8])
         except Exception:
             recommendations = []
 
-        draft = _generate_blog_draft(site_url, topic, keywords, recommendations)
+        draft = _generate_blog_draft(
+            site_url, topic, keywords, recommendations, length=length, sources=sources
+        )
+        title = forced_title or draft.get("title", "")
+        slug_val = _slugify(forced_title) if forced_title else draft.get("slug", "")
         content_html = _to_html_from_markdownish(draft.get("content_markdown") or "")
         return Response(
             {
-                "title": draft.get("title", ""),
-                "slug": draft.get("slug", ""),
+                "title": title,
+                "slug": slug_val,
                 "meta_description": draft.get("meta_description", ""),
                 "excerpt": draft.get("excerpt", ""),
                 "tags": draft.get("tags", []),
