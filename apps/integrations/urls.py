@@ -10,9 +10,11 @@ from .views import (
     GASyncView,
     GSCAuthURLView,
     GSCCallbackView,
+    GSCCoverageView,
     GSCDataView,
     GSCDisconnectView,
     GSCSelectSiteView,
+    GSCSitemapsView,
     GSCSitesListView,
     GSCSyncView,
     GSCUrlInspectView,
@@ -124,6 +126,16 @@ urlpatterns = [
         "google-search-console/inspect/",
         GSCUrlInspectView.as_view(),
         name="gsc-inspect",
+    ),
+    path(
+        "google-search-console/coverage/",
+        GSCCoverageView.as_view(),
+        name="gsc-coverage",
+    ),
+    path(
+        "google-search-console/sitemaps/",
+        GSCSitemapsView.as_view(),
+        name="gsc-sitemaps",
     ),
     # Shopify
     path(

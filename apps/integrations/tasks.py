@@ -10,6 +10,7 @@ from datetime import date, timedelta
 from .models import (
     GADataSnapshot,
     GSCDataSnapshot,
+    GSCIndexStatusSnapshot,
     Integration,
     ShopifyDataSnapshot,
     WooCommerceDataSnapshot,
@@ -132,6 +133,58 @@ def _run_gsc_sync(integration_id: int):
 
     except Exception as e:
         logger.error("GSC sync failed for integration %s: %s", integration_id, str(e))
+        snapshot.sync_status = "failed"
+        snapshot.error_message = str(e)
+        snapshot.save(update_fields=["sync_status", "error_message"])
+
+
+def start_gsc_index_sync(integration_id: int):
+    """Spawn a daemon thread to run the per-URL index-status inspection pass."""
+    thread = threading.Thread(
+        target=_run_gsc_index_sync,
+        args=(integration_id,),
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def _run_gsc_index_sync(integration_id: int):
+    """Inspect every sitemap URL and cache the authoritative index status."""
+    try:
+        integration = Integration.objects.get(pk=integration_id)
+    except Integration.DoesNotExist:
+        logger.error("Integration %s not found for GSC index sync", integration_id)
+        return
+
+    snapshot = GSCIndexStatusSnapshot.objects.create(
+        integration=integration,
+        sync_status="syncing",
+    )
+
+    try:
+        from .services.gsc import inspect_sitemap_index_status
+
+        data = inspect_sitemap_index_status(integration)
+
+        snapshot.checked_count = data["checked_count"]
+        snapshot.indexed_count = data["indexed_count"]
+        snapshot.not_indexed_count = data["not_indexed_count"]
+        snapshot.sitemap_total = data["sitemap_total"]
+        snapshot.submitted = data["submitted"]
+        snapshot.pages = data["pages"]
+        snapshot.sync_status = "complete"
+        snapshot.save()
+
+        logger.info(
+            "GSC index sync complete for integration %s: %d/%d indexed",
+            integration_id,
+            data["indexed_count"],
+            data["checked_count"],
+        )
+
+    except Exception as e:
+        logger.error("GSC index sync failed for integration %s: %s", integration_id, str(e))
         snapshot.sync_status = "failed"
         snapshot.error_message = str(e)
         snapshot.save(update_fields=["sync_status", "error_message"])
