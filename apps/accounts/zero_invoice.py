@@ -33,8 +33,8 @@ _CURRENCY_SYMBOLS = {
 }
 
 _PLAN_DESCRIPTIONS = {
-    "starter": "Monthly subscription — Starter plan",
-    "pro": "Monthly subscription — Pro plan",
+    "starter": "Monthly subscription — Self-Serve Brand plan",
+    "pro": "Monthly subscription — Managed Growth Brand plan",
     "business": "Monthly subscription — Max plan",
 }
 

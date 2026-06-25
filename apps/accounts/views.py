@@ -105,7 +105,10 @@ class CreateCheckoutSessionView(APIView):
         if not email:
             return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if plan not in ("starter", "pro", "business"):
+        # Only the public Individual plans are self-serve checkout-able. "business"
+        # (legacy Max) is retired from sale, and Enterprise goes through the
+        # Contact Sales form — neither gets a Dodo checkout here.
+        if plan not in ("starter", "pro"):
             return Response({"error": "Invalid plan."}, status=status.HTTP_400_BAD_REQUEST)
 
         dodo = _get_dodo()
@@ -928,10 +931,14 @@ class UsageView(APIView):
     throttle_classes = [PollingThrottle]
 
     def get(self, request):
-        from apps.analyzer.models import AnalysisRun, PromptTrack
+        from apps.analyzer.models import AnalysisRun
         from apps.organizations.models import Organization
 
-        from .subscription_utils import get_plan_limits, is_internal_email
+        from .subscription_utils import (
+            _tracked_prompt_count,
+            get_plan_limits,
+            is_internal_email,
+        )
 
         email = request.query_params.get("email", "").lower().strip()
         if not email:
@@ -943,8 +950,9 @@ class UsageView(APIView):
         # Projects (orgs) owned by this email
         projects_used = Organization.objects.filter(owner_email=email).count()
 
-        # Prompts tracked across all runs for this email
-        prompts_used = PromptTrack.objects.filter(analysis_run__email=email).count()
+        # Prompts that consume quota — same scoping as enforcement (non-deleted,
+        # current billing period) so the bar matches what actually gates the user.
+        prompts_used = _tracked_prompt_count(email)
 
         # Analysis runs this month
         from django.utils import timezone as tz

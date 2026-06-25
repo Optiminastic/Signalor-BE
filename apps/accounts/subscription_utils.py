@@ -12,10 +12,11 @@ Subscription checks for paid features (e.g. GEO analysis).
 from __future__ import annotations
 
 import os
+from datetime import timedelta
 
 from django.conf import settings
 
-from .models import Subscription, PLAN_LIMITS
+from .models import PLAN_LIMITS, Subscription
 
 # ── Internal / Free Emails ────────────────────────────────────────────────
 INTERNAL_DOMAINS = {"optiminastic.com"}
@@ -92,10 +93,10 @@ def is_plan_limits_enforcement_enabled() -> bool:
 def _upgrade_hint_for_plan(plan_key: str) -> str:
     """Next-step upgrade copy for projects, prompts, and engine limits."""
     if plan_key == "starter":
-        return " Upgrade to Pro for a higher limit."
+        return " Upgrade to Managed Growth for more prompts and hands-on support."
     if plan_key == "pro":
-        return " Upgrade to Max for a higher limit."
-    return " You are on the highest plan; contact support if you need more capacity."
+        return " Contact sales for an Enterprise plan with higher limits."
+    return " You are on the highest plan; contact sales if you need more capacity."
 
 
 def plan_limit_error_response_dict(message: str) -> dict:
@@ -171,6 +172,7 @@ def analysis_allowed_for_email(email: str | None) -> tuple[bool, str]:
 
 # ── Plan Limit Helpers ────────────────────────────────────────────────────
 
+
 def _get_sub(email: str | None) -> Subscription | None:
     raw = (email or "").strip().lower()
     if not raw:
@@ -201,6 +203,31 @@ def get_plan_limits(email: str | None) -> dict:
     return PLAN_LIMITS["starter"]
 
 
+def _tracked_prompt_count(email: str) -> int:
+    """Number of tracked prompts that consume this email's plan quota.
+
+    Two deliberate scoping rules so a low-prompt plan (e.g. 10) isn't a
+    one-run-ever trap:
+      - Exclude soft-deleted prompts (``deleted_at`` set) — deleting a prompt
+        frees its slot.
+      - Scope to the current billing period when known (``current_period_end``),
+        so re-analysis in a new cycle doesn't permanently consume the cap. This
+        matches the billing UI's "counts reset on your next billing date" copy.
+        Users without an active subscription (no period) fall back to an
+        all-time count of their non-deleted prompts.
+    """
+    from apps.analyzer.models import PromptTrack
+
+    qs = PromptTrack.objects.filter(analysis_run__email=email, deleted_at__isnull=True)
+    sub = _get_sub(email)
+    if sub and sub.current_period_end:
+        # Monthly cycles: the current period began ~1 month before its end.
+        # 31 days is intentionally generous at month boundaries.
+        period_start = sub.current_period_end - timedelta(days=31)
+        qs = qs.filter(created_at__gte=period_start)
+    return qs.count()
+
+
 def project_limit_reached(email: str | None) -> tuple[bool, str]:
     """Check if user has reached their project (organization) limit."""
     if is_internal_email(email):
@@ -220,8 +247,7 @@ def project_limit_reached(email: str | None) -> tuple[bool, str]:
     if count >= max_projects:
         pk = _effective_plan_key(email)
         return True, (
-            f"Your {limits['label']} plan allows {max_projects} project(s)."
-            f"{_upgrade_hint_for_plan(pk)}"
+            f"Your {limits['label']} plan allows {max_projects} project(s).{_upgrade_hint_for_plan(pk)}"
         )
     return False, ""
 
@@ -238,15 +264,12 @@ def prompt_limit_reached(email: str | None, run_id: int | None = None) -> tuple[
         return True, "Email is required."
 
     limits = get_plan_limits(email)
-    from apps.analyzer.models import PromptTrack
-
-    count = PromptTrack.objects.filter(analysis_run__email=em).count()
+    count = _tracked_prompt_count(em)
     max_prompts = limits["max_prompts"]
     if count >= max_prompts:
         pk = _effective_plan_key(email)
         return True, (
-            f"Your {limits['label']} plan allows {max_prompts} tracked prompts."
-            f"{_upgrade_hint_for_plan(pk)}"
+            f"Your {limits['label']} plan allows {max_prompts} tracked prompts.{_upgrade_hint_for_plan(pk)}"
         )
     return False, ""
 
@@ -263,9 +286,7 @@ def prompt_batch_would_exceed(email: str | None, additional: int) -> tuple[bool,
         return True, "Email is required."
 
     limits = get_plan_limits(email)
-    from apps.analyzer.models import PromptTrack
-
-    count = PromptTrack.objects.filter(analysis_run__email=em).count()
+    count = _tracked_prompt_count(em)
     max_prompts = limits["max_prompts"]
     if count + additional > max_prompts:
         pk = _effective_plan_key(email)
@@ -293,7 +314,6 @@ def engine_allowed(email: str | None, engine: str) -> tuple[bool, str]:
     if eng not in allowed:
         pk = _effective_plan_key(email)
         return False, (
-            f"The {eng} engine is not included on your {limits['label']} plan."
-            f"{_upgrade_hint_for_plan(pk)}"
+            f"The {eng} engine is not included on your {limits['label']} plan.{_upgrade_hint_for_plan(pk)}"
         )
     return True, ""

@@ -1,5 +1,6 @@
 from django.urls import path
 
+from .enterprise import EnterpriseLeadCreateView
 from .views import (
     CancelTerminationView,
     CreateCheckoutSessionView,
@@ -32,4 +33,5 @@ urlpatterns = [
     path("account/delete/", DeleteAccountView.as_view(), name="delete-account"),
     path("account/profile/", ProfileView.as_view(), name="profile"),
     path("account/profile/photo/", ProfilePhotoView.as_view(), name="profile-photo"),
+    path("enterprise/lead/", EnterpriseLeadCreateView.as_view(), name="enterprise-lead"),
 ]
