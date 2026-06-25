@@ -22,11 +22,14 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 # via OPENROUTER_GEMINI_MODEL if it's delisted again. Keep in sync with
 # apps/analyzer/auto_fix.py.
 GEMINI_MODEL = os.getenv("OPENROUTER_GEMINI_MODEL", "google/gemini-2.5-flash")
+# Strong coding model for the GitHub fix agent (tool-calling). Override via env.
+SONNET_MODEL = os.getenv("OPENROUTER_SONNET_MODEL", "anthropic/claude-sonnet-4.5")
 MODELS = {
     "gpt": "openai/gpt-4o-mini",
     "claude": "anthropic/claude-3.5-haiku",
     "gemini": GEMINI_MODEL,
     "perplexity": "perplexity/sonar",
+    "sonnet": SONNET_MODEL,
 }
 
 MODEL_LABELS = {
@@ -34,6 +37,7 @@ MODEL_LABELS = {
     "anthropic/claude-3.5-haiku": "Claude 3.5 Haiku",
     GEMINI_MODEL: "Gemini 2.5 Flash",
     "perplexity/sonar": "Perplexity Sonar",
+    SONNET_MODEL: "Claude Sonnet 4.5",
     "gemini-direct": "Gemini (Direct)",
 }
 
@@ -190,6 +194,96 @@ def ask_llm_with_citations(
         return _call_openrouter(prompt, preferred_provider, max_tokens, temperature, openrouter_key, purpose)
     else:
         return (_call_gemini_direct(prompt, purpose), [])
+
+
+def ask_llm_with_tools(
+    messages: list[dict],
+    tools: list[dict],
+    *,
+    preferred_provider: str = "sonnet",
+    max_tokens: int = 4096,
+    temperature: float = 0.0,
+    purpose: str = "",
+) -> dict:
+    """One tool-calling round-trip via OpenRouter (OpenAI-compatible function calling).
+
+    The caller owns the ``messages`` list and the agent loop; this just sends one
+    request and returns what the model said. Returns::
+
+        {
+          "message": <raw assistant message dict>,   # append verbatim to messages
+          "text": str,                                # assistant content (may be "")
+          "tool_calls": [{"id", "name", "arguments": <parsed dict>}],
+          "finish_reason": str,
+        }
+
+    Requires ``OPENROUTER_API_KEY`` — tool calling isn't available on the direct
+    Gemini fallback, so a missing key yields ``finish_reason="no_key"``.
+    """
+    import json as _json
+
+    api_key = _get_openrouter_key()
+    if not api_key:
+        return {"message": {}, "text": "", "tool_calls": [], "finish_reason": "no_key"}
+
+    model = MODELS.get(preferred_provider) or MODELS["sonnet"]
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://optiminastic.com",
+        "X-Title": "GEO Fix Agent",
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": "auto",
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+
+    t0 = time.time()
+    try:
+        resp = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=120)
+        duration_ms = int((time.time() - t0) * 1000)
+    except Exception as exc:
+        logger.warning("[LLM TOOLS ERROR] %s: %s", model, exc)
+        return {"message": {}, "text": "", "tool_calls": [], "finish_reason": "error"}
+
+    if resp.status_code != 200:
+        logger.warning("[LLM TOOLS FAILED] %s HTTP %d: %s", model, resp.status_code, resp.text[:200])
+        _log_call(
+            model, purpose, _log_preview(str(messages), 500), f"HTTP {resp.status_code}", "error", duration_ms
+        )
+        return {"message": {}, "text": "", "tool_calls": [], "finish_reason": "error"}
+
+    data = resp.json()
+    choice = (data.get("choices") or [{}])[0]
+    msg = choice.get("message", {}) or {}
+    parsed: list[dict] = []
+    for tc in msg.get("tool_calls") or []:
+        fn = tc.get("function", {}) or {}
+        try:
+            args = _json.loads(fn.get("arguments") or "{}")
+        except (ValueError, TypeError):
+            args = {}
+        parsed.append({"id": tc.get("id", ""), "name": fn.get("name", ""), "arguments": args})
+
+    text = (msg.get("content") or "").strip()
+    _log_call(
+        model,
+        purpose,
+        _log_preview(str(messages), 500),
+        text or f"[{len(parsed)} tool_calls]",
+        "success",
+        duration_ms,
+    )
+    return {
+        "message": msg,
+        "text": text,
+        "tool_calls": parsed,
+        "finish_reason": choice.get("finish_reason", ""),
+    }
 
 
 def _extract_citations_from_openrouter(data: dict) -> list[dict]:

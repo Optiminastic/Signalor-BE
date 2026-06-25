@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     "apps.analyzer.apps.AnalyzerConfig",
     "apps.drip.apps.DripConfig",
     "apps.integrations.apps.IntegrationsConfig",
+    "apps.github_agent.apps.GithubAgentConfig",
     "apps.visibility.apps.VisibilityConfig",
     "apps.recommendation.apps.RecommendationConfig",
     "apps.referrals.apps.ReferralsConfig",
@@ -270,6 +271,15 @@ GOOGLE_SEARCH_CONSOLE_REDIRECT_URI = os.getenv(
     "http://localhost:8000/api/integrations/google-search-console/callback/",
 )
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", "")
+
+# GitHub App — autonomous GEO fixer (apps.github_agent). Empty defaults so the
+# server still boots before the App is registered; services/auth.py raises a
+# clear error at call time if these are missing. GITHUB_APP_PRIVATE_KEY may be a
+# raw PEM or base64-encoded PEM (base64 survives single-line .env files).
+GITHUB_APP_ID = os.getenv("GITHUB_APP_ID", "")
+GITHUB_APP_SLUG = os.getenv("GITHUB_APP_SLUG", "")
+GITHUB_APP_PRIVATE_KEY = os.getenv("GITHUB_APP_PRIVATE_KEY", "")
+GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 
 DATAFORSEO_LOGIN = os.getenv("DATAFORSEO_LOGIN", "")
 DATAFORSEO_PASSWORD = os.getenv("DATAFORSEO_PASSWORD", "")

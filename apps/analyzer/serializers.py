@@ -31,6 +31,7 @@ from .models import (
 
 class RecommendationSerializer(serializers.ModelSerializer):
     can_auto_fix = serializers.SerializerMethodField()
+    code_fixable = serializers.SerializerMethodField()
 
     class Meta:
         model = Recommendation
@@ -44,6 +45,7 @@ class RecommendationSerializer(serializers.ModelSerializer):
             "impact_estimate",
             "category",
             "can_auto_fix",
+            "code_fixable",
             "why",
             "steps",
             "xp_reward",
@@ -105,6 +107,12 @@ class RecommendationSerializer(serializers.ModelSerializer):
         "shipping",
         "product description",
     ]
+
+    def get_code_fixable(self, obj):
+        """True when the GitHub code agent can fix this finding (in-repo edit)."""
+        from apps.github_agent.services.fixable import is_agent_fixable
+
+        return is_agent_fixable(obj.finding_code or "")
 
     def get_can_auto_fix(self, obj):
         title_lower = (obj.title or "").lower()
