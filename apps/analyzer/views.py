@@ -326,11 +326,11 @@ def _generate_blog_draft(
 ) -> dict:
     from .pipeline.llm import ask_llm
 
-    word_target = {
-        "short": "around 500 words",
-        "medium": "1000-1500 words",
-        "long": "1500-3000 words",
-    }.get((length or "medium").lower(), "1000-1500 words")
+    word_target, min_words, max_tokens = {
+        "short": ("about 500 words", 450, 1400),
+        "medium": ("1000-1500 words", 1000, 3200),
+        "long": ("1500-3000 words", 1800, 6000),
+    }.get((length or "medium").lower(), ("1000-1500 words", 1000, 3200))
 
     src_lines = []
     for s in sources or []:
@@ -368,7 +368,10 @@ Requirements:
 - slug: URL-safe
 - meta_description: max 160 chars
 - excerpt: 2-3 sentences
-- content_markdown: {word_target}, clear H2/H3 headings, actionable sections
+- meta_description: ALWAYS write a 140-160 char SEO summary (never leave blank)
+- content_markdown: write {word_target} — HARD requirement: the body MUST be at
+  least {min_words} words. Do NOT stop early or summarize; use multiple H2/H3
+  sections with examples and actionable detail to reach the length.
 - content_markdown MUST include 1-2 natural, contextual links back to the brand
   site ({site_url}) using markdown link syntax [anchor]({site_url}), placed where
   they read naturally — these are the backlinks.
@@ -379,7 +382,7 @@ Requirements:
     raw = ask_llm(
         prompt=prompt.strip(),
         preferred_provider="gemini",
-        max_tokens=2200,
+        max_tokens=max_tokens,
         temperature=0.5,
         purpose="actions.blog_automation.generate",
     )
@@ -5834,11 +5837,21 @@ class BlogGenerateView(APIView):
         title = forced_title or draft.get("title", "")
         slug_val = _slugify(forced_title) if forced_title else draft.get("slug", "")
         content_html = _to_html_from_markdownish(draft.get("content_markdown") or "")
+
+        # Always provide an AI description: meta -> excerpt -> derived from body.
+        meta = (draft.get("meta_description") or draft.get("excerpt") or "").strip()
+        if not meta:
+            import re as _re
+
+            plain = _re.sub(r"[#*`>_\-]", " ", draft.get("content_markdown") or "")
+            plain = " ".join(plain.split())
+            meta = plain[:157] + ("…" if len(plain) > 157 else "")
+
         return Response(
             {
                 "title": title,
                 "slug": slug_val,
-                "meta_description": draft.get("meta_description", ""),
+                "meta_description": meta[:300],
                 "excerpt": draft.get("excerpt", ""),
                 "tags": draft.get("tags", []),
                 "content_html": content_html,
