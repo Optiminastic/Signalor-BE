@@ -173,6 +173,9 @@ class Recommendation(models.Model):
     daily_priority_rank = models.IntegerField(default=0)
     # The single "priority fix of the day" surfaced at the top of Tasks.
     is_top_fix = models.BooleanField(default=False)
+    # Where the recommendation came from (pipeline "analyzer" vs "ai_insight").
+    # Column already exists on the shared DB; default keeps inserts NOT-NULL safe.
+    source = models.CharField(max_length=20, default="analyzer")
 
     class Meta:
         ordering = ["priority", "pillar"]
