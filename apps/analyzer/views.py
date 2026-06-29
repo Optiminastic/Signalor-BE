@@ -5976,4 +5976,143 @@ class OurBacklinksView(APIView):
                 )
         except Exception as exc:  # blog DB not configured / unreachable → empty list
             logger.warning("our-backlinks: blog DB read failed for %s: %s", slug, exc)
-        return Response({"rows": rows})
+        return Response({"rows": rows, "can_add_today": _auto_can_add_today(run)})
+
+
+# Per-site angle for the one-click "Add" auto-publish (themed title/topic per site).
+AUTO_SITE_ANGLE = {
+    "research": "an in-depth, first-principles research analysis of {subject}",
+    "listicals": "a 'Top picks' listicle / roundup about {subject}",
+    "market_trends": "a market-trends and what's-next analysis of {subject}",
+    "comparison": "a head-to-head comparison of the leading options for {subject}",
+    "step_guide": "a practical step-by-step how-to guide for {subject}",
+}
+
+
+def _auto_can_add_today(run) -> bool:
+    """One auto-batch per calendar day per brand."""
+    from django.utils import timezone
+
+    from .models import BlogPost
+
+    try:
+        return not BlogPost.objects.filter(
+            brand_ref=_brand_ref_for_run(run),
+            source="auto",
+            created_at__date=timezone.localdate(),
+        ).exists()
+    except Exception:
+        return True
+
+
+class BlogAutoPublishAllView(APIView):
+    """POST /runs/s/<slug>/blog/auto-publish-all/ — one click: AI-generate a themed
+    blog for each of the 5 satellite sites and publish them all. Limited to once
+    per calendar day per brand."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug):
+        from django.conf import settings as dj_settings
+        from django.shortcuts import get_object_or_404
+        from django.utils import timezone
+
+        from .models import BlogPost
+        from .pipeline.citations import host_of
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        if not _auto_can_add_today(run):
+            return Response(
+                {"error": "You can add backlinks once per day. Try again tomorrow."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        site_url = (run.organization.url if run.organization else "") or run.url or ""
+        brand = (
+            getattr(run, "brand_name", "")
+            or (run.organization.name if run.organization else "")
+            or urlparse(site_url).netloc
+            or "your brand"
+        )
+        brand_host = host_of(site_url)
+        # Subject: top tracked prompt → else brand AI-search framing.
+        try:
+            top_prompt = (
+                run.prompt_tracks.filter(deleted_at__isnull=True)
+                .order_by("-score")
+                .values_list("prompt_text", flat=True)
+                .first()
+            )
+        except Exception:
+            top_prompt = None
+        subject = (top_prompt or f"{brand} and AI search visibility").strip()
+        try:
+            recommendations = list(run.recommendations.values_list("title", flat=True)[:8])
+        except Exception:
+            recommendations = []
+        sources = _blog_source_candidates(run)
+        brand_ref = _brand_ref_for_run(run)
+        ref_url = (run.organization.url if run.organization else "") or run.url or ""
+
+        created, errors = [], []
+        for site in dict(BlogPost.Site.choices):
+            try:
+                angle = AUTO_SITE_ANGLE.get(site, "an article about {subject}").format(
+                    subject=subject
+                )
+                draft = _generate_blog_draft(
+                    site_url, angle, [], recommendations, length="short", sources=sources
+                )
+                title = (draft.get("title") or f"{brand}: {subject}").strip()[:300]
+                content_html = _to_html_from_markdownish(draft.get("content_markdown") or "")
+                if brand_host and ref_url and brand_host not in content_html:
+                    content_html += (
+                        f'\n<p>Learn more about {brand} at '
+                        f'<a href="{ref_url}">{ref_url}</a>.</p>'
+                    )
+                meta = (draft.get("meta_description") or draft.get("excerpt") or "").strip()
+
+                base_slug = _slugify(draft.get("slug") or title)
+                slug_val, n = base_slug, 2
+                while BlogPost.objects.filter(site=site, slug=slug_val).exists():
+                    slug_val = f"{base_slug}-{n}"
+                    n += 1
+
+                post = BlogPost.objects.create(
+                    site=site,
+                    slug=slug_val,
+                    title=title,
+                    description=meta[:2000],
+                    content_html=content_html,
+                    brand_url=ref_url,
+                    brand_ref=brand_ref,
+                    source="auto",
+                    status=BlogPost.Status.PUBLISHED,
+                    published_at=timezone.now(),
+                )
+                domain = (dj_settings.SATELLITE_SITES.get(site) or "").rstrip("/")
+                created.append(
+                    {
+                        "id": post.id,
+                        "site": post.site,
+                        "category": post.site,
+                        "title": post.title,
+                        "url": f"{domain}/{post.slug}" if domain else "",
+                        "brand_url": post.brand_url,
+                        "status": post.status,
+                        "published_at": post.published_at,
+                    }
+                )
+            except Exception as exc:
+                logger.warning("auto-publish-all: site %s failed for %s: %s", site, slug, exc)
+                errors.append(site)
+
+        if not created:
+            return Response(
+                {"error": "Failed to generate blogs. Please try again."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response(
+            {"created": created, "errors": errors, "can_add_today": _auto_can_add_today(run)},
+            status=status.HTTP_201_CREATED,
+        )

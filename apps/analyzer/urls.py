@@ -4,6 +4,7 @@ from .views import (
     AchievementsView,
     ActionStatsView,
     ActionTemplatesView,
+    BlogAutoPublishAllView,
     BlogGenerateView,
     BlogPublishNetworkView,
     BlogSourcesView,
@@ -189,6 +190,11 @@ urlpatterns = [
         "runs/s/<str:slug>/blog/generate/",
         BlogGenerateView.as_view(),
         name="blog-generate",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/auto-publish-all/",
+        BlogAutoPublishAllView.as_view(),
+        name="blog-auto-publish-all",
     ),
     path(
         "runs/s/<str:slug>/blog/sources/",
