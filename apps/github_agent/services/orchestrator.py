@@ -88,6 +88,49 @@ def _collect_edits(client, profile: dict, run, finding_codes: list[str]):
     return result, "\n\n".join(reasoning)
 
 
+def _collect_content_edits(client, profile: dict, run, content_edits: list[dict]):
+    """Apply user-supplied Content-Optimisation edits via the agent (verbatim
+    original→new text). Returns (FixResult, reasoning_text)."""
+    ar = fix_agent.generate_content_edits(content_edits, client, profile, run)
+    result = ar.get("result") or fixers.FixResult()
+    reasoning = ar.get("reasoning") or ""
+    if not result.edits and ar.get("cannot_fix"):
+        reasoning = f"Could not apply the content edit: {ar['cannot_fix']}"
+
+    seen: set[str] = set()
+    deduped = []
+    for e in result.edits:
+        if e.path in seen:
+            continue
+        seen.add(e.path)
+        deduped.append(e)
+    result.edits = deduped
+    return result, reasoning
+
+
+def _content_pr_body(run, edits, content_edits: list[dict], reasoning: str = "") -> str:
+    lines = [
+        "## ✍️ Signalor content update",
+        "",
+        f"Content edits made from Signalor's Content Optimisation for **{run.url}**.",
+        "Review the wording and merge.",
+        "",
+        "### Edits requested",
+    ]
+    for ce in content_edits:
+        if ce.get("kind") == "metadata":
+            lines.append(f"- **{ce.get('field', 'title')}** → {ce.get('new', '')[:200]}")
+        else:
+            lines.append(f"- {ce.get('original', '')[:80]} → {ce.get('new', '')[:120]}")
+    lines += ["", "### Files changed"]
+    for e in edits:
+        lines.append(f"- `{e.path}` — {e.summary}")
+    if reasoning:
+        lines += ["", "### How", reasoning[:4000]]
+    lines += ["", "---", "_Opened by the Signalor GitHub App._"]
+    return "\n".join(lines)
+
+
 def _clean_fail_message(reasoning: str) -> str:
     """Turn the markdown-wrapped agent reasoning into a plain, user-facing reason.
 
@@ -145,7 +188,11 @@ def open_fix_pr(job_id: int) -> None:
 
         client = GithubClient(installation.installation_id, installation.repo_full_name)
         profile = _ensure_profile(installation, client)
-        result, reasoning = _collect_edits(client, profile, run, job.finding_codes)
+        is_content = bool(job.content_edits)
+        if is_content:
+            result, reasoning = _collect_content_edits(client, profile, run, job.content_edits)
+        else:
+            result, reasoning = _collect_edits(client, profile, run, job.finding_codes)
 
         # Verify the edits actually compile (sandbox type-check + self-repair) before
         # opening the PR; clears edits if they never build so we fail instead of
@@ -181,12 +228,17 @@ def open_fix_pr(job_id: int) -> None:
                 sha=edit.sha,
             )
 
-        title = "Signalor: GEO fixes (" + ", ".join(result.applied) + ")"
+        if is_content:
+            title = "Signalor: content update"
+            body = _content_pr_body(run, result.edits, job.content_edits, reasoning)
+        else:
+            title = "Signalor: GEO fixes (" + ", ".join(result.applied) + ")"
+            body = _pr_body(run, result.applied, result.skipped, result.edits, reasoning)
         pr = client.create_pull_request(
             title=title[:250],
             head=branch,
             base=base,
-            body=_pr_body(run, result.applied, result.skipped, result.edits, reasoning),
+            body=body,
         )
 
         job.branch_name = branch

@@ -53,6 +53,7 @@ class RecommendationSerializer(serializers.ModelSerializer):
             "estimated_minutes",
             "finding_code",
             "finding_key",
+            "source",
         ]
 
     # Title keywords that indicate manual-only recommendations

@@ -2,6 +2,7 @@ from django.urls import path
 
 from .enterprise import EnterpriseLeadCreateView
 from .views import (
+    AccountTypeView,
     CancelTerminationView,
     CreateCheckoutSessionView,
     DeleteAccountView,
@@ -31,6 +32,7 @@ urlpatterns = [
     path("account/terminate/", TerminateAccountView.as_view(), name="terminate-account"),
     path("account/cancel-termination/", CancelTerminationView.as_view(), name="cancel-termination"),
     path("account/delete/", DeleteAccountView.as_view(), name="delete-account"),
+    path("account/type/", AccountTypeView.as_view(), name="account-type"),
     path("account/profile/", ProfileView.as_view(), name="profile"),
     path("account/profile/photo/", ProfilePhotoView.as_view(), name="profile-photo"),
     path("enterprise/lead/", EnterpriseLeadCreateView.as_view(), name="enterprise-lead"),

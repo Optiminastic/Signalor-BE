@@ -16,7 +16,7 @@ from datetime import timedelta
 
 from django.conf import settings
 
-from .models import PLAN_LIMITS, Subscription
+from .models import AGENCY_MAX_PROJECTS, PLAN_LIMITS, AccountProfile, Subscription
 
 # ── Internal / Free Emails ────────────────────────────────────────────────
 INTERNAL_DOMAINS = {"optiminastic.com"}
@@ -203,6 +203,43 @@ def get_plan_limits(email: str | None) -> dict:
     return PLAN_LIMITS["starter"]
 
 
+# ── Account Type (Individual / Brand vs Agency) ───────────────────────────
+
+
+def get_account_type(email: str | None) -> str:
+    """Server-derived account type. Absent row → 'individual'.
+
+    Account type is ALWAYS resolved here from the AccountProfile row, never
+    from a client-supplied request field — enforcement must not trust the
+    caller's claim (see CLAUDE.md §5.3).
+    """
+    raw = (email or "").strip().lower()
+    if not raw:
+        return "individual"
+    row = AccountProfile.objects.filter(email=raw).only("account_type").first()
+    return row.account_type if row else "individual"
+
+
+def is_agency(email: str | None) -> bool:
+    return get_account_type(email) == "agency"
+
+
+def effective_max_projects(email: str | None) -> int:
+    """max_projects after applying account type.
+
+    This is the single seam that unlocks multiple projects for agencies (and
+    the place a later per-brand-billing phase will swap the constant for a
+    count of active per-brand subscriptions). Internal emails keep the
+    business cap; agencies get the interim AGENCY_MAX_PROJECTS ceiling.
+    """
+    if is_internal_email(email):
+        return PLAN_LIMITS["business"]["max_projects"]
+    base = get_plan_limits(email)["max_projects"]
+    if is_agency(email):
+        return max(base, AGENCY_MAX_PROJECTS)
+    return base
+
+
 def _tracked_prompt_count(email: str) -> int:
     """Number of tracked prompts that consume this email's plan quota.
 
@@ -243,7 +280,7 @@ def project_limit_reached(email: str | None) -> tuple[bool, str]:
     from apps.organizations.models import Organization
 
     count = Organization.objects.filter(owner_email=em).count()
-    max_projects = limits["max_projects"]
+    max_projects = effective_max_projects(email)
     if count >= max_projects:
         pk = _effective_plan_key(email)
         return True, (

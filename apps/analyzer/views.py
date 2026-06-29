@@ -2759,6 +2759,77 @@ class BrandKitView(APIView):
             )
 
 
+def _insights_flag(slug: str) -> str:
+    return f"overview_insights_generating:{slug}"
+
+
+def _start_insights_generation(run_id: int, slug: str) -> None:
+    """Spawn a daemon thread to (re)generate the overview insight report."""
+    import threading
+
+    def _work():
+        close_old_connections()
+        try:
+            from .services.overview_insights import get_or_generate
+
+            run = AnalysisRun.objects.get(pk=run_id)
+            get_or_generate(run, force=True)
+        except Exception:
+            logger.exception("overview insights generation failed for %s", slug)
+        finally:
+            from django.core.cache import cache
+
+            cache.delete(_insights_flag(slug))
+            close_old_connections()
+
+    threading.Thread(target=_work, daemon=True).start()
+
+
+class OverviewInsightsView(APIView):
+    """GET/POST /api/analyzer/runs/s/<slug>/overview-insights/
+
+    GET:  cached AI insight report + compact GA/GSC signal summary. Never fires the
+          LLM (cheap, pollable).
+    POST: kick off a background (force) regeneration; returns 202. Poll GET until the
+          report appears / ``generating`` flips false.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get_throttles(self):
+        if self.request.method == "POST":
+            return [ExpensiveThrottle()]
+        return [PollingThrottle()]
+
+    def get(self, request, slug):
+        from django.core.cache import cache
+        from django.shortcuts import get_object_or_404
+
+        from .models import OverviewInsightReport
+        from .services.overview_signals import build_overview_signals
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        report = OverviewInsightReport.objects.filter(analysis_run=run).first()
+        return Response(
+            {
+                "report": report.payload if (report and report.payload) else None,
+                "generated_at": report.generated_at.isoformat() if report else None,
+                "generating": bool(cache.get(_insights_flag(slug))),
+                "signals_summary": build_overview_signals(run),
+            }
+        )
+
+    def post(self, request, slug):
+        from django.core.cache import cache
+        from django.shortcuts import get_object_or_404
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        if not cache.get(_insights_flag(slug)):
+            cache.set(_insights_flag(slug), True, 300)
+            _start_insights_generation(run.id, slug)
+        return Response({"status": "generating"}, status=status.HTTP_202_ACCEPTED)
+
+
 class DomainAnalyticsView(APIView):
     """GET/POST /api/analyzer/runs/s/<slug>/domain-analytics/
 
@@ -5620,6 +5691,106 @@ Requirements:
     }
 
 
+def _generate_blog_topics(run, count: int = 5) -> dict:
+    """AI blog-topic ideas grounded in Search Console keywords + GA traffic + the
+    prompts the brand wants to rank for, so blogs target real opportunities.
+
+    Returns {"topics": [{title, angle, target_keyword}], "has_gsc", "has_ga"}.
+    Degrades gracefully: with no GA/GSC it falls back to tracked prompts + GEO gaps.
+    """
+    from .models import PromptTrack
+    from .pipeline.llm import ask_llm
+    from .services.overview_signals import build_overview_signals
+
+    signals = build_overview_signals(run)
+    gsc = signals.get("gsc") or {}
+    ga = signals.get("ga") or {}
+    flags = signals.get("flags") or {}
+
+    keywords = [
+        {
+            "query": q.get("query", ""),
+            "impressions": q.get("impressions", 0),
+            "position": q.get("position", 0),
+        }
+        for q in (gsc.get("top_queries") or [])
+        if q.get("query")
+    ][:12]
+
+    prompts: list[str] = list(
+        PromptTrack.objects.filter(analysis_run=run)
+        .order_by("-id")
+        .values_list("prompt_text", flat=True)[:20]
+    )
+    for p in run.onboarding_prompts or []:
+        if isinstance(p, str) and p.strip():
+            prompts.append(p.strip())
+        elif isinstance(p, dict) and p.get("prompt_text"):
+            prompts.append(str(p["prompt_text"]).strip())
+    prompts = [p for p in dict.fromkeys(prompts) if p][:20]  # dedup + cap
+
+    geo_gaps = list(
+        run.recommendations.filter(source="analyzer").order_by("priority").values_list("title", flat=True)[:8]
+    )
+
+    context = {
+        "brand": signals.get("brand", {}),
+        "search_console_keywords": keywords,
+        "ga_summary": (
+            {"sessions": ga.get("sessions"), "organic_pct": ga.get("organic_pct")} if ga else None
+        ),
+        "prompts_to_rank_for": prompts,
+        "geo_gaps": geo_gaps,
+    }
+
+    prompt = f"""You are an SEO + GEO content strategist. Propose {count} blog post topics for this brand.
+
+Ground EVERY topic in the DATA below. Prefer topics that:
+- target a Search Console keyword the brand already gets impressions for but ranks weakly
+  (high impressions / weak average position = the biggest opportunities), AND/OR
+- help the brand rank for one of the prompts it is tracking (the questions users ask AI engines).
+
+DATA (JSON):
+{json.dumps(context, indent=2, default=str)}
+
+Return STRICT JSON only:
+{{"topics": [{{"title": "specific blog title", "angle": "one sentence on the angle/search intent", "target_keyword": "the exact GSC keyword or tracked prompt this targets"}}]}}
+
+Rules:
+- At most {count} topics. No generic filler — each must tie to a real keyword or tracked prompt above.
+- If keyword data is sparse, base topics on the tracked prompts and GEO gaps.
+- Titles must be specific and compelling. Return ONLY the JSON object.
+"""
+
+    raw = ask_llm(
+        prompt=prompt.strip(),
+        preferred_provider="gemini",
+        max_tokens=1200,
+        temperature=0.5,
+        purpose=f"blog_agent.topics:run={run.pk}",
+    )
+    parsed = _extract_blog_json(raw) or {}
+    topics = []
+    for t in (parsed.get("topics") or [])[:count]:
+        if not isinstance(t, dict):
+            continue
+        title = str(t.get("title") or "").strip()
+        if not title:
+            continue
+        topics.append(
+            {
+                "title": title[:200],
+                "angle": str(t.get("angle") or "").strip()[:300],
+                "target_keyword": str(t.get("target_keyword") or "").strip()[:160],
+            }
+        )
+    return {
+        "topics": topics,
+        "has_gsc": bool(flags.get("has_gsc")),
+        "has_ga": bool(flags.get("has_ga")),
+    }
+
+
 class BlogComposerPostsView(APIView):
     """GET runs/s/<slug>/blog/posts/ — recent WordPress posts for the composer."""
 
@@ -5710,6 +5881,39 @@ class BlogComposerGenerateView(APIView):
 
         draft = _generate_blog_html(run.url or "", topic, tone, word_count)
         return Response(draft)
+
+
+class BlogComposerTopicsView(APIView):
+    """GET runs/s/<slug>/blog/topics/?refresh=1 — AI topic ideas grounded in
+    Search Console keywords + GA + the prompts the brand wants to rank for."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def get(self, request, slug):
+        from django.core.cache import cache
+
+        run, _ = _blog_run_email(slug)
+        if not run:
+            return Response({"error": "Run not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        key = f"blog_topics:{slug}"
+        refresh = str(request.query_params.get("refresh", "")).lower() in ("1", "true", "yes")
+        if not refresh:
+            try:
+                cached = cache.get(key)
+            except Exception:
+                cached = None
+            if cached:
+                return Response(cached)
+
+        data = _generate_blog_topics(run)
+        if data["topics"]:
+            try:
+                cache.set(key, data, 6 * 60 * 60)
+            except Exception:
+                logger.warning("blog topics cache.set failed", exc_info=True)
+        return Response(data)
 
 
 class BlogComposerPublishView(APIView):

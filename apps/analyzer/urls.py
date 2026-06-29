@@ -30,6 +30,7 @@ from .views import (
     BlogComposerGenerateView,
     BlogComposerPostsView,
     BlogComposerPublishView,
+    BlogComposerTopicsView,
     BlogComposerUploadImageView,
     BulkCreateUserActionView,
     CitationSourcesView,
@@ -55,6 +56,7 @@ from .views import (
     GeoImprovementsView,
     HealthCheckView,
     OnboardingStartView,
+    OverviewInsightsView,
     PromptBacklinksView,
     PromptDeleteView,
     PromptListCreateView,
@@ -163,6 +165,11 @@ urlpatterns = [
         DomainAnalyticsView.as_view(),
         name="domain-analytics",
     ),
+    path(
+        "runs/s/<str:slug>/overview-insights/",
+        OverviewInsightsView.as_view(),
+        name="overview-insights",
+    ),
     # Blog composer (dashboard "Blog Agent" page)
     path("runs/s/<str:slug>/blog/posts/", BlogComposerPostsView.as_view(), name="blog-composer-posts"),
     path(
@@ -174,6 +181,11 @@ urlpatterns = [
         "runs/s/<str:slug>/blog/generate/",
         BlogComposerGenerateView.as_view(),
         name="blog-composer-generate",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/topics/",
+        BlogComposerTopicsView.as_view(),
+        name="blog-composer-topics",
     ),
     path(
         "runs/s/<str:slug>/blog/publish/",

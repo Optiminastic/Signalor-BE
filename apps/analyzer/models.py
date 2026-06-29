@@ -138,6 +138,10 @@ class Recommendation(models.Model):
         MEDIUM = "medium"
         LOW = "low"
 
+    class Source(models.TextChoices):
+        ANALYZER = "analyzer", "Analyzer"
+        AI_INSIGHT = "ai_insight", "AI Insight"
+
     analysis_run = models.ForeignKey(AnalysisRun, on_delete=models.CASCADE, related_name="recommendations")
     pillar = models.CharField(max_length=30)
     priority = models.CharField(max_length=10, choices=Priority.choices)
@@ -156,6 +160,8 @@ class Recommendation(models.Model):
     estimated_minutes = models.IntegerField(default=0)
     # The finding key that triggered this recommendation (e.g. "no_h1", "no_citations")
     finding_key = models.CharField(max_length=80, blank=True, default="")
+    # Where this rec came from — "analyzer" (pipeline) or "ai_insight" (GA/GSC AI insights).
+    source = models.CharField(max_length=20, choices=Source.choices, default=Source.ANALYZER, db_index=True)
 
     class Meta:
         ordering = ["priority", "pillar"]
@@ -1510,6 +1516,26 @@ class BrandKit(models.Model):
 
     def __str__(self):
         return f"BrandKit<run={self.analysis_run_id}>"
+
+
+class OverviewInsightReport(models.Model):
+    """Per-run cached AI insight report blending analyzer + GA4 + GSC signals.
+
+    ``payload`` holds {summary, insights[], tasks[], has_ga, has_gsc}. The tasks
+    are also persisted as tagged Recommendation rows (source="ai_insight").
+    """
+
+    analysis_run = models.OneToOneField(
+        AnalysisRun, on_delete=models.CASCADE, related_name="overview_insights"
+    )
+    payload = models.JSONField(default=dict)
+    has_ga = models.BooleanField(default=False)
+    has_gsc = models.BooleanField(default=False)
+    generated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"OverviewInsightReport<run={self.analysis_run_id}>"
 
 
 class PromptWikipediaDraft(models.Model):

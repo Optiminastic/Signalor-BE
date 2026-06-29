@@ -271,6 +271,52 @@ def generate_edits(finding: dict, client, profile: dict, run) -> dict:
     return _run_loop(messages, client, profile, finding.get("finding_code") or "")
 
 
+def _content_prompt(content_edits: list[dict], run) -> str:
+    lines = [
+        f"Apply these exact CONTENT edits to the site {getattr(run, 'url', '')} "
+        f"(brand: {getattr(run, 'brand_name', '') or 'n/a'}) by editing its source files.",
+        "",
+        "Each edit gives the EXACT current text and the EXACT replacement text. Use the replacement "
+        "VERBATIM — do not paraphrase, summarize, shorten, or invent any wording. Find where the "
+        "current text lives in the repo (use search_code on a distinctive snippet of it) and change "
+        "ONLY that text, nothing else.",
+        "",
+    ]
+    for i, e in enumerate(content_edits, 1):
+        if e.get("kind") == "metadata":
+            field = e.get("field") or "title"
+            tag = "<title>" if field == "title" else '<meta name="description">'
+            lines.append(
+                f"{i}. METADATA — set the page {field} ({tag}) for the route that renders "
+                f"{e.get('url', '')}.\n"
+                f"   CURRENT: {e.get('original', '') or '(unknown)'}\n"
+                f"   NEW: {e.get('new', '')}\n"
+                "   Prefer the Next.js app-router `export const metadata` for that route's page/layout."
+            )
+        else:
+            lines.append(
+                f"{i}. TEXT — replace this exact copy where it appears in the rendered page source:\n"
+                f"   CURRENT: {e.get('original', '')}\n"
+                f"   NEW: {e.get('new', '')}"
+            )
+    lines += [
+        "",
+        "If a string genuinely cannot be located in the repo (e.g. it is served from a CMS/database, "
+        "not the source), call cannot_fix with a one-line reason.",
+    ]
+    return "\n".join(lines)
+
+
+def generate_content_edits(content_edits: list[dict], client, profile: dict, run) -> dict:
+    """Run the bounded agent loop to apply user-supplied content edits (verbatim
+    original→new text) to the repo. Same return shape as ``generate_edits``."""
+    messages = [
+        {"role": "system", "content": _system_prompt(profile)},
+        {"role": "user", "content": _content_prompt(content_edits, run)},
+    ]
+    return _run_loop(messages, client, profile, "content_update")
+
+
 def repair_edits(
     finding_codes: list[str], current_edits: list[FileEdit], errors: str, client, profile: dict
 ) -> dict:

@@ -14,6 +14,12 @@ from django.db import models
 # differentiators, not engine access.
 _ALL_ENGINES = ["chatgpt", "gemini", "perplexity", "claude", "google", "bing"]
 
+# Interim project cap for Agency accounts — effectively "unlimited" until
+# per-brand Dodo billing lands (each added client brand becomes a paid line
+# item, and this constant is replaced by a count of active per-brand
+# subscriptions). See AccountProfile + subscription_utils.effective_max_projects.
+AGENCY_MAX_PROJECTS = 1000
+
 PLAN_LIMITS = {
     "starter": {
         "label": "Self-Serve Brand",
@@ -109,6 +115,41 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return self.username
+
+
+class AccountProfile(models.Model):
+    """Email-keyed account identity that exists BEFORE any payment.
+
+    Deliberately decoupled from ``Subscription`` (billing) and the Django
+    ``User`` (auth): the Individual-vs-Agency choice is made during sign-up,
+    before a Subscription or a fully-populated User row necessarily exists
+    (``ProfileView`` already handles missing User rows). Absence of a row is
+    treated as ``individual`` everywhere — see
+    ``subscription_utils.get_account_type``.
+
+    Account type only affects the project cap (see ``effective_max_projects``);
+    it is orthogonal to ``Subscription.plan`` (starter/pro/business), which
+    stays the stable Dodo contract.
+    """
+
+    class AccountType(models.TextChoices):
+        INDIVIDUAL = "individual", "Individual / Brand"
+        AGENCY = "agency", "Agency"
+
+    email = models.EmailField(unique=True, db_index=True)
+    account_type = models.CharField(
+        max_length=20,
+        choices=AccountType.choices,
+        default=AccountType.INDIVIDUAL,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "accounts_account_profile"
+
+    def __str__(self):
+        return f"{self.email} ({self.account_type})"
 
 
 class Subscription(models.Model):

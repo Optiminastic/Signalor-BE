@@ -341,6 +341,75 @@ class GithubFixView(APIView):
         return Response({"jobs": created}, status=status.HTTP_202_ACCEPTED)
 
 
+class GithubContentFixView(APIView):
+    """POST runs/s/<slug>/content-pr/ — open a PR applying Content-Optimisation edits.
+
+    Body: {"url": "...", "edits": [{"kind": "text"|"metadata", "field"?, "original", "new"}]}.
+    Used when a Next.js (GitHub) repo is connected instead of a CMS plugin.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request, slug):
+        run = _get_run(slug)
+        if not run:
+            return Response({"error": "Run not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        inst = _active_installation_for(run)
+        if not inst:
+            return Response(
+                {"error": "No GitHub repo connected for this project."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        page_url = (request.data.get("url") or "").strip()
+        raw_edits = request.data.get("edits")
+        if not isinstance(raw_edits, list) or not raw_edits:
+            return Response({"error": "edits must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
+
+        edits: list[dict] = []
+        for e in raw_edits:
+            if not isinstance(e, dict):
+                continue
+            new = (e.get("new") or "").strip()
+            if not new:
+                continue
+            if e.get("kind") == "metadata":
+                field = "description" if e.get("field") == "description" else "title"
+                edits.append(
+                    {
+                        "kind": "metadata",
+                        "url": page_url,
+                        "field": field,
+                        "original": (e.get("original") or "").strip(),
+                        "new": new,
+                    }
+                )
+            else:
+                original = (e.get("original") or "").strip()
+                if not original or original == new:
+                    continue
+                edits.append({"kind": "text", "url": page_url, "original": original, "new": new})
+
+        if not edits:
+            return Response(
+                {"error": "No valid edits (need non-empty new text that differs from the original)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        job = GithubFixJob.objects.create(
+            installation=inst,
+            analysis_run=run,
+            finding_codes=["content_update"],
+            content_edits=edits,
+            score_before=run.composite_score,
+            status=GithubFixJob.Status.PENDING,
+        )
+        tasks.start_fix_job(job.id)
+        return Response({"job_id": job.id, "status": job.status}, status=status.HTTP_202_ACCEPTED)
+
+
 class GithubJobsView(APIView):
     """GET runs/s/<slug>/jobs/ and jobs/<id>/ — poll fix-job status."""
 
