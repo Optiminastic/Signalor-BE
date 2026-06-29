@@ -5998,6 +5998,26 @@ class OurBacklinksView(APIView):
         return Response({"rows": rows, "can_add_today": _auto_can_add_today(run)})
 
 
+class BlogPostDeleteView(APIView):
+    """DELETE /runs/s/<slug>/blog/<post_id>/ — delete one published backlink post
+    (scoped to this brand, so a run can only delete its own posts)."""
+
+    permission_classes = [AllowAny]
+
+    def delete(self, request, slug, post_id):
+        from django.shortcuts import get_object_or_404
+
+        from .models import BlogPost
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        deleted, _ = BlogPost.objects.filter(
+            id=post_id, brand_ref=_brand_ref_for_run(run)
+        ).delete()
+        if not deleted:
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 # Per-site angle for the one-click "Add" auto-publish (themed title/topic per site).
 AUTO_SITE_ANGLE = {
     "research": "an in-depth, first-principles research analysis of {subject}",
