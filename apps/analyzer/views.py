@@ -5998,11 +5998,64 @@ class OurBacklinksView(APIView):
         return Response({"rows": rows, "can_add_today": _auto_can_add_today(run)})
 
 
-class BlogPostDeleteView(APIView):
-    """DELETE /runs/s/<slug>/blog/<post_id>/ — delete one published backlink post
-    (scoped to this brand, so a run can only delete its own posts)."""
+class BlogPostDetailView(APIView):
+    """GET/PATCH/DELETE /runs/s/<slug>/blog/<post_id>/ — read, edit, or delete one
+    published backlink post (scoped to this brand, so a run only touches its own)."""
 
     permission_classes = [AllowAny]
+
+    def _get(self, run, post_id):
+        from .models import BlogPost
+
+        return BlogPost.objects.filter(id=post_id, brand_ref=_brand_ref_for_run(run)).first()
+
+    def _serialize(self, post):
+        from django.conf import settings as dj_settings
+
+        domain = (dj_settings.SATELLITE_SITES.get(post.site) or "").rstrip("/")
+        return {
+            "id": post.id,
+            "site": post.site,
+            "category": post.site,
+            "slug": post.slug,
+            "title": post.title,
+            "description": post.description,
+            "content_html": post.content_html,
+            "image_url": post.image_url,
+            "brand_url": post.brand_url,
+            "url": f"{domain}/{post.slug}" if domain else "",
+            "status": post.status,
+            "published_at": post.published_at,
+        }
+
+    def get(self, request, slug, post_id):
+        from django.shortcuts import get_object_or_404
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        post = self._get(run, post_id)
+        if not post:
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(self._serialize(post))
+
+    def patch(self, request, slug, post_id):
+        from django.shortcuts import get_object_or_404
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        post = self._get(run, post_id)
+        if not post:
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        data = request.data or {}
+        if "title" in data:
+            post.title = str(data.get("title") or "").strip()[:300] or post.title
+        if "description" in data:
+            post.description = str(data.get("description") or "")[:2000]
+        if "content_html" in data:
+            post.content_html = str(data.get("content_html") or "")
+        if "image_url" in data:
+            post.image_url = str(data.get("image_url") or "")[:2048]
+        post.save()
+        return Response(self._serialize(post))
 
     def delete(self, request, slug, post_id):
         from django.shortcuts import get_object_or_404

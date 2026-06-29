@@ -6,7 +6,7 @@ from .views import (
     ActionTemplatesView,
     BlogAutoPublishAllView,
     BlogGenerateView,
-    BlogPostDeleteView,
+    BlogPostDetailView,
     BlogPublishNetworkView,
     BlogSourcesView,
     BlogTitleIdeasView,
@@ -199,8 +199,8 @@ urlpatterns = [
     ),
     path(
         "runs/s/<str:slug>/blog/<int:post_id>/",
-        BlogPostDeleteView.as_view(),
-        name="blog-post-delete",
+        BlogPostDetailView.as_view(),
+        name="blog-post-detail",
     ),
     path(
         "runs/s/<str:slug>/blog/sources/",
