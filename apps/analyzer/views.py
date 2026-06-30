@@ -6066,19 +6066,9 @@ AUTO_SITE_ANGLE = {
 
 
 def _auto_can_add_today(run) -> bool:
-    """One auto-batch per calendar day per brand (checked against S3)."""
-    from django.utils import timezone
-
-    from . import blog_store
-
-    try:
-        today = timezone.localdate().isoformat()
-        for p in blog_store.list_for_brand(_brand_ref_for_run(run)):
-            if p.get("source") == "auto" and str(p.get("created_at") or "").startswith(today):
-                return False
-        return True
-    except Exception:
-        return True
+    """Daily limit disabled for now — allow unlimited auto-publish (add as many
+    blog batches as you like; delete them from the Signalor dashboard)."""
+    return True
 
 
 class BlogAutoPublishAllView(APIView):
