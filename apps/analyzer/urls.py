@@ -198,7 +198,7 @@ urlpatterns = [
         name="blog-auto-publish-all",
     ),
     path(
-        "runs/s/<str:slug>/blog/<int:post_id>/",
+        "runs/s/<str:slug>/blog/item/<str:site>/<str:post_slug>/",
         BlogPostDetailView.as_view(),
         name="blog-post-detail",
     ),

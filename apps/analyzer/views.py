@@ -5903,6 +5903,7 @@ class BlogPublishNetworkView(APIView):
         from django.shortcuts import get_object_or_404
         from django.utils import timezone
 
+        from . import blog_store
         from .models import BlogPost
 
         run = get_object_or_404(AnalysisRun, slug=slug)
@@ -5923,40 +5924,33 @@ class BlogPublishNetworkView(APIView):
             content_html = _to_html_from_markdownish(content_markdown)
 
         base_slug = _slugify(data.get("slug") or title)
-        slug_val = base_slug
-        n = 2
-        while BlogPost.objects.filter(site=site, slug=slug_val).exists():
+        slug_val, n = base_slug, 2
+        while blog_store.slug_exists(site, slug_val):
             slug_val = f"{base_slug}-{n}"
             n += 1
 
         brand_url = (run.organization.url if run.organization else "") or run.url or ""
-
-        post = BlogPost.objects.create(
-            site=site,
-            slug=slug_val,
-            title=title[:300],
-            description=(data.get("description") or data.get("meta_description") or "")[:2000],
-            content_html=content_html,
-            image_url=(data.get("image_url") or "")[:2048],
-            category=(data.get("category") or "")[:80],
-            brand_url=brand_url,
-            brand_ref=_brand_ref_for_run(run),
-            status=BlogPost.Status.PUBLISHED,
-            published_at=timezone.now(),
-        )
+        now = timezone.now().isoformat()
+        post = {
+            "id": blog_store.new_id(),
+            "site": site,
+            "slug": slug_val,
+            "title": title[:300],
+            "description": (data.get("description") or data.get("meta_description") or "")[:2000],
+            "content_html": content_html,
+            "image_url": (data.get("image_url") or "")[:2048],
+            "category": (data.get("category") or "")[:80],
+            "brand_url": brand_url,
+            "brand_ref": _brand_ref_for_run(run),
+            "source": "signalor",
+            "status": "published",
+            "published_at": now,
+            "created_at": now,
+        }
+        blog_store.put_post(post)
         domain = (dj_settings.SATELLITE_SITES.get(site) or "").rstrip("/")
-        public_url = f"{domain}/{post.slug}" if domain else ""
         return Response(
-            {
-                "id": post.id,
-                "site": post.site,
-                "slug": post.slug,
-                "title": post.title,
-                "url": public_url,
-                "brand_url": post.brand_url,
-                "status": post.status,
-                "published_at": post.published_at,
-            },
+            {**post, "url": f"{domain}/{slug_val}" if domain else ""},
             status=status.HTTP_201_CREATED,
         )
 
@@ -5971,103 +5965,93 @@ class OurBacklinksView(APIView):
         from django.conf import settings as dj_settings
         from django.shortcuts import get_object_or_404
 
-        from .models import BlogPost
+        from . import blog_store
 
         run = get_object_or_404(AnalysisRun, slug=slug)
         rows = []
         try:
-            qs = BlogPost.objects.filter(brand_ref=_brand_ref_for_run(run)).order_by(
-                "-published_at", "-created_at"
-            )
-            for p in qs:
-                domain = (dj_settings.SATELLITE_SITES.get(p.site) or "").rstrip("/")
+            for p in blog_store.list_for_brand(_brand_ref_for_run(run)):
+                domain = (dj_settings.SATELLITE_SITES.get(p.get("site")) or "").rstrip("/")
                 rows.append(
                     {
-                        "id": p.id,
-                        "site": p.site,
-                        "category": p.site,
-                        "title": p.title,
-                        "url": f"{domain}/{p.slug}" if domain else "",
-                        "brand_url": p.brand_url,
-                        "status": p.status,
-                        "published_at": p.published_at,
+                        "id": p.get("id"),
+                        "site": p.get("site"),
+                        "category": p.get("site"),
+                        "slug": p.get("slug"),
+                        "title": p.get("title"),
+                        "url": f"{domain}/{p.get('slug')}" if domain else "",
+                        "brand_url": p.get("brand_url", ""),
+                        "status": p.get("status", "published"),
+                        "published_at": p.get("published_at"),
                     }
                 )
-        except Exception as exc:  # blog DB not configured / unreachable → empty list
-            logger.warning("our-backlinks: blog DB read failed for %s: %s", slug, exc)
+        except Exception as exc:  # S3 not configured / unreachable → empty list
+            logger.warning("our-backlinks: S3 read failed for %s: %s", slug, exc)
         return Response({"rows": rows, "can_add_today": _auto_can_add_today(run)})
 
 
 class BlogPostDetailView(APIView):
-    """GET/PATCH/DELETE /runs/s/<slug>/blog/<post_id>/ — read, edit, or delete one
-    published backlink post (scoped to this brand, so a run only touches its own)."""
+    """GET/PATCH/DELETE /runs/s/<slug>/blog/item/<site>/<post_slug>/ — read, edit,
+    or delete one published backlink post in S3 (scoped to this brand)."""
 
     permission_classes = [AllowAny]
 
-    def _get(self, run, post_id):
-        from .models import BlogPost
-
-        return BlogPost.objects.filter(id=post_id, brand_ref=_brand_ref_for_run(run)).first()
+    def _owned(self, run, post):
+        return bool(post) and post.get("brand_ref") == _brand_ref_for_run(run)
 
     def _serialize(self, post):
         from django.conf import settings as dj_settings
 
-        domain = (dj_settings.SATELLITE_SITES.get(post.site) or "").rstrip("/")
-        return {
-            "id": post.id,
-            "site": post.site,
-            "category": post.site,
-            "slug": post.slug,
-            "title": post.title,
-            "description": post.description,
-            "content_html": post.content_html,
-            "image_url": post.image_url,
-            "brand_url": post.brand_url,
-            "url": f"{domain}/{post.slug}" if domain else "",
-            "status": post.status,
-            "published_at": post.published_at,
-        }
+        domain = (dj_settings.SATELLITE_SITES.get(post.get("site")) or "").rstrip("/")
+        out = dict(post)
+        out["category"] = post.get("site")
+        out["url"] = f"{domain}/{post.get('slug')}" if domain else ""
+        return out
 
-    def get(self, request, slug, post_id):
+    def get(self, request, slug, site, post_slug):
         from django.shortcuts import get_object_or_404
 
+        from . import blog_store
+
         run = get_object_or_404(AnalysisRun, slug=slug)
-        post = self._get(run, post_id)
-        if not post:
+        post = blog_store.get_post(site, post_slug)
+        if not self._owned(run, post):
             return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
         return Response(self._serialize(post))
 
-    def patch(self, request, slug, post_id):
+    def patch(self, request, slug, site, post_slug):
         from django.shortcuts import get_object_or_404
 
+        from . import blog_store
+
         run = get_object_or_404(AnalysisRun, slug=slug)
-        post = self._get(run, post_id)
-        if not post:
+        post = blog_store.get_post(site, post_slug)
+        if not self._owned(run, post):
             return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
 
         data = request.data or {}
+        fields = {}
         if "title" in data:
-            post.title = str(data.get("title") or "").strip()[:300] or post.title
+            fields["title"] = (str(data.get("title") or "").strip()[:300]) or post.get("title")
         if "description" in data:
-            post.description = str(data.get("description") or "")[:2000]
+            fields["description"] = str(data.get("description") or "")[:2000]
         if "content_html" in data:
-            post.content_html = str(data.get("content_html") or "")
+            fields["content_html"] = str(data.get("content_html") or "")
         if "image_url" in data:
-            post.image_url = str(data.get("image_url") or "")[:2048]
-        post.save()
-        return Response(self._serialize(post))
+            fields["image_url"] = str(data.get("image_url") or "")[:2048]
+        updated = blog_store.update_post(site, post_slug, fields)
+        return Response(self._serialize(updated))
 
-    def delete(self, request, slug, post_id):
+    def delete(self, request, slug, site, post_slug):
         from django.shortcuts import get_object_or_404
 
-        from .models import BlogPost
+        from . import blog_store
 
         run = get_object_or_404(AnalysisRun, slug=slug)
-        deleted, _ = BlogPost.objects.filter(
-            id=post_id, brand_ref=_brand_ref_for_run(run)
-        ).delete()
-        if not deleted:
+        post = blog_store.get_post(site, post_slug)
+        if not self._owned(run, post):
             return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        blog_store.delete_post(site, post_slug)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -6082,17 +6066,17 @@ AUTO_SITE_ANGLE = {
 
 
 def _auto_can_add_today(run) -> bool:
-    """One auto-batch per calendar day per brand."""
+    """One auto-batch per calendar day per brand (checked against S3)."""
     from django.utils import timezone
 
-    from .models import BlogPost
+    from . import blog_store
 
     try:
-        return not BlogPost.objects.filter(
-            brand_ref=_brand_ref_for_run(run),
-            source="auto",
-            created_at__date=timezone.localdate(),
-        ).exists()
+        today = timezone.localdate().isoformat()
+        for p in blog_store.list_for_brand(_brand_ref_for_run(run)):
+            if p.get("source") == "auto" and str(p.get("created_at") or "").startswith(today):
+                return False
+        return True
     except Exception:
         return True
 
@@ -6109,6 +6093,7 @@ class BlogAutoPublishAllView(APIView):
         from django.shortcuts import get_object_or_404
         from django.utils import timezone
 
+        from . import blog_store
         from .models import BlogPost
         from .pipeline.citations import host_of
 
@@ -6166,33 +6151,40 @@ class BlogAutoPublishAllView(APIView):
 
                 base_slug = _slugify(draft.get("slug") or title)
                 slug_val, n = base_slug, 2
-                while BlogPost.objects.filter(site=site, slug=slug_val).exists():
+                while blog_store.slug_exists(site, slug_val):
                     slug_val = f"{base_slug}-{n}"
                     n += 1
 
-                post = BlogPost.objects.create(
-                    site=site,
-                    slug=slug_val,
-                    title=title,
-                    description=meta[:2000],
-                    content_html=content_html,
-                    brand_url=ref_url,
-                    brand_ref=brand_ref,
-                    source="auto",
-                    status=BlogPost.Status.PUBLISHED,
-                    published_at=timezone.now(),
-                )
+                now = timezone.now().isoformat()
+                post = {
+                    "id": blog_store.new_id(),
+                    "site": site,
+                    "slug": slug_val,
+                    "title": title,
+                    "description": meta[:2000],
+                    "content_html": content_html,
+                    "image_url": "",
+                    "category": "",
+                    "brand_url": ref_url,
+                    "brand_ref": brand_ref,
+                    "source": "auto",
+                    "status": "published",
+                    "published_at": now,
+                    "created_at": now,
+                }
+                blog_store.put_post(post)
                 domain = (dj_settings.SATELLITE_SITES.get(site) or "").rstrip("/")
                 created.append(
                     {
-                        "id": post.id,
-                        "site": post.site,
-                        "category": post.site,
-                        "title": post.title,
-                        "url": f"{domain}/{post.slug}" if domain else "",
-                        "brand_url": post.brand_url,
-                        "status": post.status,
-                        "published_at": post.published_at,
+                        "id": post["id"],
+                        "site": site,
+                        "category": site,
+                        "slug": slug_val,
+                        "title": title,
+                        "url": f"{domain}/{slug_val}" if domain else "",
+                        "brand_url": ref_url,
+                        "status": "published",
+                        "published_at": now,
                     }
                 )
             except Exception as exc:
