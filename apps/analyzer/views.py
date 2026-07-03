@@ -6187,6 +6187,7 @@ class RankingsView(APIView):
             "visibility": brand_visibility,
             "avg_position": brand_avg_position,
             "is_you": True,
+            "domain": _norm_domain(run.url or ""),
         }
         if brand_sentiment is not None:
             brand_row["sentiment"] = brand_sentiment
@@ -6202,6 +6203,7 @@ class RankingsView(APIView):
                     "visibility": round(vis or 0),
                     "avg_position": None,
                     "is_you": False,
+                    "domain": _norm_domain(c.url or ""),
                 }
             )
 
@@ -6218,6 +6220,7 @@ class RankingsView(APIView):
                 "avg_position": r["avg_position"] or f"#{rank}",
                 "is_you": r["is_you"],
                 "color": self._PALETTE[i % len(self._PALETTE)],
+                "domain": r.get("domain") or "",
             }
             if "sentiment" in r:
                 row["sentiment"] = r["sentiment"]
