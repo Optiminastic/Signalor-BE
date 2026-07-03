@@ -31,6 +31,7 @@ from .models import (
 
 class RecommendationSerializer(serializers.ModelSerializer):
     can_auto_fix = serializers.SerializerMethodField()
+    steps = serializers.SerializerMethodField()
 
     class Meta:
         model = Recommendation
@@ -105,6 +106,23 @@ class RecommendationSerializer(serializers.ModelSerializer):
         "shipping",
         "product description",
     ]
+
+    def get_steps(self, obj):
+        """Coerce steps into the {n, title, detail, xp} shape the frontend expects.
+
+        Some older rows (from a since-removed AI-insight code path) stored
+        `steps` as a plain list of strings instead of structured objects —
+        the frontend schema requires objects, so pass those through as a
+        title-only step rather than letting validation fail the whole run.
+        """
+        steps = obj.steps or []
+        normalized = []
+        for i, step in enumerate(steps):
+            if isinstance(step, dict):
+                normalized.append(step)
+            else:
+                normalized.append({"n": i + 1, "title": str(step), "detail": "", "xp": 0})
+        return normalized
 
     def get_can_auto_fix(self, obj):
         title_lower = (obj.title or "").lower()

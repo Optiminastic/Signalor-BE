@@ -1,6 +1,28 @@
 from django.db import migrations, models
 
 
+def drop_medium_columns(apps, schema_editor):
+    table = "analyzer_brandvisibility"
+    existing = {
+        col.name
+        for col in schema_editor.connection.introspection.get_table_description(
+            schema_editor.connection.cursor(), table
+        )
+    }
+    with schema_editor.connection.cursor() as cursor:
+        if "medium_score" in existing:
+            cursor.execute(f'ALTER TABLE "{table}" DROP COLUMN "medium_score";')
+        if "medium_details" in existing:
+            cursor.execute(f'ALTER TABLE "{table}" DROP COLUMN "medium_details";')
+
+
+def add_medium_columns(apps, schema_editor):
+    table = "analyzer_brandvisibility"
+    default_type = "double precision" if schema_editor.connection.vendor == "postgresql" else "real"
+    with schema_editor.connection.cursor() as cursor:
+        cursor.execute(f'ALTER TABLE "{table}" ADD COLUMN "medium_score" {default_type} NOT NULL DEFAULT 0;')
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -8,18 +30,13 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        # Use IF EXISTS so the migration doesn't crash if the column was already
+        # Guarded so the migration doesn't crash if the column was already
         # dropped manually or the DB was synced from a newer model state.
+        # Uses RunPython (not RunSQL) so the guard works on SQLite (dev) too,
+        # since SQLite doesn't support "DROP COLUMN IF EXISTS".
         migrations.SeparateDatabaseAndState(
             database_operations=[
-                migrations.RunSQL(
-                    sql='ALTER TABLE "analyzer_brandvisibility" DROP COLUMN IF EXISTS "medium_score";',
-                    reverse_sql='ALTER TABLE "analyzer_brandvisibility" ADD COLUMN "medium_score" double precision NOT NULL DEFAULT 0;',
-                ),
-                migrations.RunSQL(
-                    sql='ALTER TABLE "analyzer_brandvisibility" DROP COLUMN IF EXISTS "medium_details";',
-                    reverse_sql="",
-                ),
+                migrations.RunPython(drop_medium_columns, reverse_code=add_medium_columns),
             ],
             state_operations=[
                 migrations.RemoveField(model_name="brandvisibility", name="medium_score"),
