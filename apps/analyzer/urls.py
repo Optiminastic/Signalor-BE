@@ -72,6 +72,7 @@ from .views import (
     RankAuditRefreshQueryView,
     # Rank tracker
     RankAuditStartView,
+    RankingsView,
     RecheckAllPromptsView,
     RecheckPromptView,
     RunBacklinkFreeView,
@@ -81,15 +82,18 @@ from .views import (
     SchemaWatchStartView,
     # New features
     ScoreHistoryView,
+    ShareOfVoiceCompetitorsView,
     ShareOfVoiceView,
     SitemapAuditDetailView,
     # Sitemap audit
     SitemapAuditStartView,
     StartAnalysisView,
+    TopSourcesView,
     UpdateUserActionView,
     UserActionListView,
     # Gamification views
     UserGamificationView,
+    VisibilitySeriesView,
     WeeklyTestEmailView,
 )
 
@@ -138,6 +142,19 @@ urlpatterns = [
     path("runs/s/<str:slug>/prompts/<int:track_id>/", PromptDeleteView.as_view(), name="prompt-delete"),
     path("runs/s/<str:slug>/recheck-all/", RecheckAllPromptsView.as_view(), name="prompt-recheck-all"),
     path("runs/s/<str:slug>/share-of-voice/", ShareOfVoiceView.as_view(), name="share-of-voice"),
+    # Dashboard v2 aggregates
+    path(
+        "runs/s/<str:slug>/visibility-series/",
+        VisibilitySeriesView.as_view(),
+        name="visibility-series",
+    ),
+    path("runs/s/<str:slug>/rankings/", RankingsView.as_view(), name="rankings"),
+    path(
+        "runs/s/<str:slug>/share-of-voice-competitors/",
+        ShareOfVoiceCompetitorsView.as_view(),
+        name="share-of-voice-competitors",
+    ),
+    path("runs/s/<str:slug>/top-sources/", TopSourcesView.as_view(), name="top-sources"),
     path("runs/s/<str:slug>/citation-trend/", CitationTrendView.as_view(), name="citation-trend"),
     path("runs/s/<str:slug>/citations/", CitationSourcesView.as_view(), name="citation-sources"),
     path(
