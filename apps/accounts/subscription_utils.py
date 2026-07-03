@@ -44,6 +44,54 @@ def is_internal_email(email: str | None) -> bool:
     return domain in INTERNAL_DOMAINS
 
 
+# Free / personal email providers that are NOT allowed for Agency accounts.
+# Keep in sync with the frontend list in `src/lib/work-email.ts`.
+FREE_EMAIL_DOMAINS = {
+    "gmail.com",
+    "googlemail.com",
+    "outlook.com",
+    "outlook.co.uk",
+    "hotmail.com",
+    "hotmail.co.uk",
+    "live.com",
+    "live.co.uk",
+    "msn.com",
+    "yahoo.com",
+    "yahoo.co.uk",
+    "yahoo.in",
+    "ymail.com",
+    "rocketmail.com",
+    "icloud.com",
+    "me.com",
+    "mac.com",
+    "proton.me",
+    "protonmail.com",
+    "pm.me",
+    "aol.com",
+    "gmx.com",
+    "gmx.net",
+    "mail.com",
+    "zoho.com",
+    "yandex.com",
+    "yandex.ru",
+    "tutanota.com",
+    "tuta.io",
+    "hey.com",
+    "fastmail.com",
+    "hushmail.com",
+    "inbox.com",
+}
+
+
+def is_free_email(email: str | None) -> bool:
+    """True if the email is from a known free/personal provider (not a work
+    address). Used to gate Agency accounts, which require a company email."""
+    raw = (email or "").strip().lower()
+    if not raw or "@" not in raw:
+        return False
+    return raw.rsplit("@", 1)[1] in FREE_EMAIL_DOMAINS
+
+
 def _integration_subscription_required() -> bool:
     """
     Whether Shopify/WordPress OAuth must have an active active subscription.

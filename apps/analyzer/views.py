@@ -6181,6 +6181,27 @@ class RankingsView(APIView):
             visibility_brand_label(run.url or "", run.brand_name or "") or run.brand_name or run.url
         )
 
+        # Which AI engines each competitor domain is cited in / the brand is
+        # mentioned in — powers the "Models" column (where they actually rank).
+        from collections import defaultdict
+
+        from .pipeline.utils import extract_domain
+
+        eng_by_domain: dict[str, set] = defaultdict(set)
+        for cr in (
+            PromptCitation.objects.filter(
+                prompt_result__prompt_track__analysis_run=run,
+                prompt_result__prompt_track__deleted_at__isnull=True,
+            )
+            .exclude(domain="")
+            .values("domain", "prompt_result__engine")
+        ):
+            eng_by_domain[_norm_domain(cr["domain"])].add(cr["prompt_result__engine"])
+
+        brand_engines = sorted(
+            brand_results.filter(brand_mentioned=True).values_list("engine", flat=True).distinct()
+        )
+
         raw_rows = []
         brand_row = {
             "company": brand_company,
@@ -6188,6 +6209,7 @@ class RankingsView(APIView):
             "avg_position": brand_avg_position,
             "is_you": True,
             "domain": _norm_domain(run.url or ""),
+            "engines": brand_engines,
         }
         if brand_sentiment is not None:
             brand_row["sentiment"] = brand_sentiment
@@ -6204,6 +6226,7 @@ class RankingsView(APIView):
                     "avg_position": None,
                     "is_you": False,
                     "domain": _norm_domain(c.url or ""),
+                    "engines": sorted(eng_by_domain.get(_norm_domain(extract_domain(c.url or "")), set())),
                 }
             )
 
@@ -6221,6 +6244,7 @@ class RankingsView(APIView):
                 "is_you": r["is_you"],
                 "color": self._PALETTE[i % len(self._PALETTE)],
                 "domain": r.get("domain") or "",
+                "engines": r.get("engines") or [],
             }
             if "sentiment" in r:
                 row["sentiment"] = r["sentiment"]
@@ -6260,29 +6284,30 @@ class ShareOfVoiceCompetitorsView(APIView):
         total = agg["total"] or 0
         value = round((agg["mentioned"] or 0) / total * 100, 1) if total else 0.0
 
-        # Per-competitor SoV from citation domains.
+        # Per-competitor SoV: fraction of responses that cite the competitor's
+        # domain — the SAME mention-rate basis as the brand headline, so the bars
+        # are directly comparable (a lone-cited competitor reads its true rate,
+        # e.g. 1%, not 100% of a one-mention pie).
         cite_rows = (
             PromptCitation.objects.filter(
                 prompt_result__prompt_track__analysis_run=run,
                 prompt_result__prompt_track__deleted_at__isnull=True,
             )
             .exclude(domain="")
-            .values("domain")
-            .annotate(n=Count("id"))
+            .values("domain", "prompt_result_id")
         )
-        domain_counts: dict[str, int] = defaultdict(int)
+        resp_by_domain: dict[str, set] = defaultdict(set)
         for r in cite_rows:
-            domain_counts[_norm_domain(r["domain"])] += r["n"]
+            resp_by_domain[_norm_domain(r["domain"])].add(r["prompt_result_id"])
 
         pairs = []
         for c in run.competitors.all():
             cdom = _norm_domain(extract_domain(c.url or ""))
-            pairs.append((c.name or cdom or "Competitor", domain_counts.get(cdom, 0)))
+            n = len(resp_by_domain.get(cdom, ())) if cdom else 0
+            pairs.append((c.name or cdom or "Competitor", n))
 
-        total_comp = sum(n for _, n in pairs)
         competitors = [
-            {"name": name, "value": round(n / total_comp * 100, 1) if total_comp else 0.0}
-            for name, n in pairs
+            {"name": name, "value": round(n / total * 100, 1) if total else 0.0} for name, n in pairs
         ]
         competitors.sort(key=lambda x: x["value"], reverse=True)
 

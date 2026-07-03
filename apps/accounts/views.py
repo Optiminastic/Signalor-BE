@@ -32,7 +32,7 @@ from .dodo_invoice import (
 )
 from .invoice_pdf import resolve_invoice_pdf
 from .models import PLAN_LIMITS, InvoiceRecord, Subscription
-from .subscription_utils import get_account_type, is_internal_email
+from .subscription_utils import get_account_type, is_free_email, is_internal_email
 
 
 def _dodo_opposite_mode_hint() -> str:
@@ -358,6 +358,20 @@ class AccountTypeView(APIView):
             return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
         if account_type not in AccountProfile.AccountType.values:
             return Response({"error": "Invalid account_type."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Agency accounts require a work email. Personal/free providers are
+        # rejected here as defense-in-depth — the client enforces the same rule
+        # on both the typed-email and Google paths, but never trust the client.
+        # Internal (@optiminastic) emails are exempt for testing.
+        if (
+            account_type == AccountProfile.AccountType.AGENCY
+            and not is_internal_email(email)
+            and is_free_email(email)
+        ):
+            return Response(
+                {"error": "Agency accounts require a work email."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         profile, _ = AccountProfile.objects.get_or_create(email=email)
         if profile.account_type != account_type:
