@@ -27,6 +27,11 @@ from .views import (
     BlogAutomationGenerateView,
     BlogAutomationProcessDueView,
     BlogAutomationPublishView,
+    BlogComposerGenerateView,
+    BlogComposerPostsView,
+    BlogComposerPublishView,
+    BlogComposerTopicsView,
+    BlogComposerUploadImageView,
     BulkCreateUserActionView,
     CitationSourcesView,
     CitationTrendView,
@@ -51,6 +56,7 @@ from .views import (
     GeoImprovementsView,
     HealthCheckView,
     OnboardingStartView,
+    OverviewInsightsView,
     PromptBacklinksView,
     PromptDeleteView,
     PromptListCreateView,
@@ -66,6 +72,7 @@ from .views import (
     RankAuditRefreshQueryView,
     # Rank tracker
     RankAuditStartView,
+    RankingsView,
     RecheckAllPromptsView,
     RecheckPromptView,
     RunBacklinkFreeView,
@@ -75,15 +82,18 @@ from .views import (
     SchemaWatchStartView,
     # New features
     ScoreHistoryView,
+    ShareOfVoiceCompetitorsView,
     ShareOfVoiceView,
     SitemapAuditDetailView,
     # Sitemap audit
     SitemapAuditStartView,
     StartAnalysisView,
+    TopSourcesView,
     UpdateUserActionView,
     UserActionListView,
     # Gamification views
     UserGamificationView,
+    VisibilitySeriesView,
     WeeklyTestEmailView,
 )
 
@@ -132,6 +142,19 @@ urlpatterns = [
     path("runs/s/<str:slug>/prompts/<int:track_id>/", PromptDeleteView.as_view(), name="prompt-delete"),
     path("runs/s/<str:slug>/recheck-all/", RecheckAllPromptsView.as_view(), name="prompt-recheck-all"),
     path("runs/s/<str:slug>/share-of-voice/", ShareOfVoiceView.as_view(), name="share-of-voice"),
+    # Dashboard v2 aggregates
+    path(
+        "runs/s/<str:slug>/visibility-series/",
+        VisibilitySeriesView.as_view(),
+        name="visibility-series",
+    ),
+    path("runs/s/<str:slug>/rankings/", RankingsView.as_view(), name="rankings"),
+    path(
+        "runs/s/<str:slug>/share-of-voice-competitors/",
+        ShareOfVoiceCompetitorsView.as_view(),
+        name="share-of-voice-competitors",
+    ),
+    path("runs/s/<str:slug>/top-sources/", TopSourcesView.as_view(), name="top-sources"),
     path("runs/s/<str:slug>/citation-trend/", CitationTrendView.as_view(), name="citation-trend"),
     path("runs/s/<str:slug>/citations/", CitationSourcesView.as_view(), name="citation-sources"),
     path(
@@ -158,6 +181,38 @@ urlpatterns = [
         "runs/s/<str:slug>/domain-analytics/",
         DomainAnalyticsView.as_view(),
         name="domain-analytics",
+    ),
+    path(
+        "runs/s/<str:slug>/overview-insights/",
+        OverviewInsightsView.as_view(),
+        name="overview-insights",
+    ),
+    # Blog composer (dashboard "Blog Agent" page)
+    path("runs/s/<str:slug>/blog/posts/", BlogComposerPostsView.as_view(), name="blog-composer-posts"),
+    path(
+        "runs/s/<str:slug>/blog/posts/<int:post_id>/",
+        BlogComposerPostsView.as_view(),
+        name="blog-composer-post-delete",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/generate/",
+        BlogComposerGenerateView.as_view(),
+        name="blog-composer-generate",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/topics/",
+        BlogComposerTopicsView.as_view(),
+        name="blog-composer-topics",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/publish/",
+        BlogComposerPublishView.as_view(),
+        name="blog-composer-publish",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/upload-image/",
+        BlogComposerUploadImageView.as_view(),
+        name="blog-composer-upload-image",
     ),
     # Sitemap audit + AI agent log stub
     path("runs/s/<str:slug>/sitemap/", SitemapAuditDetailView.as_view(), name="sitemap-audit-detail"),

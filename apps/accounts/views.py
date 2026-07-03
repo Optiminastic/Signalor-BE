@@ -32,7 +32,7 @@ from .dodo_invoice import (
 )
 from .invoice_pdf import resolve_invoice_pdf
 from .models import PLAN_LIMITS, InvoiceRecord, Subscription
-from .subscription_utils import is_internal_email
+from .subscription_utils import get_account_type, is_internal_email
 
 
 def _dodo_opposite_mode_hint() -> str:
@@ -105,7 +105,10 @@ class CreateCheckoutSessionView(APIView):
         if not email:
             return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if plan not in ("starter", "pro", "business"):
+        # Only the public Individual plans are self-serve checkout-able. "business"
+        # (legacy Max) is retired from sale, and Enterprise goes through the
+        # Contact Sales form — neither gets a Dodo checkout here.
+        if plan not in ("starter", "pro"):
             return Response({"error": "Invalid plan."}, status=status.HTTP_400_BAD_REQUEST)
 
         dodo = _get_dodo()
@@ -269,6 +272,8 @@ class SubscriptionStatusView(APIView):
         if not email:
             return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
 
+        account_type = get_account_type(email)
+
         # @optiminastic.com → free unlimited access (business tier)
         if is_internal_email(email):
             return Response(
@@ -280,6 +285,7 @@ class SubscriptionStatusView(APIView):
                     "plan": "business",
                     "plan_label": "Max (Internal)",
                     "limits": business,
+                    "account_type": account_type,
                     "invoice_available": False,
                 }
             )
@@ -297,6 +303,7 @@ class SubscriptionStatusView(APIView):
                     "plan": sub.plan,
                     "plan_label": sub.limits["label"],
                     "limits": sub.limits,
+                    "account_type": account_type,
                     "invoice_available": bool(sub.last_invoice_payment_id),
                 }
             )
@@ -310,9 +317,59 @@ class SubscriptionStatusView(APIView):
                     "plan": "starter",
                     "plan_label": starter["label"],
                     "limits": starter,
+                    "account_type": account_type,
                     "invoice_available": False,
                 }
             )
+
+
+class AccountTypeView(APIView):
+    """GET/POST /api/account/type/ — read or set an email's account type.
+
+    Account type (Individual / Brand vs Agency) is the user's own self-service
+    choice; it only changes their project cap, which is then enforced
+    server-side from the AccountProfile row on every limited write. Enforcement
+    NEVER reads the type from a request body — only this setter writes it.
+    Matches the repo's existing email-keyed AllowAny account endpoints.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request):
+        email = (request.query_params.get("email") or "").lower().strip()
+        if not email:
+            return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
+        account_type = get_account_type(email)
+        return Response(
+            {
+                "email": email,
+                "account_type": account_type,
+                "is_agency": account_type == "agency",
+            }
+        )
+
+    def post(self, request):
+        from .models import AccountProfile
+
+        email = (request.data.get("email") or "").lower().strip()
+        account_type = (request.data.get("account_type") or "").lower().strip()
+        if not email:
+            return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
+        if account_type not in AccountProfile.AccountType.values:
+            return Response({"error": "Invalid account_type."}, status=status.HTTP_400_BAD_REQUEST)
+
+        profile, _ = AccountProfile.objects.get_or_create(email=email)
+        if profile.account_type != account_type:
+            profile.account_type = account_type
+            profile.save(update_fields=["account_type", "updated_at"])
+        return Response(
+            {
+                "email": email,
+                "account_type": profile.account_type,
+                "is_agency": profile.account_type == "agency",
+            }
+        )
 
 
 class DownloadInvoiceView(APIView):
@@ -928,10 +985,16 @@ class UsageView(APIView):
     throttle_classes = [PollingThrottle]
 
     def get(self, request):
-        from apps.analyzer.models import AnalysisRun, PromptTrack
+        from apps.analyzer.models import AnalysisRun
         from apps.organizations.models import Organization
 
-        from .subscription_utils import get_plan_limits, is_internal_email
+        from .subscription_utils import (
+            _tracked_prompt_count,
+            effective_max_projects,
+            get_account_type,
+            get_plan_limits,
+            is_internal_email,
+        )
 
         email = request.query_params.get("email", "").lower().strip()
         if not email:
@@ -939,12 +1002,17 @@ class UsageView(APIView):
 
         limits = get_plan_limits(email)
         is_internal = is_internal_email(email)
+        # Agency accounts get a raised project cap; this drives BOTH the BE
+        # enforcement (project_limit_reached) and the FE onboarding gate
+        # (use-project-usage reads at_limit.projects).
+        max_projects = effective_max_projects(email)
 
         # Projects (orgs) owned by this email
         projects_used = Organization.objects.filter(owner_email=email).count()
 
-        # Prompts tracked across all runs for this email
-        prompts_used = PromptTrack.objects.filter(analysis_run__email=email).count()
+        # Prompts that consume quota — same scoping as enforcement (non-deleted,
+        # current billing period) so the bar matches what actually gates the user.
+        prompts_used = _tracked_prompt_count(email)
 
         # Analysis runs this month
         from django.utils import timezone as tz
@@ -964,8 +1032,9 @@ class UsageView(APIView):
                 "plan": "business"
                 if is_internal
                 else (_get_sub_plan(email) if not is_internal else "business"),
+                "account_type": get_account_type(email),
                 "limits": {
-                    "max_projects": limits["max_projects"],
+                    "max_projects": max_projects,
                     "max_prompts": limits["max_prompts"],
                     "engines": allowed_engines,
                 },
@@ -975,7 +1044,7 @@ class UsageView(APIView):
                     "runs_this_month": runs_this_month,
                 },
                 "at_limit": {
-                    "projects": projects_used >= limits["max_projects"],
+                    "projects": projects_used >= max_projects,
                     "prompts": prompts_used >= limits["max_prompts"],
                 },
             }

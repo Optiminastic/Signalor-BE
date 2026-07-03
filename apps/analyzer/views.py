@@ -2759,6 +2759,77 @@ class BrandKitView(APIView):
             )
 
 
+def _insights_flag(slug: str) -> str:
+    return f"overview_insights_generating:{slug}"
+
+
+def _start_insights_generation(run_id: int, slug: str) -> None:
+    """Spawn a daemon thread to (re)generate the overview insight report."""
+    import threading
+
+    def _work():
+        close_old_connections()
+        try:
+            from .services.overview_insights import get_or_generate
+
+            run = AnalysisRun.objects.get(pk=run_id)
+            get_or_generate(run, force=True)
+        except Exception:
+            logger.exception("overview insights generation failed for %s", slug)
+        finally:
+            from django.core.cache import cache
+
+            cache.delete(_insights_flag(slug))
+            close_old_connections()
+
+    threading.Thread(target=_work, daemon=True).start()
+
+
+class OverviewInsightsView(APIView):
+    """GET/POST /api/analyzer/runs/s/<slug>/overview-insights/
+
+    GET:  cached AI insight report + compact GA/GSC signal summary. Never fires the
+          LLM (cheap, pollable).
+    POST: kick off a background (force) regeneration; returns 202. Poll GET until the
+          report appears / ``generating`` flips false.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get_throttles(self):
+        if self.request.method == "POST":
+            return [ExpensiveThrottle()]
+        return [PollingThrottle()]
+
+    def get(self, request, slug):
+        from django.core.cache import cache
+        from django.shortcuts import get_object_or_404
+
+        from .models import OverviewInsightReport
+        from .services.overview_signals import build_overview_signals
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        report = OverviewInsightReport.objects.filter(analysis_run=run).first()
+        return Response(
+            {
+                "report": report.payload if (report and report.payload) else None,
+                "generated_at": report.generated_at.isoformat() if report else None,
+                "generating": bool(cache.get(_insights_flag(slug))),
+                "signals_summary": build_overview_signals(run),
+            }
+        )
+
+    def post(self, request, slug):
+        from django.core.cache import cache
+        from django.shortcuts import get_object_or_404
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        if not cache.get(_insights_flag(slug)):
+            cache.set(_insights_flag(slug), True, 300)
+            _start_insights_generation(run.id, slug)
+        return Response({"status": "generating"}, status=status.HTTP_202_ACCEPTED)
+
+
 class DomainAnalyticsView(APIView):
     """GET/POST /api/analyzer/runs/s/<slug>/domain-analytics/
 
@@ -5519,3 +5590,790 @@ class ContentRawFileUpsertView(APIView):
         except RawFileError as exc:
             return Response({"detail": str(exc)}, status=502)
         return Response(saved)
+
+
+# ---------- Blog Composer endpoints (dashboard "Blog Agent" page) ----------
+#
+# Slug-scoped endpoints powering the dashboard blog composer at
+# runs/s/<slug>/blog/{posts,generate,publish}/. Distinct from the Actions
+# "AI Blog Automation" flow (BlogAutomation*Views): these return HTML drafts
+# directly and publish straight to the org's connected WordPress, with no job
+# persistence. The composer page sends only the run slug, so email + site URL
+# are resolved from the AnalysisRun.
+
+
+def _blog_run_email(slug: str):
+    """Resolve (run, email) for a blog-composer request from its run slug."""
+    run = _safe_first(AnalysisRun.objects.filter(slug=slug), context="blog composer run lookup")
+    if not run:
+        return None, ""
+    return run, (run.email or "").lower().strip()
+
+
+def _clean_blog_posts(top_posts) -> list[dict]:
+    """Coerce WordPress top_posts into the strict shape the frontend expects."""
+    cleaned = []
+    for post in top_posts or []:
+        if post.get("id") is None:
+            continue
+        cleaned.append(
+            {
+                "id": int(post["id"]),
+                "title": str(post.get("title") or ""),
+                "slug": str(post.get("slug") or ""),
+                "url": str(post.get("url") or ""),
+                "published_at": str(post.get("published_at") or ""),
+                "modified_at": str(post.get("modified_at") or ""),
+            }
+        )
+    return cleaned
+
+
+def _generate_blog_html(site_url: str, topic: str, tone: str, word_count: int) -> dict:
+    """Generate a blog draft with semantic HTML body, honoring tone + length."""
+    from .pipeline.llm import ask_llm
+
+    prompt = f"""
+You are an expert SEO + GEO content strategist.
+Write a complete, publish-ready blog post.
+
+Site URL: {site_url or "n/a"}
+Primary topic: {topic}
+Tone: {tone}
+Target length: approximately {word_count} words
+
+Return STRICT JSON only with keys:
+title, slug, meta_description, tags, content_html
+
+Requirements:
+- title: compelling and specific
+- slug: URL-safe, lowercase, hyphenated
+- meta_description: max 160 chars
+- tags: array of 4-8 short tags
+- content_html: clean semantic HTML using only <h2>, <h3>, <p>, <ul>, <ol>,
+  <li>, <strong>, <em>, <a>, <blockquote>. Do NOT include <html>, <head>,
+  <body>, markdown, or code fences. Use <h2>/<h3> for structure.
+"""
+
+    raw = ask_llm(
+        prompt=prompt.strip(),
+        preferred_provider="gemini",
+        max_tokens=2600,
+        temperature=0.6,
+        purpose="blog_agent.generate",
+    )
+
+    parsed = _extract_blog_json(raw) or {}
+    title = str(parsed.get("title") or f"{topic} — A Practical Guide").strip()
+    slug = _slugify(str(parsed.get("slug") or title))
+    meta_description = str(parsed.get("meta_description") or "")[:160].strip()
+
+    tags = parsed.get("tags")
+    if not isinstance(tags, list):
+        tags = []
+    tags = [str(t).strip() for t in tags if str(t).strip()][:8]
+
+    content_html = str(parsed.get("content_html") or "").strip()
+    if not content_html:
+        content_html = (
+            f"<h2>{title}</h2>"
+            f"<p>{meta_description or 'A practical guide on ' + topic + '.'}</p>"
+            "<h3>Why this matters</h3>"
+            "<p>AI-first search rewards clear, structured, credible content.</p>"
+        )
+
+    return {
+        "title": title,
+        "slug": slug,
+        "meta_description": meta_description,
+        "tags": tags,
+        "content_html": content_html,
+    }
+
+
+def _generate_blog_topics(run, count: int = 5) -> dict:
+    """AI blog-topic ideas grounded in Search Console keywords + GA traffic + the
+    prompts the brand wants to rank for, so blogs target real opportunities.
+
+    Returns {"topics": [{title, angle, target_keyword}], "has_gsc", "has_ga"}.
+    Degrades gracefully: with no GA/GSC it falls back to tracked prompts + GEO gaps.
+    """
+    from .models import PromptTrack
+    from .pipeline.llm import ask_llm
+    from .services.overview_signals import build_overview_signals
+
+    signals = build_overview_signals(run)
+    gsc = signals.get("gsc") or {}
+    ga = signals.get("ga") or {}
+    flags = signals.get("flags") or {}
+
+    keywords = [
+        {
+            "query": q.get("query", ""),
+            "impressions": q.get("impressions", 0),
+            "position": q.get("position", 0),
+        }
+        for q in (gsc.get("top_queries") or [])
+        if q.get("query")
+    ][:12]
+
+    prompts: list[str] = list(
+        PromptTrack.objects.filter(analysis_run=run)
+        .order_by("-id")
+        .values_list("prompt_text", flat=True)[:20]
+    )
+    for p in run.onboarding_prompts or []:
+        if isinstance(p, str) and p.strip():
+            prompts.append(p.strip())
+        elif isinstance(p, dict) and p.get("prompt_text"):
+            prompts.append(str(p["prompt_text"]).strip())
+    prompts = [p for p in dict.fromkeys(prompts) if p][:20]  # dedup + cap
+
+    geo_gaps = list(
+        run.recommendations.filter(source="analyzer").order_by("priority").values_list("title", flat=True)[:8]
+    )
+
+    context = {
+        "brand": signals.get("brand", {}),
+        "search_console_keywords": keywords,
+        "ga_summary": (
+            {"sessions": ga.get("sessions"), "organic_pct": ga.get("organic_pct")} if ga else None
+        ),
+        "prompts_to_rank_for": prompts,
+        "geo_gaps": geo_gaps,
+    }
+
+    prompt = f"""You are an SEO + GEO content strategist. Propose {count} blog post topics for this brand.
+
+Ground EVERY topic in the DATA below. Prefer topics that:
+- target a Search Console keyword the brand already gets impressions for but ranks weakly
+  (high impressions / weak average position = the biggest opportunities), AND/OR
+- help the brand rank for one of the prompts it is tracking (the questions users ask AI engines).
+
+DATA (JSON):
+{json.dumps(context, indent=2, default=str)}
+
+Return STRICT JSON only:
+{{"topics": [{{"title": "specific blog title", "angle": "one sentence on the angle/search intent", "target_keyword": "the exact GSC keyword or tracked prompt this targets"}}]}}
+
+Rules:
+- At most {count} topics. No generic filler — each must tie to a real keyword or tracked prompt above.
+- If keyword data is sparse, base topics on the tracked prompts and GEO gaps.
+- Titles must be specific and compelling. Return ONLY the JSON object.
+"""
+
+    raw = ask_llm(
+        prompt=prompt.strip(),
+        preferred_provider="gemini",
+        max_tokens=1200,
+        temperature=0.5,
+        purpose=f"blog_agent.topics:run={run.pk}",
+    )
+    parsed = _extract_blog_json(raw) or {}
+    topics = []
+    for t in (parsed.get("topics") or [])[:count]:
+        if not isinstance(t, dict):
+            continue
+        title = str(t.get("title") or "").strip()
+        if not title:
+            continue
+        topics.append(
+            {
+                "title": title[:200],
+                "angle": str(t.get("angle") or "").strip()[:300],
+                "target_keyword": str(t.get("target_keyword") or "").strip()[:160],
+            }
+        )
+    return {
+        "topics": topics,
+        "has_gsc": bool(flags.get("has_gsc")),
+        "has_ga": bool(flags.get("has_ga")),
+    }
+
+
+class BlogComposerPostsView(APIView):
+    """GET runs/s/<slug>/blog/posts/ — recent WordPress posts for the composer."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        _, email = _blog_run_email(slug)
+        if not email:
+            return Response({"connected": False, "posts": []})
+
+        integration, provider = _resolve_blog_integration(email)
+        if not integration or provider != "wordpress":
+            return Response({"connected": False, "posts": []})
+
+        from apps.integrations.services.wordpress import fetch_wordpress_data
+
+        meta = integration.metadata or {}
+        try:
+            data = fetch_wordpress_data(integration)
+        except Exception:
+            logger.exception("Blog composer posts fetch failed.")
+            return Response(
+                {
+                    "connected": True,
+                    "site_name": meta.get("site_name") or meta.get("site_url", ""),
+                    "site_url": meta.get("site_url", ""),
+                    "posts": [],
+                    "error": "Failed to load recent posts from WordPress.",
+                }
+            )
+
+        return Response(
+            {
+                "connected": True,
+                "site_name": meta.get("site_name") or meta.get("site_url", ""),
+                "site_url": meta.get("site_url", ""),
+                "total_posts": int(data.get("total_posts") or 0),
+                "published_posts_30d": int(data.get("published_posts_30d") or 0),
+                "posts": _clean_blog_posts(data.get("top_posts")),
+            }
+        )
+
+    def delete(self, request, slug, post_id):
+        _, email = _blog_run_email(slug)
+        if not email:
+            return Response({"error": "Run not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        integration, provider = _resolve_blog_integration(email)
+        if not integration or provider != "wordpress":
+            return Response({"error": "No connected WordPress site."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from apps.integrations.services.wordpress import delete_wordpress_post
+
+        try:
+            delete_wordpress_post(integration, int(post_id))
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            logger.exception("Blog composer delete failed.")
+            return Response(
+                {"error": "Unexpected error while deleting post."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class BlogComposerGenerateView(APIView):
+    """POST runs/s/<slug>/blog/generate/ — AI blog draft (HTML) for the composer."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request, slug):
+        run, _ = _blog_run_email(slug)
+        if not run:
+            return Response({"error": "Run not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        topic = str(request.data.get("topic", "")).strip()
+        if not topic:
+            return Response({"error": "Topic is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        tone = str(request.data.get("tone", "informative")).strip() or "informative"
+        try:
+            word_count = int(request.data.get("word_count") or 800)
+        except (TypeError, ValueError):
+            word_count = 800
+        word_count = max(300, min(word_count, 2500))
+
+        draft = _generate_blog_html(run.url or "", topic, tone, word_count)
+        return Response(draft)
+
+
+class BlogComposerTopicsView(APIView):
+    """GET runs/s/<slug>/blog/topics/?refresh=1 — AI topic ideas grounded in
+    Search Console keywords + GA + the prompts the brand wants to rank for."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def get(self, request, slug):
+        from django.core.cache import cache
+
+        run, _ = _blog_run_email(slug)
+        if not run:
+            return Response({"error": "Run not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        key = f"blog_topics:{slug}"
+        refresh = str(request.query_params.get("refresh", "")).lower() in ("1", "true", "yes")
+        if not refresh:
+            try:
+                cached = cache.get(key)
+            except Exception:
+                cached = None
+            if cached:
+                return Response(cached)
+
+        data = _generate_blog_topics(run)
+        if data["topics"]:
+            try:
+                cache.set(key, data, 6 * 60 * 60)
+            except Exception:
+                logger.warning("blog topics cache.set failed", exc_info=True)
+        return Response(data)
+
+
+class BlogComposerPublishView(APIView):
+    """POST runs/s/<slug>/blog/publish/ — publish a draft to connected WordPress."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request, slug):
+        _, email = _blog_run_email(slug)
+        if not email:
+            return Response({"error": "Run not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        integration, provider = _resolve_blog_integration(email)
+        if not integration or provider != "wordpress":
+            return Response(
+                {"error": "No connected WordPress site. Connect WordPress during onboarding to publish."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        title = str(request.data.get("title", "")).strip()
+        content_html = str(request.data.get("content_html", "")).strip()
+        if not title or not content_html:
+            return Response({"error": "Title and content are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        publish_status = "publish" if request.data.get("status") == "publish" else "draft"
+
+        from apps.integrations.services.wordpress import publish_wordpress_post
+
+        try:
+            result = publish_wordpress_post(
+                integration,
+                title=title,
+                content=content_html,
+                excerpt=str(request.data.get("meta_description", "")).strip(),
+                status=publish_status,
+                slug=str(request.data.get("slug", "")).strip(),
+            )
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            logger.exception("Blog composer publish failed.")
+            return Response(
+                {"error": "Unexpected error while publishing draft."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        post_id = result.get("id") or 0
+        site_url = (integration.metadata or {}).get("site_url", "")
+        edit_url = (
+            f"{site_url.rstrip('/')}/wp-admin/post.php?post={post_id}&action=edit"
+            if post_id and site_url
+            else ""
+        )
+        return Response(
+            {
+                "post_id": int(post_id) if post_id else 0,
+                "post_url": result.get("url") or "",
+                "status": result.get("status") or publish_status,
+                "edit_url": edit_url,
+            }
+        )
+
+
+class BlogComposerUploadImageView(APIView):
+    """POST runs/s/<slug>/blog/upload-image/ — upload an image to WP media."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug):
+        _, email = _blog_run_email(slug)
+        if not email:
+            return Response({"error": "Run not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        file_obj = request.FILES.get("file")
+        if not file_obj:
+            return Response({"error": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
+        if file_obj.size > 8 * 1024 * 1024:
+            return Response({"error": "Image is larger than 8 MB."}, status=status.HTTP_400_BAD_REQUEST)
+        content_type = file_obj.content_type or "application/octet-stream"
+        if not content_type.startswith("image/"):
+            return Response({"error": "Only image files are allowed."}, status=status.HTTP_400_BAD_REQUEST)
+
+        integration, provider = _resolve_blog_integration(email)
+        if not integration or provider != "wordpress":
+            return Response(
+                {"error": "Connect WordPress to upload images to your media library."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from apps.integrations.services.wordpress import upload_wordpress_media
+
+        try:
+            result = upload_wordpress_media(
+                integration,
+                filename=file_obj.name,
+                data=file_obj.read(),
+                content_type=content_type,
+            )
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            logger.exception("Blog composer image upload failed.")
+            return Response(
+                {"error": "Unexpected error while uploading image."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if not result.get("url"):
+            return Response(
+                {"error": "Upload succeeded but no URL was returned."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response({"url": result["url"], "id": result.get("id") or 0})
+
+
+# ── Dashboard v2 read-only aggregates ─────────────────────────────────────────
+#
+# Four honest, read-only roll-ups that feed the new dashboard. Every number is
+# derived from rows already in the DB (AnalysisRun / PromptResult /
+# PromptCitation / Competitor) — none is fabricated. Where the data model can't
+# support a field for a given row (e.g. per-competitor sentiment), the field is
+# omitted rather than invented, and empty series return [].
+
+
+def _sentiment_case():
+    """Map PromptResult.sentiment (label) → numeric -1..1 for DB-side averaging."""
+    from django.db.models import Case, FloatField, Value, When
+
+    return Case(
+        When(sentiment=PromptResult.Sentiment.POSITIVE, then=Value(1.0)),
+        When(sentiment=PromptResult.Sentiment.NEGATIVE, then=Value(-1.0)),
+        default=Value(0.0),
+        output_field=FloatField(),
+    )
+
+
+def _norm_domain(d: str) -> str:
+    return (d or "").strip().lower().removeprefix("www.")
+
+
+class VisibilitySeriesView(APIView):
+    """GET /runs/s/<slug>/visibility-series/?days=30
+
+    Daily composite-score series for the dashboard header. Draws on the same
+    source as ScoreHistoryView — the brand's own *completed* runs (scoped by
+    organization when present, else by email) — restricted to the last `days`.
+    Each run contributes one point (date = when the run finalized, score =
+    composite). No interpolation: one run → one point.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+
+        try:
+            days = int(request.query_params.get("days", 30))
+        except (TypeError, ValueError):
+            days = 30
+        if days <= 0:
+            days = 30
+
+        cutoff = timezone.now() - timedelta(days=days)
+        if run.organization_id:
+            qs = AnalysisRun.objects.filter(organization_id=run.organization_id, status="complete")
+        elif run.email:
+            qs = AnalysisRun.objects.filter(email=run.email, status="complete")
+        else:
+            qs = AnalysisRun.objects.filter(pk=run.pk, status="complete")
+
+        qs = qs.filter(updated_at__gte=cutoff).order_by("updated_at").values("updated_at", "composite_score")
+
+        points = [
+            {"date": row["updated_at"].date().isoformat(), "score": round(row["composite_score"] or 0)}
+            for row in qs
+        ]
+
+        if points:
+            current = points[-1]["score"]
+            previous = points[-2]["score"] if len(points) >= 2 else current
+        else:
+            current = 0
+            previous = 0
+
+        delta_pct = round((current - previous) / previous * 100, 1) if previous else 0.0
+        direction = "down" if current < previous else "up"
+
+        return Response(
+            {
+                "points": points,
+                "current": current,
+                "previous": previous,
+                "delta_pct": delta_pct,
+                "direction": direction,
+            }
+        )
+
+
+class RankingsView(APIView):
+    """GET /runs/s/<slug>/rankings/
+
+    One row per competitor plus one row for the brand (is_you=true), ranked by a
+    real 0-100 visibility metric (run composite / brand-visibility overall for
+    the brand; competitor.composite_score → relevance_score for rivals).
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    _PALETTE = [
+        "#7c3aed",
+        "#2563eb",
+        "#059669",
+        "#d97706",
+        "#dc2626",
+        "#0891b2",
+        "#db2777",
+        "#65a30d",
+    ]
+
+    def get(self, request, slug):
+        from django.db.models import Avg
+        from django.shortcuts import get_object_or_404
+
+        from apps.analyzer.pipeline.brand_naming import visibility_brand_label
+
+        run = get_object_or_404(
+            AnalysisRun.objects.select_related("brand_visibility").prefetch_related("competitors"),
+            slug=slug,
+        )
+
+        # Brand visibility (0-100)
+        brand_vis = getattr(run, "brand_visibility", None)
+        brand_visibility = run.composite_score
+        if brand_visibility is None and brand_vis is not None:
+            brand_visibility = brand_vis.overall_score
+        brand_visibility = round(brand_visibility or 0)
+
+        brand_results = PromptResult.objects.filter(
+            prompt_track__analysis_run=run,
+            prompt_track__deleted_at__isnull=True,
+        )
+
+        # Brand sentiment (0-100) over responses that actually named the brand.
+        sent_avg = brand_results.filter(brand_mentioned=True).aggregate(avg=Avg(_sentiment_case()))["avg"]
+        brand_sentiment = round((sent_avg + 1) / 2 * 100) if sent_avg is not None else None
+
+        # Brand avg position (compute_prompt_score style: inverse-position mean).
+        positions = list(
+            brand_results.filter(brand_mentioned=True, rank_position__gt=0).values_list(
+                "rank_position", flat=True
+            )
+        )
+        brand_avg_position = None
+        if positions:
+            avg_inv = sum(1.0 / p for p in positions) / len(positions)
+            if avg_inv > 0:
+                brand_avg_position = f"#{round(1.0 / avg_inv, 1)}"
+
+        brand_company = (
+            visibility_brand_label(run.url or "", run.brand_name or "") or run.brand_name or run.url
+        )
+
+        raw_rows = []
+        brand_row = {
+            "company": brand_company,
+            "visibility": brand_visibility,
+            "avg_position": brand_avg_position,
+            "is_you": True,
+        }
+        if brand_sentiment is not None:
+            brand_row["sentiment"] = brand_sentiment
+        raw_rows.append(brand_row)
+
+        for c in run.competitors.all():
+            vis = c.composite_score
+            if vis is None:
+                vis = c.relevance_score
+            raw_rows.append(
+                {
+                    "company": c.name or _norm_domain(c.url) or "Competitor",
+                    "visibility": round(vis or 0),
+                    "avg_position": None,
+                    "is_you": False,
+                }
+            )
+
+        raw_rows.sort(key=lambda r: r["visibility"], reverse=True)
+
+        rows = []
+        your_rank = None
+        for i, r in enumerate(raw_rows):
+            rank = i + 1
+            row = {
+                "rank": rank,
+                "company": r["company"],
+                "visibility": r["visibility"],
+                "avg_position": r["avg_position"] or f"#{rank}",
+                "is_you": r["is_you"],
+                "color": self._PALETTE[i % len(self._PALETTE)],
+            }
+            if "sentiment" in r:
+                row["sentiment"] = r["sentiment"]
+            if r["is_you"]:
+                your_rank = rank
+            rows.append(row)
+
+        return Response({"your_rank": your_rank, "rows": rows})
+
+
+class ShareOfVoiceCompetitorsView(APIView):
+    """GET /runs/s/<slug>/share-of-voice-competitors/
+
+    Brand share of voice (single %, same mention-rate basis as ShareOfVoiceView)
+    plus per-competitor share of the competitor citation pie, matched by the
+    competitor's domain against PromptCitation rows.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request, slug):
+        from collections import defaultdict
+
+        from django.db.models import Count, Q
+        from django.shortcuts import get_object_or_404
+
+        from .pipeline.utils import extract_domain
+
+        run = get_object_or_404(AnalysisRun.objects.prefetch_related("competitors"), slug=slug)
+
+        # Brand SoV: mentioned / total across all prompt responses.
+        agg = PromptResult.objects.filter(
+            prompt_track__analysis_run=run,
+            prompt_track__deleted_at__isnull=True,
+        ).aggregate(total=Count("id"), mentioned=Count("id", filter=Q(brand_mentioned=True)))
+        total = agg["total"] or 0
+        value = round((agg["mentioned"] or 0) / total * 100, 1) if total else 0.0
+
+        # Per-competitor SoV from citation domains.
+        cite_rows = (
+            PromptCitation.objects.filter(
+                prompt_result__prompt_track__analysis_run=run,
+                prompt_result__prompt_track__deleted_at__isnull=True,
+            )
+            .exclude(domain="")
+            .values("domain")
+            .annotate(n=Count("id"))
+        )
+        domain_counts: dict[str, int] = defaultdict(int)
+        for r in cite_rows:
+            domain_counts[_norm_domain(r["domain"])] += r["n"]
+
+        pairs = []
+        for c in run.competitors.all():
+            cdom = _norm_domain(extract_domain(c.url or ""))
+            pairs.append((c.name or cdom or "Competitor", domain_counts.get(cdom, 0)))
+
+        total_comp = sum(n for _, n in pairs)
+        competitors = [
+            {"name": name, "value": round(n / total_comp * 100, 1) if total_comp else 0.0}
+            for name, n in pairs
+        ]
+        competitors.sort(key=lambda x: x["value"], reverse=True)
+
+        # No prior period is computable from a single run's data.
+        return Response(
+            {
+                "value": value,
+                "delta_pct": 0.0,
+                "direction": "up",
+                "competitors": competitors,
+            }
+        )
+
+
+class TopSourcesView(APIView):
+    """GET /runs/s/<slug>/top-sources/
+
+    One row per AI engine that has data: brand mention count, average response
+    sentiment (0-100), relative impact (thirds of max mentions), and a weekly
+    mention-rate sparkline (reuses CitationTrendView's weekly grouping).
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    _ENGINE_LABELS = {
+        "chatgpt": "ChatGPT",
+        "claude": "Claude",
+        "gemini": "Gemini",
+        "perplexity": "Perplexity",
+        "google": "Google AI Overview",
+        "bing": "Bing",
+    }
+
+    def get(self, request, slug):
+        from collections import defaultdict
+
+        from django.db.models import Avg, Count, Q
+        from django.db.models.functions import TruncWeek
+        from django.shortcuts import get_object_or_404
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+
+        base = PromptResult.objects.filter(
+            prompt_track__analysis_run=run,
+            prompt_track__deleted_at__isnull=True,
+        )
+
+        engine_rows = [
+            r
+            for r in base.values("engine").annotate(
+                total=Count("id"),
+                mentions=Count("id", filter=Q(brand_mentioned=True)),
+                sent=Avg(_sentiment_case()),
+            )
+            if r["total"]
+        ]
+
+        # Weekly mention-rate sparkline per engine (chronological).
+        weekly = (
+            base.annotate(week=TruncWeek("checked_at"))
+            .values("engine", "week")
+            .annotate(total=Count("id"), mentioned=Count("id", filter=Q(brand_mentioned=True)))
+            .order_by("week")
+        )
+        spark_map: dict[str, list] = defaultdict(list)
+        for w in weekly:
+            rate = round((w["mentioned"] or 0) / w["total"] * 100) if w["total"] else 0
+            spark_map[w["engine"]].append(rate)
+
+        max_mentions = max((r["mentions"] for r in engine_rows), default=0)
+
+        def _impact(m: int) -> str:
+            if max_mentions <= 0:
+                return "low"
+            ratio = m / max_mentions
+            if ratio > 2 / 3:
+                return "high"
+            if ratio > 1 / 3:
+                return "medium"
+            return "low"
+
+        sources = []
+        for r in sorted(engine_rows, key=lambda x: x["mentions"], reverse=True):
+            eng = r["engine"]
+            src = {
+                "name": self._ENGINE_LABELS.get(eng, eng.title()),
+                "engine": eng,
+                "mentions": r["mentions"],
+                "impact": _impact(r["mentions"]),
+                "spark": spark_map.get(eng, [])[-7:],
+            }
+            if r["sent"] is not None:
+                src["sentiment"] = round((r["sent"] + 1) / 2 * 100)
+            sources.append(src)
+
+        return Response({"sources": sources})

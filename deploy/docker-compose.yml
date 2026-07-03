@@ -35,10 +35,10 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${DB_NAME}
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    # POSTGRES_* come from stack.env (injected as container env). We do NOT use
+    # ${DB_*} here: compose-file interpolation reads the shell / default .env
+    # file, not stack.env, so it would silently blank the password.
+    env_file: stack.env
     volumes:
       # Postgres data on the Hetzner volume — THE durable state of the app.
       - /mnt/HC_Volume_105845076/postgres:/var/lib/postgresql/data
@@ -68,13 +68,19 @@ services:
     <<: *app
     environment:
       PORT: "8000"
-    # Reconcile + migrate before serving (replaces Render's preDeployCommand),
-    # then exec gunicorn so it becomes PID 1 and receives signals cleanly.
+      # scripts/reconcile_migrations.py runs as `python scripts/...`, which puts
+      # /app/scripts (not /app) on sys.path[0], so `import config` fails. Putting
+      # /app on PYTHONPATH makes the project package importable for that script.
+      PYTHONPATH: /app
+    # Migrate before serving, then exec gunicorn so it becomes PID 1 and
+    # receives signals cleanly. (We don't run scripts/reconcile_migrations.py:
+    # it patches Render/staging-specific migration drift that this fresh,
+    # self-hosted DB never has, and it assumes django_migrations already
+    # exists — which crashes the first boot on an empty DB.)
     command:
       - sh
       - -c
       - >
-        python scripts/reconcile_migrations.py &&
         python manage.py migrate --no-input &&
         exec opentelemetry-instrument gunicorn config.wsgi:application
         --bind 0.0.0.0:8000 --workers 2 --threads 4 --timeout 600
@@ -106,6 +112,8 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Cloudflare Origin Certificate for api.signalor.ai (gitignored).
+      - ./certs:/etc/caddy/certs:ro
       # Certs + Caddy state on the volume so we don't re-issue LE certs on
       # every recreate (Let's Encrypt has issuance rate limits).
       - /mnt/HC_Volume_105845076/caddy/data:/data

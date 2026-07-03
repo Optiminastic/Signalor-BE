@@ -2,12 +2,15 @@
 Background tasks for integration data syncing.
 Follows the same threading.Thread pattern as apps/analyzer/tasks.py.
 """
+
 import logging
 import threading
 from datetime import date, timedelta
 
 from .models import (
     GADataSnapshot,
+    GSCDataSnapshot,
+    GSCIndexStatusSnapshot,
     Integration,
     ShopifyDataSnapshot,
     WooCommerceDataSnapshot,
@@ -64,11 +67,124 @@ def _run_ga4_sync(integration_id: int):
 
         logger.info(
             "GA4 sync complete for integration %s: %d sessions",
-            integration_id, data["sessions"],
+            integration_id,
+            data["sessions"],
         )
 
     except Exception as e:
         logger.error("GA4 sync failed for integration %s: %s", integration_id, str(e))
+        snapshot.sync_status = "failed"
+        snapshot.error_message = str(e)
+        snapshot.save(update_fields=["sync_status", "error_message"])
+
+
+def start_gsc_sync(integration_id: int):
+    """Spawn a daemon thread to sync Google Search Console data."""
+    thread = threading.Thread(
+        target=_run_gsc_sync,
+        args=(integration_id,),
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def _run_gsc_sync(integration_id: int):
+    """Fetch Search Console data and store as a snapshot."""
+    try:
+        integration = Integration.objects.get(pk=integration_id)
+    except Integration.DoesNotExist:
+        logger.error("Integration %s not found for GSC sync", integration_id)
+        return
+
+    end_date = date.today()
+    start_date = end_date - timedelta(days=30)
+
+    snapshot = GSCDataSnapshot.objects.create(
+        integration=integration,
+        date_start=start_date,
+        date_end=end_date,
+        sync_status="syncing",
+    )
+
+    try:
+        from .services.gsc import fetch_gsc_data
+
+        data = fetch_gsc_data(integration, days=30)
+
+        snapshot.date_start = data["date_start"]
+        snapshot.date_end = data["date_end"]
+        snapshot.clicks = data["clicks"]
+        snapshot.impressions = data["impressions"]
+        snapshot.ctr = data["ctr"]
+        snapshot.position = data["position"]
+        snapshot.daily_trend = data["daily_trend"]
+        snapshot.top_queries = data["top_queries"]
+        snapshot.top_pages = data["top_pages"]
+        snapshot.countries = data["countries"]
+        snapshot.sync_status = "complete"
+        snapshot.save()
+
+        logger.info(
+            "GSC sync complete for integration %s: %d clicks",
+            integration_id,
+            data["clicks"],
+        )
+
+    except Exception as e:
+        logger.error("GSC sync failed for integration %s: %s", integration_id, str(e))
+        snapshot.sync_status = "failed"
+        snapshot.error_message = str(e)
+        snapshot.save(update_fields=["sync_status", "error_message"])
+
+
+def start_gsc_index_sync(integration_id: int):
+    """Spawn a daemon thread to run the per-URL index-status inspection pass."""
+    thread = threading.Thread(
+        target=_run_gsc_index_sync,
+        args=(integration_id,),
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def _run_gsc_index_sync(integration_id: int):
+    """Inspect every sitemap URL and cache the authoritative index status."""
+    try:
+        integration = Integration.objects.get(pk=integration_id)
+    except Integration.DoesNotExist:
+        logger.error("Integration %s not found for GSC index sync", integration_id)
+        return
+
+    snapshot = GSCIndexStatusSnapshot.objects.create(
+        integration=integration,
+        sync_status="syncing",
+    )
+
+    try:
+        from .services.gsc import inspect_sitemap_index_status
+
+        data = inspect_sitemap_index_status(integration)
+
+        snapshot.checked_count = data["checked_count"]
+        snapshot.indexed_count = data["indexed_count"]
+        snapshot.not_indexed_count = data["not_indexed_count"]
+        snapshot.sitemap_total = data["sitemap_total"]
+        snapshot.submitted = data["submitted"]
+        snapshot.pages = data["pages"]
+        snapshot.sync_status = "complete"
+        snapshot.save()
+
+        logger.info(
+            "GSC index sync complete for integration %s: %d/%d indexed",
+            integration_id,
+            data["indexed_count"],
+            data["checked_count"],
+        )
+
+    except Exception as e:
+        logger.error("GSC index sync failed for integration %s: %s", integration_id, str(e))
         snapshot.sync_status = "failed"
         snapshot.error_message = str(e)
         snapshot.save(update_fields=["sync_status", "error_message"])
@@ -119,7 +235,8 @@ def _run_shopify_sync(integration_id: int):
 
         logger.info(
             "Shopify sync complete for integration %s: %d orders",
-            integration_id, data["total_orders"],
+            integration_id,
+            data["total_orders"],
         )
 
     except Exception as e:
@@ -231,7 +348,8 @@ def _run_woocommerce_sync(integration_id: int):
 
         logger.info(
             "WooCommerce sync complete for integration %s: %d orders",
-            integration_id, data["total_orders"],
+            integration_id,
+            data["total_orders"],
         )
 
     except Exception as e:

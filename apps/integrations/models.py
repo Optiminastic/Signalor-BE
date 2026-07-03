@@ -22,6 +22,7 @@ def decrypt_token(ciphertext: str) -> str:
 class Integration(models.Model):
     class Provider(models.TextChoices):
         GOOGLE_ANALYTICS = "google_analytics", "Google Analytics"
+        GOOGLE_SEARCH_CONSOLE = "google_search_console", "Google Search Console"
         SHOPIFY = "shopify", "Shopify"
         WORDPRESS = "wordpress", "WordPress"
         WOOCOMMERCE = "woocommerce", "WooCommerce"
@@ -125,6 +126,109 @@ class GADataSnapshot(models.Model):
 
     def __str__(self):
         return f"GA Snapshot {self.date_start} - {self.date_end} ({self.sync_status})"
+
+
+class GSCDataSnapshot(models.Model):
+    integration = models.ForeignKey(
+        Integration,
+        on_delete=models.CASCADE,
+        related_name="gsc_snapshots",
+    )
+    # Date range this snapshot covers
+    date_start = models.DateField()
+    date_end = models.DateField()
+
+    # Summary metrics (totals over the date range)
+    clicks = models.IntegerField(default=0)
+    impressions = models.IntegerField(default=0)
+    ctr = models.FloatField(default=0)  # 0..1
+    position = models.FloatField(default=0)  # average position
+
+    # Detailed data stored as JSON
+    daily_trend = models.JSONField(default=list, blank=True)
+    # [{"date": "2026-01-01", "clicks": 10, "impressions": 200, "ctr": 0.05, "position": 12.3}, ...]
+
+    top_queries = models.JSONField(default=list, blank=True)
+    # [{"query": "geo analyzer", "clicks": 5, "impressions": 100, "ctr": 0.05, "position": 8.1}, ...]
+
+    top_pages = models.JSONField(default=list, blank=True)
+    # [{"page": "https://site/x", "clicks": 5, "impressions": 100, "ctr": 0.05, "position": 8.1}, ...]
+
+    countries = models.JSONField(default=list, blank=True)
+    # [{"country": "ind", "clicks": 50, "impressions": 900, "ctr": 0.05, "position": 11.2}, ...]
+
+    # Sync metadata
+    sync_status = models.CharField(
+        max_length=20,
+        choices=[
+            ("pending", "Pending"),
+            ("syncing", "Syncing"),
+            ("complete", "Complete"),
+            ("failed", "Failed"),
+        ],
+        default="pending",
+    )
+    error_message = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["integration", "-created_at"]),
+        ]
+
+    def __str__(self):
+        return f"GSC Snapshot {self.date_start} - {self.date_end} ({self.sync_status})"
+
+
+class GSCIndexStatusSnapshot(models.Model):
+    """
+    Cached result of a per-URL URL-Inspection pass over the property's sitemap
+    URLs — the authoritative Indexed / Not-indexed split (same data as Search
+    Console's "Page indexing" report, which has no bulk API). Refreshed by a
+    background sync because the inspection pass is slow and rate-limited.
+    """
+
+    integration = models.ForeignKey(
+        Integration,
+        on_delete=models.CASCADE,
+        related_name="gsc_index_snapshots",
+    )
+
+    # Counts
+    checked_count = models.IntegerField(default=0)
+    indexed_count = models.IntegerField(default=0)
+    not_indexed_count = models.IntegerField(default=0)
+    sitemap_total = models.IntegerField(default=0)
+    submitted = models.IntegerField(default=0)
+
+    # Per-page verdicts:
+    # [{"url": "...", "on_google": true, "coverage_state": "Submitted and indexed",
+    #   "verdict": "PASS", "last_crawl_time": "...", "robots_txt_state": "...",
+    #   "indexing_state": "..."}, ...]
+    pages = models.JSONField(default=list, blank=True)
+
+    sync_status = models.CharField(
+        max_length=20,
+        choices=[
+            ("pending", "Pending"),
+            ("syncing", "Syncing"),
+            ("complete", "Complete"),
+            ("failed", "Failed"),
+        ],
+        default="pending",
+    )
+    error_message = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["integration", "-created_at"]),
+        ]
+
+    def __str__(self):
+        return f"GSC Index Status {self.indexed_count}/{self.checked_count} ({self.sync_status})"
 
 
 class ShopifyDataSnapshot(models.Model):

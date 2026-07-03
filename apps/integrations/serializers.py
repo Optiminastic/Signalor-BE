@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 from .models import (
     GADataSnapshot,
+    GSCDataSnapshot,
     Integration,
     ShopifyDataSnapshot,
     WooCommerceDataSnapshot,
@@ -10,15 +11,18 @@ from .models import (
 
 
 class IntegrationSerializer(serializers.ModelSerializer):
-    provider_display = serializers.CharField(
-        source="get_provider_display", read_only=True
-    )
+    provider_display = serializers.CharField(source="get_provider_display", read_only=True)
 
     class Meta:
         model = Integration
         fields = [
-            "id", "provider", "provider_display", "is_active",
-            "metadata", "created_at", "updated_at",
+            "id",
+            "provider",
+            "provider_display",
+            "is_active",
+            "metadata",
+            "created_at",
+            "updated_at",
         ]
 
 
@@ -26,10 +30,20 @@ class GADataSnapshotSerializer(serializers.ModelSerializer):
     class Meta:
         model = GADataSnapshot
         fields = [
-            "id", "date_start", "date_end", "sessions", "organic_sessions",
-            "bounce_rate", "avg_session_duration", "top_pages",
-            "traffic_sources", "daily_trend", "countries", "sync_status",
-            "error_message", "created_at",
+            "id",
+            "date_start",
+            "date_end",
+            "sessions",
+            "organic_sessions",
+            "bounce_rate",
+            "avg_session_duration",
+            "top_pages",
+            "traffic_sources",
+            "daily_trend",
+            "countries",
+            "sync_status",
+            "error_message",
+            "created_at",
         ]
 
 
@@ -40,6 +54,38 @@ class SelectPropertySerializer(serializers.Serializer):
 
     def validate_email(self, value):
         return value.lower().strip()
+
+
+class GSCDataSnapshotSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GSCDataSnapshot
+        fields = [
+            "id",
+            "date_start",
+            "date_end",
+            "clicks",
+            "impressions",
+            "ctr",
+            "position",
+            "daily_trend",
+            "top_queries",
+            "top_pages",
+            "countries",
+            "sync_status",
+            "error_message",
+            "created_at",
+        ]
+
+
+class SelectSiteSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    site_url = serializers.CharField(max_length=500)
+
+    def validate_email(self, value):
+        return value.lower().strip()
+
+    def validate_site_url(self, value):
+        return value.strip()
 
 
 class ShopifyConnectSerializer(serializers.Serializer):
@@ -66,9 +112,18 @@ class ShopifyDataSnapshotSerializer(serializers.ModelSerializer):
     class Meta:
         model = ShopifyDataSnapshot
         fields = [
-            "id", "date_start", "date_end", "total_orders", "total_revenue",
-            "average_order_value", "total_customers", "top_products",
-            "daily_orders", "sync_status", "error_message", "created_at",
+            "id",
+            "date_start",
+            "date_end",
+            "total_orders",
+            "total_revenue",
+            "average_order_value",
+            "total_customers",
+            "top_products",
+            "daily_orders",
+            "sync_status",
+            "error_message",
+            "created_at",
         ]
 
 
