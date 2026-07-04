@@ -275,17 +275,19 @@ def is_agency(email: str | None) -> bool:
 def effective_max_projects(email: str | None) -> int:
     """max_projects after applying account type.
 
-    This is the single seam that unlocks multiple projects for agencies (and
-    the place a later per-brand-billing phase will swap the constant for a
-    count of active per-brand subscriptions). Internal emails keep the
-    business cap; agencies get the interim AGENCY_MAX_PROJECTS ceiling.
+    A brand IS a project, and Individual accounts are single-brand by design —
+    so they are always capped at exactly one, regardless of plan or internal
+    status. Agencies are the multi-brand tier: this is the single seam that
+    unlocks multiple projects for them (and where a later per-brand-billing
+    phase will swap the constant for a count of active per-brand subscriptions).
     """
+    if not is_agency(email):
+        return 1
+    # Agency: internal accounts get the full ceiling; paid agencies get the
+    # interim AGENCY_MAX_PROJECTS ceiling (never below their plan's base).
     if is_internal_email(email):
-        return PLAN_LIMITS["business"]["max_projects"]
-    base = get_plan_limits(email)["max_projects"]
-    if is_agency(email):
-        return max(base, AGENCY_MAX_PROJECTS)
-    return base
+        return AGENCY_MAX_PROJECTS
+    return max(get_plan_limits(email)["max_projects"], AGENCY_MAX_PROJECTS)
 
 
 def _tracked_prompt_count(email: str) -> int:
@@ -315,19 +317,33 @@ def _tracked_prompt_count(email: str) -> int:
 
 def project_limit_reached(email: str | None) -> tuple[bool, str]:
     """Check if user has reached their project (organization) limit."""
+    em = (email or "").strip().lower()
+    if not em:
+        return True, "Email is required."
+
+    from apps.organizations.models import Organization
+
+    count = Organization.objects.filter(owner_email=em).count()
+
+    # Individual accounts are single-brand by design (a brand IS a project).
+    # This is a product invariant, so it is enforced even for internal emails
+    # and even when the plan-limit toggle is off — unlike the billing caps below.
+    if not is_agency(email):
+        if count >= 1:
+            return True, (
+                "Individual accounts include a single brand. Switch to an Agency "
+                "account to manage multiple brands."
+            )
+        return False, ""
+
+    # Agencies: honour the internal bypass and the plan-limit enforcement toggle,
+    # then compare against the effective (multi-brand) cap.
     if is_internal_email(email):
         return False, ""
     if not is_plan_limits_enforcement_enabled():
         return False, ""
 
-    em = (email or "").strip().lower()
-    if not em:
-        return True, "Email is required."
-
     limits = get_plan_limits(email)
-    from apps.organizations.models import Organization
-
-    count = Organization.objects.filter(owner_email=em).count()
     max_projects = effective_max_projects(email)
     if count >= max_projects:
         pk = _effective_plan_key(email)

@@ -142,6 +142,10 @@ class AccountProfile(models.Model):
         choices=AccountType.choices,
         default=AccountType.INDIVIDUAL,
     )
+    # The agency's own name, captured on the dedicated agency sign-up step.
+    # Distinct from the brand/project name entered during onboarding. Blank for
+    # individuals (and agencies created before this field existed).
+    agency_name = models.CharField(max_length=255, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
