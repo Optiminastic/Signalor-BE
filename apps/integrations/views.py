@@ -31,8 +31,10 @@ from .models import (
 )
 from .serializers import (
     GADataSnapshotSerializer,
+    GSCDataSnapshotSerializer,
     IntegrationSerializer,
     SelectPropertySerializer,
+    SelectSiteSerializer,
     ShopifyConnectSerializer,
     ShopifyDataSnapshotSerializer,
     WooCommerceConnectSerializer,
@@ -85,6 +87,10 @@ def _resolve_shopify_redirect_uri(request) -> str:
 
 GA_SCOPES = [
     "https://www.googleapis.com/auth/analytics.readonly",
+]
+
+GSC_SCOPES = [
+    "https://www.googleapis.com/auth/webmasters.readonly",
 ]
 
 # ---------- helpers ----------
@@ -216,7 +222,7 @@ def _redirect_with_status(
     return HttpResponseRedirect(url)
 
 
-def _build_credentials(integration: Integration) -> Credentials:
+def _build_credentials(integration: Integration, scopes: list[str] | None = None) -> Credentials:
     """Build google.oauth2.credentials.Credentials from an Integration."""
     return Credentials(
         token=integration.get_access_token(),
@@ -224,7 +230,7 @@ def _build_credentials(integration: Integration) -> Credentials:
         token_uri="https://oauth2.googleapis.com/token",
         client_id=settings.GOOGLE_CLIENT_ID,
         client_secret=settings.GOOGLE_CLIENT_SECRET,
-        scopes=GA_SCOPES,
+        scopes=scopes or GA_SCOPES,
     )
 
 
@@ -726,6 +732,490 @@ class ScoreTrafficCorrelationView(APIView):
                 "has_ga_data": bool(snapshot),
             }
         )
+
+
+# ---------- Google Search Console endpoints ----------
+
+
+def _gsc_redirect(ok: bool, frontend_base: str, return_to: str, reason: str = ""):
+    """Redirect the browser back to the frontend after the GSC OAuth callback."""
+    base = (frontend_base or os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")).rstrip("/")
+    safe_return = return_to if (return_to.startswith("/") and not return_to.startswith("//")) else "/"
+    sep = "&" if "?" in safe_return else "?"
+    status_q = f"gsc={'connected' if ok else 'error'}"
+    if not ok and reason:
+        status_q += f"&reason={reason}"
+    return HttpResponseRedirect(f"{base}{safe_return}{sep}{status_q}")
+
+
+class GSCAuthURLView(APIView):
+    """GET /api/integrations/google-search-console/auth-url/?email=&return_to=&frontend_base="""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        email = request.query_params.get("email", "").lower().strip()
+        if not email:
+            return Response(
+                {"error": "Email parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        org, err = _get_org_or_400(email)
+        if err:
+            return err
+
+        # Where to land the user back on the frontend after OAuth completes.
+        return_to = request.query_params.get("return_to", "").strip() or "/"
+        frontend_base = request.query_params.get("frontend_base", "").strip()
+        parsed = urlparse(frontend_base) if frontend_base else None
+        if parsed and parsed.scheme in ("http", "https") and parsed.netloc:
+            resolved_frontend_base = f"{parsed.scheme}://{parsed.netloc}"
+        else:
+            resolved_frontend_base = ""
+
+        state = _sign_state(
+            {
+                "org_id": org.id,
+                "email": email,
+                "return_to": return_to,
+                "frontend_base": resolved_frontend_base,
+            }
+        )
+
+        params = {
+            "client_id": settings.GOOGLE_CLIENT_ID,
+            "redirect_uri": settings.GOOGLE_SEARCH_CONSOLE_REDIRECT_URI,
+            "response_type": "code",
+            "scope": " ".join(GSC_SCOPES),
+            "access_type": "offline",
+            "prompt": "consent",
+            "state": state,
+        }
+        auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
+        return Response({"auth_url": auth_url})
+
+
+class GSCCallbackView(APIView):
+    """GET /api/integrations/google-search-console/callback/ — Google redirects here."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        code = request.query_params.get("code", "").strip()
+        state_str = request.query_params.get("state", "").strip()
+
+        payload = _verify_state(state_str) if state_str else None
+        frontend_base = (payload or {}).get("frontend_base", "")
+        return_to = (payload or {}).get("return_to", "/")
+
+        if not code or not payload:
+            return _gsc_redirect(False, frontend_base, return_to, "invalid_state")
+
+        org_id = payload.get("org_id")
+        try:
+            org = Organization.objects.get(pk=org_id)
+        except Organization.DoesNotExist:
+            return _gsc_redirect(False, frontend_base, return_to, "org_not_found")
+
+        import requests as http_requests
+
+        token_resp = http_requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": code,
+                "client_id": settings.GOOGLE_CLIENT_ID,
+                "client_secret": settings.GOOGLE_CLIENT_SECRET,
+                "redirect_uri": settings.GOOGLE_SEARCH_CONSOLE_REDIRECT_URI,
+                "grant_type": "authorization_code",
+            },
+            timeout=20,
+        )
+        if token_resp.status_code != 200:
+            logger.error("GSC token exchange failed: %s", token_resp.text)
+            return _gsc_redirect(False, frontend_base, return_to, "token_exchange_failed")
+
+        tokens = token_resp.json()
+
+        integration, _ = Integration.objects.update_or_create(
+            organization=org,
+            provider=Integration.Provider.GOOGLE_SEARCH_CONSOLE,
+            defaults={"is_active": True},
+        )
+        integration.set_access_token(tokens["access_token"])
+        if tokens.get("refresh_token"):
+            integration.set_refresh_token(tokens["refresh_token"])
+        integration.save()
+
+        return _gsc_redirect(True, frontend_base, return_to)
+
+
+class GSCDisconnectView(APIView):
+    """DELETE /api/integrations/google-search-console/disconnect/?email="""
+
+    permission_classes = [AllowAny]
+
+    def delete(self, request):
+        email = request.query_params.get("email", "").lower().strip()
+        if not email:
+            return Response(
+                {"error": "Email parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        org, err = _get_org_or_400(email)
+        if err:
+            return err
+
+        try:
+            integration = Integration.objects.get(
+                organization=org,
+                provider=Integration.Provider.GOOGLE_SEARCH_CONSOLE,
+            )
+        except Integration.DoesNotExist:
+            return Response(
+                {"error": "Search Console integration not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            import requests as http_requests
+
+            http_requests.post(
+                "https://oauth2.googleapis.com/revoke",
+                params={"token": integration.get_access_token()},
+                timeout=10,
+            )
+        except Exception:
+            logger.warning("Failed to revoke Google token, deleting anyway")
+
+        integration.gsc_snapshots.all().delete()
+        integration.delete()
+
+        return Response({"message": "Search Console disconnected."})
+
+
+class GSCSitesListView(APIView):
+    """GET /api/integrations/google-search-console/sites/?email="""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        email = request.query_params.get("email", "").lower().strip()
+        if not email:
+            return Response(
+                {"error": "Email parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        org, err = _get_org_or_400(email)
+        if err:
+            return err
+
+        try:
+            integration = Integration.objects.get(
+                organization=org,
+                provider=Integration.Provider.GOOGLE_SEARCH_CONSOLE,
+                is_active=True,
+            )
+        except Integration.DoesNotExist:
+            return Response(
+                {"error": "Search Console not connected."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            from .services.gsc import list_gsc_sites
+
+            return Response({"sites": list_gsc_sites(integration)})
+        except Exception as e:
+            logger.error("Failed to list GSC sites: %s", str(e))
+            return Response(
+                {"error": f"Failed to list properties: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
+class GSCSelectSiteView(APIView):
+    """POST /api/integrations/google-search-console/select-site/"""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = SelectSiteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        org, err = _get_org_or_400(data["email"])
+        if err:
+            return err
+
+        try:
+            integration = Integration.objects.get(
+                organization=org,
+                provider=Integration.Provider.GOOGLE_SEARCH_CONSOLE,
+                is_active=True,
+            )
+        except Integration.DoesNotExist:
+            return Response(
+                {"error": "Search Console not connected."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        integration.metadata = {
+            **integration.metadata,
+            "site_url": data["site_url"],
+        }
+        integration.save(update_fields=["metadata", "updated_at"])
+
+        return Response(
+            {
+                "message": "Property selected successfully.",
+                "integration": IntegrationSerializer(integration).data,
+            }
+        )
+
+
+class GSCSyncView(APIView):
+    """POST /api/integrations/google-search-console/sync/?email="""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request):
+        email = request.query_params.get("email", "").lower().strip()
+        if not email:
+            return Response(
+                {"error": "Email parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        org, err = _get_org_or_400(email)
+        if err:
+            return err
+
+        try:
+            integration = Integration.objects.get(
+                organization=org,
+                provider=Integration.Provider.GOOGLE_SEARCH_CONSOLE,
+                is_active=True,
+            )
+        except Integration.DoesNotExist:
+            return Response(
+                {"error": "Search Console not connected."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if not integration.metadata.get("site_url"):
+            return Response(
+                {"error": "No Search Console property selected."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from .tasks import start_gsc_sync
+
+        start_gsc_sync(integration.id)
+
+        return Response({"message": "Sync started."}, status=status.HTTP_202_ACCEPTED)
+
+
+class GSCDataView(APIView):
+    """GET /api/integrations/google-search-console/data/?email=&analyzed_url="""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        email = request.query_params.get("email", "").lower().strip()
+        if not email:
+            return Response(
+                {"error": "Email parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        org, err = _get_org_or_400(email)
+        if err:
+            return err
+
+        try:
+            integration = Integration.objects.get(
+                organization=org,
+                provider=Integration.Provider.GOOGLE_SEARCH_CONSOLE,
+                is_active=True,
+            )
+        except Integration.DoesNotExist:
+            return Response(
+                {"error": "Search Console not connected."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Cleanup: delete snapshots older than 90 days
+        cutoff = timezone.now() - timedelta(days=90)
+        integration.gsc_snapshots.filter(created_at__lt=cutoff).delete()
+
+        snapshot = integration.gsc_snapshots.first()  # latest by -created_at
+        if not snapshot:
+            return Response(
+                {"error": "No data available. Trigger a sync first."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Auto-sync if snapshot is stale (>24h) and not currently syncing
+        stale_threshold = timezone.now() - timedelta(hours=24)
+        if (
+            snapshot.created_at < stale_threshold
+            and snapshot.sync_status == "complete"
+            and not integration.gsc_snapshots.filter(sync_status="syncing").exists()
+        ):
+            from .tasks import start_gsc_sync
+
+            start_gsc_sync(integration.id)
+
+        serializer = GSCDataSnapshotSerializer(snapshot)
+        payload = serializer.data
+
+        analyzed_url = request.query_params.get("analyzed_url", "").strip()
+        if analyzed_url:
+            try:
+                from .services.gsc import fetch_gsc_page_metrics
+
+                payload["page_match"] = fetch_gsc_page_metrics(integration, analyzed_url)
+            except Exception as exc:
+                logger.warning("Failed GSC page match lookup: %s", exc)
+                payload["page_match"] = {
+                    "found": False,
+                    "page": "",
+                    "clicks": 0,
+                    "impressions": 0,
+                    "ctr": 0.0,
+                    "position": 0.0,
+                }
+
+        return Response(payload)
+
+
+class GSCUrlInspectView(APIView):
+    """GET /api/integrations/google-search-console/inspect/?email=&url="""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request):
+        email = request.query_params.get("email", "").lower().strip()
+        url_to_inspect = request.query_params.get("url", "").strip()
+        if not email or not url_to_inspect:
+            return Response(
+                {"error": "Both 'email' and 'url' parameters are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        org, err = _get_org_or_400(email)
+        if err:
+            return err
+
+        try:
+            integration = Integration.objects.get(
+                organization=org,
+                provider=Integration.Provider.GOOGLE_SEARCH_CONSOLE,
+                is_active=True,
+            )
+        except Integration.DoesNotExist:
+            return Response(
+                {"error": "Search Console not connected."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            from .services.gsc import inspect_gsc_url
+
+            return Response(inspect_gsc_url(integration, url_to_inspect))
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            logger.error("GSC URL inspection error: %s", exc)
+            return Response(
+                {"error": "URL inspection failed."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
+def _active_gsc_integration_or_response(email: str):
+    """Resolve the live GSC integration for ``email`` -> (integration, error_response)."""
+    if not email:
+        return None, Response(
+            {"error": "An 'email' parameter is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    org, err = _get_org_or_400(email)
+    if err:
+        return None, err
+    try:
+        integration = Integration.objects.get(
+            organization=org,
+            provider=Integration.Provider.GOOGLE_SEARCH_CONSOLE,
+            is_active=True,
+        )
+    except Integration.DoesNotExist:
+        return None, Response(
+            {"error": "Search Console not connected."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    return integration, None
+
+
+class GSCSitemapsView(APIView):
+    """GET /api/integrations/google-search-console/sitemaps/?email= — live sitemap list."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request):
+        email = request.query_params.get("email", "").lower().strip()
+        integration, err = _active_gsc_integration_or_response(email)
+        if err:
+            return err
+
+        try:
+            from .services.gsc import list_gsc_sitemaps
+
+            return Response(list_gsc_sitemaps(integration))
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            logger.error("GSC sitemaps error: %s", exc)
+            return Response(
+                {"error": "Failed to load sitemaps."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
+class GSCCoverageView(APIView):
+    """GET /api/integrations/google-search-console/coverage/?email= — live index coverage."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request):
+        email = request.query_params.get("email", "").lower().strip()
+        integration, err = _active_gsc_integration_or_response(email)
+        if err:
+            return err
+
+        try:
+            from .services.gsc import fetch_gsc_coverage
+
+            return Response(fetch_gsc_coverage(integration))
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            logger.error("GSC coverage error: %s", exc)
+            return Response(
+                {"error": "Failed to load index coverage."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 
 # ---------- Shopify endpoints ----------
