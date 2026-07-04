@@ -443,3 +443,50 @@ services:
         sync: false
       - key: DEFAULT_FROM_EMAIL
         value: hello@signalor.ai
+
+  # Daily auto-backlinks — hourly tick publishes one fresh blog to each of the 5
+  # satellite sites for every brand whose schedule is due, then reschedules +24h.
+  # Brands' next_run_at spread across the day, so load is spread and each brand
+  # gets its 5-blog batch ~24h apart. run_auto_backlinks is idempotent per day.
+  - type: cron
+    name: signalor-backlink-scheduler
+    runtime: python
+    plan: starter
+    region: oregon
+    schedule: "0 * * * *"
+    buildCommand: ./build.sh
+    startCommand: python manage.py run_backlink_schedules
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: signalor-backend
+          envVarKey: SECRET_KEY
+      - key: DATABASE_URL
+        fromDatabase:
+          name: signalor-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: signalor-redis
+          property: connectionString
+      - key: ALLOWED_HOSTS
+        value: api.signalor.ai
+      # Gemini generates the blogs; the S3 backlink store persists them.
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_BUCKET
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_REGION
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_PREFIX
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_ACCESS_KEY_ID
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_SECRET_ACCESS_KEY
+        sync: false

@@ -9,8 +9,12 @@
 #   redis           → cache / throttling / sitemap Celery broker
 #   rabbitmq        → broker for the analysis Celery app
 #
-# The two Render cron jobs (run_scheduled_analyses, cleanup_stale_rewards) and
-# nightly pg_dump backups run from the HOST crontab — see DEPLOY.md.
+# The Render cron jobs (run_scheduled_analyses, cleanup_stale_rewards,
+# run_backlink_schedules — the daily auto-backlinks publisher) and nightly
+# pg_dump backups run from the HOST crontab — see DEPLOY.md. Example entry for
+# the backlinks job (hourly):
+#   0 * * * * cd /opt/signalor/deploy && docker compose run --rm web \
+#             python manage.py run_backlink_schedules
 #
 # Durable state lives on the Hetzner volume mounted at /mnt/HC_Volume_105845076
 # (Postgres data, backups, Caddy certs).

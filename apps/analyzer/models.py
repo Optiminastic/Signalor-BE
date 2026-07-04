@@ -1050,6 +1050,42 @@ class ScheduledAnalysis(models.Model):
         return f"Schedule<{self.email} {self.frequency}>"
 
 
+class BacklinkSchedule(models.Model):
+    """Per-brand daily auto-backlinks schedule.
+
+    When active, the ``run_backlink_schedules`` cron command publishes one fresh
+    blog to each of the 5 satellite sites (via ``services.backlink_engine``)
+    every 24 hours, growing the brand's backlink footprint over time. Mirrors
+    ``ScheduledAnalysis``: a per-row ``next_run_at`` the command filters on and
+    bumps by one day after each run.
+    """
+
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="backlink_schedules",
+        null=True,
+        blank=True,
+    )
+    email = models.EmailField(db_index=True)
+    run_slug = models.CharField(max_length=20, blank=True, default="")  # context run; refreshed to latest
+    is_active = models.BooleanField(default=True)
+    next_run_at = models.DateTimeField()
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    last_batch_count = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [("organization", "email")]
+        indexes = [
+            models.Index(fields=["next_run_at", "is_active"]),
+        ]
+
+    def __str__(self):
+        return f"BacklinkSchedule<{self.email} active={self.is_active}>"
+
+
 class AutoFixJob(models.Model):
     class Status(models.TextChoices):
         PREVIEW = "preview"

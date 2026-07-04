@@ -346,11 +346,11 @@ CORS_ALLOW_HEADERS = (*default_cors_headers, "x-onboarding-token")
 # Domains of our 5 external Next.js blog sites (category == site). Used to build
 # the live backlink URL (``<domain>/blog/<slug>``) shown in "Our backlinks".
 SATELLITE_SITES = {
-    "research": os.getenv("SATELLITE_SITE_RESEARCH_URL", "http://localhost:3002").rstrip("/"),
-    "listicals": os.getenv("SATELLITE_SITE_LISTICALS_URL", "http://localhost:3003").rstrip("/"),
-    "market_trends": os.getenv("SATELLITE_SITE_MARKET_TRENDS_URL", "http://localhost:3004").rstrip("/"),
-    "comparison": os.getenv("SATELLITE_SITE_COMPARISON_URL", "http://localhost:3005").rstrip("/"),
-    "step_guide": os.getenv("SATELLITE_SITE_STEP_GUIDE_URL", "http://localhost:3006").rstrip("/"),
+    "research": os.getenv("SATELLITE_SITE_RESEARCH_URL", "https://brightsfindings.com").rstrip("/"),
+    "listicals": os.getenv("SATELLITE_SITE_LISTICALS_URL", "https://thepickpost.com").rstrip("/"),
+    "market_trends": os.getenv("SATELLITE_SITE_MARKET_TRENDS_URL", "https://trendledgers.com").rstrip("/"),
+    "comparison": os.getenv("SATELLITE_SITE_COMPARISON_URL", "https://betterversus.com").rstrip("/"),
+    "step_guide": os.getenv("SATELLITE_SITE_STEP_GUIDE_URL", "https://guidefactories.com").rstrip("/"),
 }
 # Shared blog DB (Signalor writes BlogPost rows; the satellite sites read it).
 # The "blog" connection is added per-env (development/production/staging) where
