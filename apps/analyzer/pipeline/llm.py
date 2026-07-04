@@ -29,6 +29,8 @@ GEMINI_MODEL = os.getenv("OPENROUTER_GEMINI_MODEL", "google/gemini-2.5-flash")
 # instead.
 _OPUS_MODEL_DEFAULT = "anthropic/claude-opus-4.1"
 OPUS_MODEL = os.getenv("OPENROUTER_OPUS_MODEL", "").strip() or _OPUS_MODEL_DEFAULT
+# Claude Sonnet — routed through OpenRouter. Override via OPENROUTER_SONNET_MODEL.
+SONNET_MODEL = os.getenv("OPENROUTER_SONNET_MODEL", "anthropic/claude-sonnet-4.5")
 MODELS = {
     "gpt": "openai/gpt-4o-mini",
     "claude": "anthropic/claude-3.5-haiku",
