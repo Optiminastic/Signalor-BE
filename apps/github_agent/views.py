@@ -341,6 +341,12 @@ class GithubFixView(APIView):
         return Response({"jobs": created}, status=status.HTTP_202_ACCEPTED)
 
 
+# A content PR is a handful of focused text/metadata changes. Anything past this
+# is a mis-generated payload, not a real request — reject it before it reaches
+# the fix agent.
+MAX_CONTENT_EDITS = 40
+
+
 class GithubContentFixView(APIView):
     """POST runs/s/<slug>/content-pr/ — open a PR applying Content-Optimisation edits.
 
@@ -367,6 +373,20 @@ class GithubContentFixView(APIView):
         raw_edits = request.data.get("edits")
         if not isinstance(raw_edits, list) or not raw_edits:
             return Response({"error": "edits must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
+        # A content PR should be a handful of focused text/metadata changes. Reject
+        # a runaway payload (e.g. a mis-generated per-word diff) up front so we
+        # never hand the fix agent thousands of edits — that blows the context
+        # window, the cost, and the per-PR file guard downstream.
+        if len(raw_edits) > MAX_CONTENT_EDITS:
+            return Response(
+                {
+                    "error": (
+                        f"Too many edits ({len(raw_edits)}). Send at most {MAX_CONTENT_EDITS} "
+                        "focused text/metadata changes per content PR."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         edits: list[dict] = []
         for e in raw_edits:

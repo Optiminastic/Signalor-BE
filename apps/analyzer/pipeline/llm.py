@@ -196,6 +196,47 @@ def ask_llm_with_citations(
         return (_call_gemini_direct(prompt, purpose), [])
 
 
+def _cache_last_block(msg: dict) -> dict:
+    """Return a copy of an OpenAI-style message with an ephemeral cache_control
+    breakpoint on its final content block (Anthropic caches the prefix up to and
+    including it). Handles both string and structured-list content."""
+    m = dict(msg)
+    content = m.get("content")
+    mark = {"type": "ephemeral"}
+    if isinstance(content, str):
+        if not content:
+            return m  # nothing to cache (e.g. assistant tool_calls stub)
+        m["content"] = [{"type": "text", "text": content, "cache_control": mark}]
+    elif isinstance(content, list) and content:
+        last = content[-1]
+        last = dict(last) if isinstance(last, dict) else {"type": "text", "text": str(last)}
+        last["cache_control"] = mark
+        m["content"] = list(content[:-1]) + [last]
+    return m
+
+
+def _with_anthropic_cache(messages: list[dict], tools: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Add ephemeral cache breakpoints so a multi-round Anthropic tool loop
+    re-reads its stable prefix (tools + system + prior turns) from cache.
+
+    Two breakpoints (Anthropic allows up to 4): the system message (caches
+    tools+system) and the last message with content (caches the running
+    conversation, which is where the big re-sent file reads accumulate).
+    """
+    msgs = list(messages)
+    # system prefix
+    if msgs and msgs[0].get("role") == "system":
+        msgs[0] = _cache_last_block(msgs[0])
+    # running conversation tail (skip content-less assistant tool_calls stubs)
+    if len(msgs) > 1 and msgs[-1].get("content"):
+        msgs[-1] = _cache_last_block(msgs[-1])
+    # cache the (stable, sizeable) tool definitions too — mark the last one
+    send_tools = tools
+    if tools:
+        send_tools = list(tools[:-1]) + [{**tools[-1], "cache_control": {"type": "ephemeral"}}]
+    return msgs, send_tools
+
+
 def ask_llm_with_tools(
     messages: list[dict],
     tools: list[dict],
@@ -227,6 +268,16 @@ def ask_llm_with_tools(
         return {"message": {}, "text": "", "tool_calls": [], "finish_reason": "no_key"}
 
     model = MODELS.get(preferred_provider) or MODELS["sonnet"]
+    # Anthropic prompt caching: a tool-loop re-sends the same tools + system
+    # prompt + already-read files as fresh input on every round. Marking the
+    # stable prefix with ephemeral cache_control lets Anthropic bill those
+    # repeated tokens at ~10%. Pure cost win, no behaviour change; only applied
+    # to Anthropic models (OpenRouter ignores the field for other providers, but
+    # we gate anyway to be safe).
+    send_messages, send_tools = messages, tools
+    if model.startswith("anthropic/"):
+        send_messages, send_tools = _with_anthropic_cache(messages, tools)
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -235,8 +286,8 @@ def ask_llm_with_tools(
     }
     payload = {
         "model": model,
-        "messages": messages,
-        "tools": tools,
+        "messages": send_messages,
+        "tools": send_tools,
         "tool_choice": "auto",
         "max_tokens": max_tokens,
         "temperature": temperature,

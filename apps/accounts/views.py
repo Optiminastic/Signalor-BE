@@ -343,15 +343,14 @@ class AccountTypeView(APIView):
         if not email:
             return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
         account_type = get_account_type(email)
-        agency_name = (
-            AccountProfile.objects.filter(email=email).values_list("agency_name", flat=True).first() or ""
-        )
+        row = AccountProfile.objects.filter(email=email).values("agency_name", "role").first() or {}
         return Response(
             {
                 "email": email,
                 "account_type": account_type,
                 "is_agency": account_type == "agency",
-                "agency_name": agency_name,
+                "agency_name": row.get("agency_name") or "",
+                "role": row.get("role") or "",
             }
         )
 
@@ -379,20 +378,24 @@ class AccountTypeView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Optional agency name, captured on the dedicated agency sign-up step.
-        # Trimmed and length-capped; only stored for agency accounts (ignored
-        # for individuals, who have no agency name).
+        # Optional agency name + role, captured on the dedicated agency sign-up
+        # step. Trimmed and length-capped; only stored for agency accounts
+        # (ignored for individuals, who have no agency name/role).
         agency_name = (request.data.get("agency_name") or "").strip()[:255]
+        role = (request.data.get("role") or "").strip()[:100]
 
         profile, _ = AccountProfile.objects.get_or_create(email=email)
         update_fields = []
         if profile.account_type != account_type:
             profile.account_type = account_type
             update_fields.append("account_type")
-        if account_type == AccountProfile.AccountType.AGENCY and agency_name:
-            if profile.agency_name != agency_name:
+        if account_type == AccountProfile.AccountType.AGENCY:
+            if agency_name and profile.agency_name != agency_name:
                 profile.agency_name = agency_name
                 update_fields.append("agency_name")
+            if role and profile.role != role:
+                profile.role = role
+                update_fields.append("role")
         if update_fields:
             update_fields.append("updated_at")
             profile.save(update_fields=update_fields)
@@ -402,6 +405,7 @@ class AccountTypeView(APIView):
                 "account_type": profile.account_type,
                 "is_agency": profile.account_type == "agency",
                 "agency_name": profile.agency_name,
+                "role": profile.role,
             }
         )
 

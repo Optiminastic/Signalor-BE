@@ -19,13 +19,17 @@ from .fixers import FileEdit, FixResult
 
 logger = logging.getLogger("apps")
 
-# Loop / safety bounds
-MAX_STEPS = 14  # tool-call rounds — Sonnet explores several files before it proposes
-MAX_FILES_READ = 20
+# Loop / safety bounds.
+# Trimmed for cost: most fixes propose within ~1–3 file reads (see the system
+# prompt), so a 10-round budget over 14 files is ample and caps the token spend
+# per PR. Prompt caching (llm.ask_llm_with_tools) makes the re-sent prefix cheap;
+# these bounds cut the first-read input + the number of round-trips.
+MAX_STEPS = 10  # tool-call rounds before the forced final decision
+MAX_FILES_READ = 14
 MAX_EDIT_FILES = 6
-MAX_FILE_CHARS = 14000  # truncate big files fed to the model
+MAX_FILE_CHARS = 12000  # truncate big files fed to the model
 MAX_CONTENT_CHARS = 100_000  # reject absurd proposed file bodies
-MAX_TREE_PATHS = 400
+MAX_TREE_PATHS = 300
 
 
 def _tools() -> list[dict]:
@@ -217,10 +221,20 @@ def dispatch_tool(name: str, args: dict, client, profile: dict, state: dict) -> 
 # --------------------------------------------------------------------------- #
 # validation (pure-ish: only get_file for sha lookup)
 # --------------------------------------------------------------------------- #
-def validate_edits(raw_edits: list[dict], client, branch: str) -> tuple[list[FileEdit], str | None]:
+def validate_edits(raw_edits, client, branch: str) -> tuple[list[FileEdit], str | None]:
     """Turn proposed edits into FileEdits, or return (partial, error) on any guard failure."""
+    # Shape-guard first: the model sometimes returns `edits` as a bare string (a
+    # stray file body) or a single object instead of a list of {path, new_content}
+    # objects. Without this, len() on a string counts CHARACTERS and produces the
+    # nonsensical "Too many files (17877 > 6)". A precise error also lets the
+    # loop's one retry actually correct the shape.
+    if isinstance(raw_edits, dict):
+        raw_edits = [raw_edits]
+    if not isinstance(raw_edits, list):
+        return [], "`edits` must be a list of {path, new_content} objects, not a raw string."
+    raw_edits = [e for e in raw_edits if isinstance(e, dict)]
     if not raw_edits:
-        return [], "No edits provided."
+        return [], "No valid edits — each must be an object with 'path' and 'new_content'."
     if len(raw_edits) > MAX_EDIT_FILES:
         return [], f"Too many files ({len(raw_edits)} > {MAX_EDIT_FILES}). Make a smaller, focused change."
 
