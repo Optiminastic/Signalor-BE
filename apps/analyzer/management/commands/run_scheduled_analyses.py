@@ -10,7 +10,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from apps.analyzer.models import AnalysisRun, ScheduledAnalysis
-from apps.analyzer.tasks import run_single_page_analysis
+from apps.analyzer.tasks import _kickoff_sitemap_audit, run_single_page_analysis
 from apps.analyzer.email_utils import send_digest_email
 
 logger = logging.getLogger("apps")
@@ -61,6 +61,10 @@ class Command(BaseCommand):
         )
 
         self.stdout.write(f"  Running analysis for {schedule.url} (run {run.id})...")
+        # Fire the sitemap audit automatically, same as the interactive
+        # start_analysis_task path. Dispatches to a Celery worker so it crawls
+        # in the background while the main analysis runs synchronously below.
+        _kickoff_sitemap_audit(run.id)
         run_single_page_analysis(run.id)
 
         # Refresh from DB

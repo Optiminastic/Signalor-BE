@@ -22,11 +22,17 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 # via OPENROUTER_GEMINI_MODEL if it's delisted again. Keep in sync with
 # apps/analyzer/auto_fix.py.
 GEMINI_MODEL = os.getenv("OPENROUTER_GEMINI_MODEL", "google/gemini-2.5-flash")
-# Strong coding model for the GitHub fix agent (tool-calling). Override via env.
-SONNET_MODEL = os.getenv("OPENROUTER_SONNET_MODEL", "anthropic/claude-sonnet-4.5")
+# Claude Opus — used for high-quality generation (blog idea/title/content). Routed
+# through OpenRouter like every other provider (no direct Anthropic SDK). The id is
+# hardcoded so it works out of the box; if this ever stops working on your
+# OpenRouter account, set OPENROUTER_OPUS_MODEL in the env and that value is used
+# instead.
+_OPUS_MODEL_DEFAULT = "anthropic/claude-opus-4.1"
+OPUS_MODEL = os.getenv("OPENROUTER_OPUS_MODEL", "").strip() or _OPUS_MODEL_DEFAULT
 MODELS = {
     "gpt": "openai/gpt-4o-mini",
     "claude": "anthropic/claude-3.5-haiku",
+    "opus": OPUS_MODEL,
     "gemini": GEMINI_MODEL,
     "perplexity": "perplexity/sonar",
     "sonnet": SONNET_MODEL,
@@ -35,6 +41,7 @@ MODELS = {
 MODEL_LABELS = {
     "openai/gpt-4o-mini": "GPT-4o Mini",
     "anthropic/claude-3.5-haiku": "Claude 3.5 Haiku",
+    OPUS_MODEL: "Claude Opus",
     GEMINI_MODEL: "Gemini 2.5 Flash",
     "perplexity/sonar": "Perplexity Sonar",
     SONNET_MODEL: "Claude Sonnet 4.5",

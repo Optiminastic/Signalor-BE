@@ -53,6 +53,9 @@ class RecommendationSerializer(serializers.ModelSerializer):
             "estimated_minutes",
             "finding_code",
             "finding_key",
+            "last_checked_at",
+            "daily_priority_rank",
+            "is_top_fix",
         ]
 
     # Title keywords that indicate manual-only recommendations

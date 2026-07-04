@@ -4,6 +4,16 @@ from .views import (
     AchievementsView,
     ActionStatsView,
     ActionTemplatesView,
+    BlogAutoPublishAllView,
+    BlogGenerateView,
+    BlogPostDetailView,
+    BlogPublishNetworkView,
+    BlogSourcesView,
+    BlogTitleIdeasView,
+    BacklinkScheduleView,
+    OurBacklinksView,
+    PublicBlogDetailView,
+    PublicBlogListView,
     # Sitemap audit
     AgentLogView,
     AiChatView,
@@ -50,6 +60,7 @@ from .views import (
     CrawlEssentialsStatusView,
     CreateUserActionView,
     DomainAnalyticsView,
+    DomainRatingFreeView,
     ExportPDFView,
     GeneratePromptsView,
     GeoImprovementsView,
@@ -95,6 +106,7 @@ app_name = "analyzer"
 
 urlpatterns = [
     path("health/", HealthCheckView.as_view(), name="health-check"),
+    path("tools/domain-rating/", DomainRatingFreeView.as_view(), name="domain-rating-free"),
     path("onboarding-start/", OnboardingStartView.as_view(), name="onboarding-start"),
     path("analyze/", StartAnalysisView.as_view(), name="start-analysis"),
     path("generate-prompts/", GeneratePromptsView.as_view(), name="generate-prompts"),
@@ -203,6 +215,49 @@ urlpatterns = [
     path("runs/s/<str:slug>/prompts/<int:track_id>/rank/", PromptRankView.as_view(), name="prompt-rank"),
     # Backlink marketplace
     path("runs/s/<str:slug>/backlinks/free/", RunBacklinkFreeView.as_view(), name="backlink-free"),
+    path("runs/s/<str:slug>/backlinks/our/", OurBacklinksView.as_view(), name="backlink-our"),
+    path(
+        "runs/s/<str:slug>/backlinks/schedule/",
+        BacklinkScheduleView.as_view(),
+        name="backlink-schedule",
+    ),
+    # Public blog feed for the satellite sites (read-only, no auth; proxies S3).
+    path("public/blog/<str:site>/", PublicBlogListView.as_view(), name="public-blog-list"),
+    path(
+        "public/blog/<str:site>/<str:post_slug>/",
+        PublicBlogDetailView.as_view(),
+        name="public-blog-detail",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/generate/",
+        BlogGenerateView.as_view(),
+        name="blog-generate",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/auto-publish-all/",
+        BlogAutoPublishAllView.as_view(),
+        name="blog-auto-publish-all",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/item/<str:site>/<str:post_slug>/",
+        BlogPostDetailView.as_view(),
+        name="blog-post-detail",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/sources/",
+        BlogSourcesView.as_view(),
+        name="blog-sources",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/title-ideas/",
+        BlogTitleIdeasView.as_view(),
+        name="blog-title-ideas",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/publish-network/",
+        BlogPublishNetworkView.as_view(),
+        name="blog-publish-network",
+    ),
     path("runs/s/<str:slug>/backlinks/catalog/", BacklinkCatalogView.as_view(), name="backlink-catalog"),
     path(
         "runs/s/<str:slug>/backlinks/orders/", BacklinkOrderListCreateView.as_view(), name="backlink-orders"

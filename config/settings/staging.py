@@ -99,3 +99,9 @@ else:
     SESSION_ENGINE = 'django.contrib.sessions.backends.db'
 
 ADMIN_URL = os.getenv('ADMIN_URL', 'admin/')
+
+# Shared satellite-blog DB (routed via config.db_router.BlogRouter).
+if BLOG_DATABASE_URL:
+    DATABASES['blog'] = dj_database_url.parse(
+        BLOG_DATABASE_URL, conn_max_age=600, ssl_require=True
+    )
