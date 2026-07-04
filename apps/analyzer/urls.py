@@ -37,10 +37,6 @@ from .views import (
     BlogAutomationGenerateView,
     BlogAutomationProcessDueView,
     BlogAutomationPublishView,
-    BlogComposerGenerateView,
-    BlogComposerPostsView,
-    BlogComposerPublishView,
-    BlogComposerUploadImageView,
     BulkCreateUserActionView,
     CitationSourcesView,
     CitationTrendView,
@@ -175,28 +171,9 @@ urlpatterns = [
         DomainAnalyticsView.as_view(),
         name="domain-analytics",
     ),
-    # Blog composer (dashboard "Blog Agent" page)
-    path("runs/s/<str:slug>/blog/posts/", BlogComposerPostsView.as_view(), name="blog-composer-posts"),
-    path(
-        "runs/s/<str:slug>/blog/posts/<int:post_id>/",
-        BlogComposerPostsView.as_view(),
-        name="blog-composer-post-delete",
-    ),
-    path(
-        "runs/s/<str:slug>/blog/generate/",
-        BlogComposerGenerateView.as_view(),
-        name="blog-composer-generate",
-    ),
-    path(
-        "runs/s/<str:slug>/blog/publish/",
-        BlogComposerPublishView.as_view(),
-        name="blog-composer-publish",
-    ),
-    path(
-        "runs/s/<str:slug>/blog/upload-image/",
-        BlogComposerUploadImageView.as_view(),
-        name="blog-composer-upload-image",
-    ),
+    # NOTE: BlogComposer routes removed — their view classes were dropped in a
+    # cross-branch merge (feature lives on main; this branch uses the S3 blog
+    # network below). Re-add the views + routes together if reintroducing it.
     # Sitemap audit + AI agent log stub
     path("runs/s/<str:slug>/sitemap/", SitemapAuditDetailView.as_view(), name="sitemap-audit-detail"),
     path("runs/s/<str:slug>/sitemap/start/", SitemapAuditStartView.as_view(), name="sitemap-audit-start"),
