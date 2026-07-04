@@ -12,7 +12,6 @@ Per-environment config for the Signalor backend.
 ## How it works
 
 `python scripts/use-env.py <name>` copies `env/<name>.env` to `.env` at the project root. Django loads `.env` automatically (via the existing settings loader).
-
 ```sh
 # Switch to local
 python scripts/use-env.py local
