@@ -400,7 +400,7 @@ Requirements:
 
     raw = ask_llm(
         prompt=prompt.strip(),
-        preferred_provider="gemini",
+        preferred_provider="opus",
         max_tokens=max_tokens,
         temperature=0.5,
         purpose="actions.blog_automation.generate",
@@ -5808,7 +5808,7 @@ Return STRICT JSON only: {{"titles": ["...", "...", "...", "...", "..."]}}"""
 
         raw = ask_llm(
             prompt=prompt,
-            preferred_provider="gemini",
+            preferred_provider="opus",
             max_tokens=600,
             temperature=0.85,
             purpose="actions.blog_automation.title_ideas",
