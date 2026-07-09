@@ -289,3 +289,105 @@ services:
           envVarKey: SECRET_KEY
       - key: ALLOWED_HOSTS
         value: api.signalor.ai
+
+  # Lifecycle drip queue — ticks every 10 min and sends the next-due email
+  # (E1 30m / E2 24h / E3 48h / E4 72h) to enrolled, non-suppressed users.
+  # process_drip_queue is idempotent (never resends a step) and honours each
+  # user's due time + the 20h anti-burst gap, so a missed tick just retries.
+  - type: cron
+    name: signalor-drip-queue
+    runtime: python
+    plan: starter
+    region: oregon
+    schedule: "*/10 * * * *"
+    buildCommand: ./build.sh
+    startCommand: python manage.py process_drip_queue
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: signalor-backend
+          envVarKey: SECRET_KEY
+      - key: DATABASE_URL
+        fromDatabase:
+          name: signalor-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: signalor-redis
+          property: connectionString
+      - key: ALLOWED_HOSTS
+        value: api.signalor.ai
+      - key: FRONTEND_BASE_URL
+        value: https://signalor.ai
+      # SMTP creds — the only secrets this cron needs. Copy from the
+      # signalor-backend web service. (No Gemini/DataForSEO/encryption key:
+      # the drip just reads persisted run data and sends email.)
+      - key: EMAIL_HOST
+        sync: false
+      - key: EMAIL_PORT
+        value: "587"
+      - key: EMAIL_HOST_USER
+        sync: false
+      - key: EMAIL_HOST_PASSWORD
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        value: hello@signalor.ai
+      # All lifecycle mail sends from hello@signalor.ai as "Team Signalor".
+      # FOUNDER_* drives Email 4's From header + the unsubscribe mailto.
+      - key: FOUNDER_FROM_EMAIL
+        value: hello@signalor.ai
+      - key: FOUNDER_FROM_NAME
+        value: Team Signalor
+      # NEVER set DRIP_FAST_MODE here — it compresses the 4-email sequence to
+      # ~4 minutes. The command also refuses to start if FAST_MODE + DEBUG=False.
+
+  # Weekly AI-visibility email — Fridays 09:00 UTC.
+  - type: cron
+    name: signalor-weekly-emails
+    runtime: python
+    plan: starter
+    region: oregon
+    schedule: "0 9 * * 5"
+    buildCommand: ./build.sh
+    startCommand: python manage.py send_weekly_emails
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: signalor-backend
+          envVarKey: SECRET_KEY
+      - key: DATABASE_URL
+        fromDatabase:
+          name: signalor-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: signalor-redis
+          property: connectionString
+      - key: ALLOWED_HOSTS
+        value: api.signalor.ai
+      - key: FRONTEND_BASE_URL
+        value: https://signalor.ai
+      # SMTP creds — the only secrets this cron needs. Copy from the
+      # signalor-backend web service.
+      - key: EMAIL_HOST
+        sync: false
+      - key: EMAIL_PORT
+        value: "587"
+      - key: EMAIL_HOST_USER
+        sync: false
+      - key: EMAIL_HOST_PASSWORD
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        value: hello@signalor.ai
