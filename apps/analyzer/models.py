@@ -242,6 +242,9 @@ class UserAction(models.Model):
         VERIFIED = "verified", "Verified (Score Improved)"
 
     user_email = models.EmailField(db_index=True)
+    # Agency teammate this task is assigned to (blank = unassigned). Distinct from
+    # user_email (the owner/creator — the agency admin for materialized tasks).
+    assignee_email = models.EmailField(db_index=True, blank=True, default="")
     analysis_run = models.ForeignKey(
         AnalysisRun, on_delete=models.CASCADE, related_name="user_actions", null=True, blank=True
     )

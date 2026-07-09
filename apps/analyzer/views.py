@@ -1124,12 +1124,25 @@ class UserActionListView(APIView):
 
         status_filter = request.query_params.get("status")
 
-        actions = UserAction.objects.filter(user_email=email)
+        from apps.accounts.agency_utils import agency_org_ids, get_agency_context
+
+        # Role-scoped visibility:
+        #   agency admin  → every task across the agency's brands
+        #   agency member → only tasks assigned to them
+        #   individual    → their own tasks (owner)
+        ctx = get_agency_context(email)
+        if ctx is not None and ctx.is_admin:
+            org_ids = agency_org_ids(ctx.agency_email)
+            actions = UserAction.objects.filter(analysis_run__organization_id__in=org_ids)
+        elif ctx is not None:
+            actions = UserAction.objects.filter(assignee_email=email)
+        else:
+            actions = UserAction.objects.filter(user_email=email)
 
         if status_filter:
             actions = actions.filter(status=status_filter)
 
-        serializer = UserActionSerializer(actions, many=True)
+        serializer = UserActionSerializer(actions.distinct(), many=True)
         return Response(serializer.data)
 
 
@@ -1263,6 +1276,134 @@ class UpdateUserActionView(APIView):
                 "new_achievements": new_achievements,
             }
         )
+
+
+# Pillar → a representative ActionType for auto-materialized tasks (the exact
+# type is cosmetic here; the task carries the recommendation's own title/desc).
+_PILLAR_ACTION_TYPE = {
+    "content": UserAction.ActionType.ADD_STRUCTURE,
+    "schema": UserAction.ActionType.ADD_SCHEMA,
+    "technical": UserAction.ActionType.ADD_SITEMAP,
+    "eeat": UserAction.ActionType.ADD_ABOUT,
+    "entity": UserAction.ActionType.ADD_SOCIAL,
+    "ai_visibility": UserAction.ActionType.BUILD_BACKLINKS,
+}
+
+
+class SyncActionsView(APIView):
+    """POST actions/sync/ {email, org_id} → materialize the org's latest-run
+    recommendations into UserAction tasks (idempotent). This is what makes tasks
+    'auto' — no manual 'start this action' step."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from apps.accounts.agency_utils import get_agency_context
+        from apps.organizations.models import Organization
+
+        email = (request.data.get("email") or "").lower().strip()
+        org_id = request.data.get("org_id")
+        if not email or not org_id:
+            return Response(
+                {"error": "email and org_id are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        ctx = get_agency_context(email)
+        owner_email = ctx.agency_email if ctx else email
+        if not Organization.objects.filter(id=org_id, owner_email=owner_email).exists():
+            return Response(
+                {"detail": "Brand not found for this account.", "code": "not_found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Latest run that actually produced recommendations (a newer run may have
+        # failed or be mid-flight with none yet).
+        run = (
+            AnalysisRun.objects.filter(organization_id=org_id, recommendations__isnull=False)
+            .order_by("-created_at")
+            .distinct()
+            .first()
+        )
+        if run is None:
+            return Response({"created": 0, "total": 0})
+
+        existing_rec_ids = set(
+            UserAction.objects.filter(analysis_run=run)
+            .exclude(recommendation__isnull=True)
+            .values_list("recommendation_id", flat=True)
+        )
+        to_create = [
+            UserAction(
+                user_email=owner_email,
+                analysis_run=run,
+                recommendation=rec,
+                action_type=_PILLAR_ACTION_TYPE.get(rec.pillar, UserAction.ActionType.ADD_STRUCTURE),
+                title=rec.title[:255],
+                description=rec.description,
+                points_value=rec.xp_reward or 10,
+                status=UserAction.ActionStatus.PENDING,
+            )
+            for rec in run.recommendations.all()
+            if rec.id not in existing_rec_ids
+        ]
+        if to_create:
+            UserAction.objects.bulk_create(to_create)
+
+        total = UserAction.objects.filter(analysis_run=run).count()
+        return Response({"created": len(to_create), "total": total})
+
+
+class AssignActionView(APIView):
+    """POST actions/<id>/assign/ {email, assignee_email} → admin assigns a task
+    to an agency teammate ('' = unassign)."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, action_id):
+        from apps.accounts.agency_utils import agency_org_ids, get_agency_context
+        from apps.accounts.models import AgencyMembership
+
+        email = (request.data.get("email") or "").lower().strip()
+        assignee = (request.data.get("assignee_email") or "").lower().strip()
+
+        ctx = get_agency_context(email)
+        if ctx is None or not ctx.is_admin:
+            return Response(
+                {"detail": "Only an agency admin can assign tasks.", "code": "forbidden"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            action = UserAction.objects.select_related("analysis_run").get(pk=action_id)
+        except UserAction.DoesNotExist:
+            return Response({"error": "Action not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        org_ids = agency_org_ids(ctx.agency_email)
+        if not action.analysis_run or action.analysis_run.organization_id not in org_ids:
+            return Response(
+                {"detail": "This task is not in your agency.", "code": "forbidden"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if assignee:
+            is_team = (
+                assignee == ctx.agency_email
+                or AgencyMembership.objects.filter(
+                    agency_email=ctx.agency_email,
+                    member_email=assignee,
+                    status=AgencyMembership.Status.ACTIVE,
+                ).exists()
+            )
+            if not is_team:
+                return Response(
+                    {"detail": "That person is not on your team.", "code": "not_member"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        action.assignee_email = assignee
+        action.save(update_fields=["assignee_email"])
+        return Response(UserActionSerializer(action).data)
 
 
 class ActionStatsView(APIView):

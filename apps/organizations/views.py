@@ -25,10 +25,12 @@ class OnboardView(APIView):
          ``/api/analyzer/onboarding-start/`` (bypassed only for internal
          emails and active paying subscribers — never bypassed just because
          an org already exists for this email; see issue #16).
-      3. Plan limit (``project_limit_reached``).
-      4. Duplicate detection by (owner_email, normalized_url) — returns
+      3. Duplicate detection by (owner_email, normalized_url) — returns
          409 + the existing org so the FE can switch to it instead of
-         creating a dupe.
+         creating a dupe. Checked BEFORE the plan limit: re-onboarding an
+         existing domain creates nothing, so it must not 403.
+      4. Plan limit (``project_limit_reached``) — only a genuinely new brand
+         counts against it.
     """
 
     permission_classes = [AllowAny]
@@ -51,13 +53,9 @@ class OnboardView(APIView):
 
         from apps.accounts.subscription_utils import plan_limit_error_response_dict, project_limit_reached
 
-        reached, msg = project_limit_reached(email)
-        if reached:
-            return Response(
-                plan_limit_error_response_dict(msg),
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
+        # Duplicate detection FIRST: re-onboarding an existing domain creates no
+        # new project, so it must not trip the plan limit. Return the existing
+        # org so the FE can switch to it (see issue #16).
         normalized = normalize_url(url)
         if normalized:
             existing = (
@@ -79,6 +77,14 @@ class OnboardView(APIView):
                     },
                     status=status.HTTP_409_CONFLICT,
                 )
+
+        # Only a genuinely new brand counts against the plan limit.
+        reached, msg = project_limit_reached(email)
+        if reached:
+            return Response(
+                plan_limit_error_response_dict(msg),
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         org = serializer.save()
         logger.info("Organization created: %s for %s", org.name, email)
@@ -116,7 +122,16 @@ class OrganizationListView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        orgs = Organization.objects.filter(owner_email=email)
+        # Agency teammates work inside the agency owner's brands, so surface the
+        # agency's orgs (not just orgs they own — members own none).
+        from apps.accounts.agency_utils import get_agency_context
+
+        owner_email = email
+        ctx = get_agency_context(email)
+        if ctx is not None:
+            owner_email = ctx.agency_email
+
+        orgs = Organization.objects.filter(owner_email=owner_email)
         return Response(OrganizationSerializer(orgs, many=True).data)
 
 

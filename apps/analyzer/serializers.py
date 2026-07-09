@@ -432,6 +432,7 @@ class UserActionSerializer(serializers.ModelSerializer):
             "description",
             "points_value",
             "status",
+            "assignee_email",
             "started_at",
             "completed_at",
             "verified_at",

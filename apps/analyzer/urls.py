@@ -13,6 +13,7 @@ from .views import (
     AnalysisRunListView,
     AnalysisRunStatusView,
     ApplyGeoFixesAndReanalyzeView,
+    AssignActionView,
     AutoFixApproveView,
     AutoFixPreviewView,
     AutoFixVerifyView,
@@ -88,6 +89,7 @@ from .views import (
     # Sitemap audit
     SitemapAuditStartView,
     StartAnalysisView,
+    SyncActionsView,
     TopSourcesView,
     UpdateUserActionView,
     UserActionListView,
@@ -297,6 +299,8 @@ urlpatterns = [
     # Action endpoints
     path("actions/", UserActionListView.as_view(), name="action-list"),
     path("actions/create/", CreateUserActionView.as_view(), name="action-create"),
+    path("actions/sync/", SyncActionsView.as_view(), name="action-sync"),
+    path("actions/<int:action_id>/assign/", AssignActionView.as_view(), name="action-assign"),
     path("actions/<int:action_id>/", UpdateUserActionView.as_view(), name="action-update"),
     path("actions/crawl-essentials/", CrawlEssentialsStatusView.as_view(), name="crawl-essentials"),
     path(
