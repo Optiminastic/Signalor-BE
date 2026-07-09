@@ -284,6 +284,10 @@ GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 DATAFORSEO_LOGIN = os.getenv("DATAFORSEO_LOGIN", "")
 DATAFORSEO_PASSWORD = os.getenv("DATAFORSEO_PASSWORD", "")
 
+# Open PageRank — free, Common Crawl–based domain authority metric powering the
+# public Domain Rating tool. Free key from domcop.com/openpagerank.
+OPENPAGERANK_API_KEY = os.getenv("OPENPAGERANK_API_KEY", "")
+
 # Scraping-API fallback for the crawler. When a direct crawl is hard-blocked
 # (e.g. 403 from a Cloudflare/WAF against our datacenter IPs), the crawler
 # re-fetches via this API from residential IPs. Disabled (no behavior change)
@@ -354,6 +358,22 @@ CORS_ALLOWED_ORIGINS = [
 # the preflight (OPTIONS 200) but blocks the actual request — the FE then shows
 # "Cannot reach the server." Extend the defaults rather than replace them.
 CORS_ALLOW_HEADERS = (*default_cors_headers, "x-onboarding-token")
+
+# ── Satellite blog network (shared Neon DB) ───────────────────────────────────
+# Domains of our 5 external Next.js blog sites (category == site). Used to build
+# the live backlink URL (``<domain>/blog/<slug>``) shown in "Our backlinks".
+SATELLITE_SITES = {
+    "research": os.getenv("SATELLITE_SITE_RESEARCH_URL", "https://brightsfindings.com").rstrip("/"),
+    "listicals": os.getenv("SATELLITE_SITE_LISTICALS_URL", "https://thepickpost.com").rstrip("/"),
+    "market_trends": os.getenv("SATELLITE_SITE_MARKET_TRENDS_URL", "https://trendledgers.com").rstrip("/"),
+    "comparison": os.getenv("SATELLITE_SITE_COMPARISON_URL", "https://betterversus.com").rstrip("/"),
+    "step_guide": os.getenv("SATELLITE_SITE_STEP_GUIDE_URL", "https://guidefactories.com").rstrip("/"),
+}
+# Shared blog DB (Signalor writes BlogPost rows; the satellite sites read it).
+# The "blog" connection is added per-env (development/production/staging) where
+# DATABASES is defined. Router sends the BlogPost model to it.
+BLOG_DATABASE_URL = os.getenv("BLOG_DATABASE_URL", "")
+DATABASE_ROUTERS = ["config.db_router.BlogRouter"]
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",

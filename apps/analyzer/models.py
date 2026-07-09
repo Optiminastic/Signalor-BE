@@ -163,6 +163,14 @@ class Recommendation(models.Model):
     # Where this rec came from — "analyzer" (pipeline) or "ai_insight" (GA/GSC AI insights).
     source = models.CharField(max_length=20, choices=Source.choices, default=Source.ANALYZER, db_index=True)
 
+    # ── Daily re-check / re-prioritize state ──────────────────────────────────
+    # Last time the daily job re-verified this fix against the live site.
+    last_checked_at = models.DateTimeField(null=True, blank=True)
+    # Re-ranked order among still-open recs for this run (1 = highest). 0 = unranked.
+    daily_priority_rank = models.IntegerField(default=0)
+    # The single "priority fix of the day" surfaced at the top of Tasks.
+    is_top_fix = models.BooleanField(default=False)
+
     class Meta:
         ordering = ["priority", "pillar"]
 
@@ -1034,6 +1042,42 @@ class ScheduledAnalysis(models.Model):
         return f"Schedule<{self.email} {self.frequency}>"
 
 
+class BacklinkSchedule(models.Model):
+    """Per-brand daily auto-backlinks schedule.
+
+    When active, the ``run_backlink_schedules`` cron command publishes one fresh
+    blog to each of the 5 satellite sites (via ``services.backlink_engine``)
+    every 24 hours, growing the brand's backlink footprint over time. Mirrors
+    ``ScheduledAnalysis``: a per-row ``next_run_at`` the command filters on and
+    bumps by one day after each run.
+    """
+
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="backlink_schedules",
+        null=True,
+        blank=True,
+    )
+    email = models.EmailField(db_index=True)
+    run_slug = models.CharField(max_length=20, blank=True, default="")  # context run; refreshed to latest
+    is_active = models.BooleanField(default=True)
+    next_run_at = models.DateTimeField()
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    last_batch_count = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [("organization", "email")]
+        indexes = [
+            models.Index(fields=["next_run_at", "is_active"]),
+        ]
+
+    def __str__(self):
+        return f"BacklinkSchedule<{self.email} active={self.is_active}>"
+
+
 class AutoFixJob(models.Model):
     class Status(models.TextChoices):
         PREVIEW = "preview"
@@ -1671,3 +1715,54 @@ class ContentSuggestion(models.Model):
 
     def __str__(self):
         return f"ContentSuggestion<{self.target_field} {self.url}>"
+
+
+class BlogPost(models.Model):
+    """A blog post published to a satellite site — stored in the SHARED blog DB.
+
+    No FKs (it lives in a separate DB the satellite sites read standalone). ``site``
+    separates the 5 sites; ``brand_ref`` + ``brand_url`` let Signalor's "Our
+    backlinks" tab filter to a brand. Signalor writes these rows; sites read them.
+    Routed to the ``blog`` database via config.db_router.BlogRouter.
+    """
+
+    class Site(models.TextChoices):
+        RESEARCH = "research", "Research"
+        LISTICALS = "listicals", "Listicals"
+        MARKET_TRENDS = "market_trends", "Market Trends"
+        COMPARISON = "comparison", "Comparison"
+        STEP_GUIDE = "step_guide", "Step Guide"
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        PUBLISHED = "published", "Published"
+
+    site = models.CharField(max_length=20, choices=Site.choices, db_index=True)
+    slug = models.CharField(max_length=160, db_index=True)
+    title = models.CharField(max_length=300)
+    description = models.TextField(blank=True, default="")
+    content_html = models.TextField(blank=True, default="")
+    image_url = models.URLField(max_length=2048, blank=True, default="")
+    category = models.CharField(max_length=80, blank=True, default="")
+    # The brand domain the post links back to (the backlink target).
+    brand_url = models.URLField(max_length=2048, blank=True, default="")
+    # String ref to the Signalor org/brand (no cross-DB FK) for dashboard filtering.
+    brand_ref = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    source = models.CharField(max_length=20, default="signalor")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PUBLISHED)
+    published_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-published_at", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["site", "slug"], name="uniq_blogpost_site_slug"),
+        ]
+        indexes = [
+            models.Index(fields=["site", "status"]),
+            models.Index(fields=["brand_ref"]),
+        ]
+
+    def __str__(self):
+        return f"BlogPost<{self.site}/{self.slug}>"

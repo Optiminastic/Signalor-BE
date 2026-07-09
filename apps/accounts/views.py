@@ -11,6 +11,7 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from dodopayments import AuthenticationError, PermissionDeniedError
 from rest_framework import status
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -1431,6 +1432,23 @@ class DeleteAccountView(APIView):
         )
 
 
+def _get_or_provision_user(email):
+    """Return the Django ``User`` for ``email``, creating it on demand.
+
+    Identity lives in the better-auth session; the Django ``User`` row is a
+    secondary app-data store (profile photo, phone, tour flag) that may not
+    exist yet for an authenticated email. Mirror the ``Subscription``
+    get_or_create pattern so profile writes don't 404 for a real user.
+    """
+    from .models import User
+
+    user, created = User.objects.get_or_create(email=email, defaults={"username": email})
+    if created:
+        user.set_unusable_password()
+        user.save(update_fields=["password"])
+    return user
+
+
 class ProfileView(APIView):
     """GET /api/account/profile/?email= — user-editable profile fields.
 
@@ -1477,16 +1495,11 @@ class ProfileView(APIView):
 
     def patch(self, request):
         """Update editable name / phone fields. Email is identity, not editable here."""
-        from .models import User
-
         email = (request.data.get("email") or "").lower().strip()
         if not email:
             return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
-            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        user = _get_or_provision_user(email)
 
         changed = []
         for field in ("first_name", "last_name", "phone_number"):
@@ -1515,12 +1528,14 @@ class ProfilePhotoView(APIView):
     """
 
     permission_classes = [AllowAny]
+    # The project's global DRF config only enables JSONParser; a file upload
+    # needs multipart, so opt this view into the form parsers explicitly.
+    parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
-        from .models import User
-        from .profile_storage import delete_photo, is_b2_enabled, photo_url, upload_photo
+        from .profile_storage import delete_photo, is_storage_enabled, photo_url, upload_photo
 
-        if not is_b2_enabled():
+        if not is_storage_enabled():
             return Response(
                 {"error": "Photo uploads are not configured on this server."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -1530,10 +1545,7 @@ class ProfilePhotoView(APIView):
         if not email:
             return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
-            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        user = _get_or_provision_user(email)
 
         photo = request.FILES.get("photo")
         if not photo:
@@ -1567,7 +1579,8 @@ class ProfilePhotoView(APIView):
         try:
             user = User.objects.get(email=email)
         except User.DoesNotExist:
-            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+            # No row, nothing to remove — succeed idempotently.
+            return Response({"photo_url": None})
 
         if user.profile_photo_key:
             delete_photo(user.profile_photo_key)

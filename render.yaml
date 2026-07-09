@@ -75,6 +75,11 @@ services:
           type: redis
           name: signalor-redis
           property: connectionString
+      # Broker for the analysis Celery app (config.celery_rabbit). Without it the
+      # dispatcher falls back to running analyses inline in a web thread instead
+      # of handing them to signalor-analysis-worker. External broker (CloudAMQP).
+      - key: RABBITMQ_URL
+        sync: false
       - key: ALLOWED_HOSTS
         value: api.signalor.ai,signalor-backend.onrender.com
       - key: CORS_ALLOWED_ORIGINS
@@ -202,6 +207,53 @@ services:
           type: redis
           name: signalor-redis
           property: connectionString
+      - key: ALLOWED_HOSTS
+        value: api.signalor.ai
+      - key: FRONTEND_BASE_URL
+        value: https://signalor.ai
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DATAFORSEO_LOGIN
+        sync: false
+      - key: DATAFORSEO_PASSWORD
+        sync: false
+
+  - type: worker
+    name: signalor-analysis-worker
+    runtime: python
+    plan: starter
+    region: oregon
+    buildCommand: ./build.sh
+    # Dedicated worker for the analyze / re-analyze pipeline on the RabbitMQ
+    # Celery app (config.celery_rabbit). Sitemap audits stay on the Redis
+    # worker above. Bump --concurrency as analysis volume grows.
+    startCommand: celery -A config.celery_rabbit worker -Q analysis --loglevel=info --concurrency=2
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: signalor-backend
+          envVarKey: SECRET_KEY
+      - key: DATABASE_URL
+        fromDatabase:
+          name: signalor-db
+          property: connectionString
+      # Still needed: the analysis pipeline reads/invalidates the Redis cache.
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: signalor-redis
+          property: connectionString
+      # Render has no managed RabbitMQ — point this at an external broker
+      # (e.g. CloudAMQP): amqp://user:pass@host:5672/vhost
+      - key: RABBITMQ_URL
+        sync: false
       - key: ALLOWED_HOSTS
         value: api.signalor.ai
       - key: FRONTEND_BASE_URL
@@ -391,3 +443,50 @@ services:
         sync: false
       - key: DEFAULT_FROM_EMAIL
         value: hello@signalor.ai
+
+  # Daily auto-backlinks — hourly tick publishes one fresh blog to each of the 5
+  # satellite sites for every brand whose schedule is due, then reschedules +24h.
+  # Brands' next_run_at spread across the day, so load is spread and each brand
+  # gets its 5-blog batch ~24h apart. run_auto_backlinks is idempotent per day.
+  - type: cron
+    name: signalor-backlink-scheduler
+    runtime: python
+    plan: starter
+    region: oregon
+    schedule: "0 * * * *"
+    buildCommand: ./build.sh
+    startCommand: python manage.py run_backlink_schedules
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: signalor-backend
+          envVarKey: SECRET_KEY
+      - key: DATABASE_URL
+        fromDatabase:
+          name: signalor-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: signalor-redis
+          property: connectionString
+      - key: ALLOWED_HOSTS
+        value: api.signalor.ai
+      # Gemini generates the blogs; the S3 backlink store persists them.
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_BUCKET
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_REGION
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_PREFIX
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_ACCESS_KEY_ID
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_SECRET_ACCESS_KEY
+        sync: false

@@ -1,5 +1,7 @@
+from django.conf import settings
 from django.contrib import admin
-from django.urls import include, path
+from django.urls import include, path, re_path
+from django.views.static import serve
 
 from apps.analyzer.views import HealthCheckView
 
@@ -20,4 +22,12 @@ urlpatterns = [
     path("api/referrals/", include("apps.referrals.urls")),
     path("api/partners/", include("apps.partners.urls")),
     path("api/", include("apps.accounts.urls")),
+    # Serve user-uploaded media (e.g. profile photos saved via the local
+    # filesystem fallback when B2 is not configured). Prod uses B2 and never
+    # hits this route.
+    re_path(
+        rf"^{settings.MEDIA_URL.lstrip('/')}(?P<path>.*)$",
+        serve,
+        {"document_root": settings.MEDIA_ROOT},
+    ),
 ]

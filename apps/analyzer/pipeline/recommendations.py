@@ -1879,3 +1879,68 @@ def generate_recommendations(
         rec.pop("fixable", None)
 
     return top
+
+
+# ── Daily re-prioritization ───────────────────────────────────────────────────
+
+_PRIORITY_SEVERITY = {"critical": 100, "high": 60, "medium": 30, "low": 30}
+
+
+def reprioritize_run_recommendations(run) -> int:
+    """Re-rank a run's still-open recommendations and flag the single top fix.
+
+    "Open" = no AutoFixJob marking the rec verified/success. Each open rec is
+    scored with the same weights the generator uses (impact 0.4 + pillar urgency
+    0.4 + priority severity 0.2) plus a small boost for fixes that have stayed
+    open longer, so "if not done, prioritize it" holds. Writes
+    ``daily_priority_rank`` (1 = top) and sets ``is_top_fix`` on rank 1 (one per
+    run). Returns the number of open recs ranked.
+    """
+    from django.utils import timezone
+
+    from apps.analyzer.models import AutoFixJob, PageScore, Recommendation
+
+    recs = list(run.recommendations.all())
+    if not recs:
+        return 0
+
+    done_ids = set(
+        AutoFixJob.objects.filter(
+            analysis_run=run,
+            status__in=[AutoFixJob.Status.VERIFIED, AutoFixJob.Status.SUCCESS],
+        ).values_list("recommendation_id", flat=True)
+    )
+
+    # Pillar urgency from the homepage PageScore when available (lower = more urgent).
+    pillar_scores: dict[str, float] = {}
+    ps = PageScore.objects.filter(analysis_run=run).order_by("id").first()
+    if ps:
+        for pillar in ("content", "schema", "eeat", "technical", "entity", "ai_visibility"):
+            pillar_scores[pillar] = float(getattr(ps, f"{pillar}_score", 0) or 0)
+
+    now = timezone.now()
+    days_open = max(0, (now - run.created_at).days) if getattr(run, "created_at", None) else 0
+    age_boost = min(days_open * 2, 20)
+
+    open_recs = [r for r in recs if r.id not in done_ids]
+
+    def _score(r) -> float:
+        impact = IMPACT_SCORES.get(r.finding_code or r.finding_key or "", 50)
+        urgency = 100 - pillar_scores.get(r.pillar, 50)
+        sev = _PRIORITY_SEVERITY.get(r.priority, 30)
+        return impact * 0.4 + urgency * 0.4 + sev * 0.2 + age_boost
+
+    open_recs.sort(key=_score, reverse=True)
+    rank_map = {r.id: i + 1 for i, r in enumerate(open_recs)}
+
+    to_update = []
+    for r in recs:
+        new_rank = rank_map.get(r.id, 0)
+        new_top = new_rank == 1
+        if r.daily_priority_rank != new_rank or r.is_top_fix != new_top:
+            r.daily_priority_rank = new_rank
+            r.is_top_fix = new_top
+            to_update.append(r)
+    if to_update:
+        Recommendation.objects.bulk_update(to_update, ["daily_priority_rank", "is_top_fix"])
+    return len(open_recs)
