@@ -29,6 +29,12 @@ from .views import (
     ShopifyDisconnectView,
     ShopifyLinkAppView,
     ShopifySyncView,
+    WebflowAuthURLView,
+    WebflowCallbackView,
+    WebflowDisconnectView,
+    WebflowPagesView,
+    WebflowSelectSiteView,
+    WebflowSitesView,
     WooCommerceConnectView,
     WooCommerceDataView,
     WooCommerceDisconnectView,
@@ -208,6 +214,15 @@ urlpatterns = [
         WordPressDataView.as_view(),
         name="wordpress-data",
     ),
+
+    # Webflow (OAuth + content editing via Webflow Data API v2)
+    path("webflow/auth-url/",    WebflowAuthURLView.as_view(),    name="webflow-auth-url"),
+    path("webflow/callback/",    WebflowCallbackView.as_view(),   name="webflow-callback"),
+    path("webflow/sites/",       WebflowSitesView.as_view(),      name="webflow-sites"),
+    path("webflow/select-site/", WebflowSelectSiteView.as_view(), name="webflow-select-site"),
+    path("webflow/pages/",       WebflowPagesView.as_view(),      name="webflow-pages"),
+    path("webflow/disconnect/",  WebflowDisconnectView.as_view(), name="webflow-disconnect"),
+
     # WooCommerce
     path("woocommerce/connect/", WooCommerceConnectView.as_view(), name="woocommerce-connect"),
     path("woocommerce/disconnect/", WooCommerceDisconnectView.as_view(), name="woocommerce-disconnect"),

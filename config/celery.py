@@ -22,3 +22,12 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 # default `tasks` module) so we don't accidentally pick up threading-only
 # helpers that live in `apps/<x>/tasks.py`.
 app.autodiscover_tasks(related_name="celery_tasks")
+
+# Push-based liveness: ping a Better Stack heartbeat monitor while this worker
+# runs. No-op unless BETTERSTACK_HEARTBEAT_URL_SITEMAP is set (i.e. only the
+# signalor-celery-worker service, per render.yaml).
+from config.heartbeat import register_worker_heartbeat  # noqa: E402
+
+register_worker_heartbeat(
+    app, os.getenv("BETTERSTACK_HEARTBEAT_URL_SITEMAP", ""), label="sitemap"
+)

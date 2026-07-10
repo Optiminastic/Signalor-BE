@@ -118,6 +118,25 @@ class RecommendationSerializer(serializers.ModelSerializer):
 
         return is_agent_fixable(obj.finding_code or "")
 
+    def _store_provider(self, obj) -> str:
+        """Resolve the org's active store provider (cached per org on self)."""
+        run = obj.analysis_run
+        org = getattr(run, "organization", None) if run else None
+        if not org:
+            return ""
+        cache = getattr(self, "_provider_cache", None)
+        if cache is None:
+            cache = {}
+            self._provider_cache = cache
+        if org.id in cache:
+            return cache[org.id]
+        from .integration_resolve import resolve_store_integration_for_run
+
+        integ = resolve_store_integration_for_run(org, run.url or "")
+        provider = integ.provider if integ else ""
+        cache[org.id] = provider
+        return provider
+
     def get_can_auto_fix(self, obj):
         title_lower = (obj.title or "").lower()
 
@@ -139,16 +158,33 @@ class RecommendationSerializer(serializers.ModelSerializer):
             except Exception:
                 pass
 
-        # On homepage: only specific fix types can auto-apply
-        if is_homepage:
+        provider = self._store_provider(obj)
+
+        # Webflow's Data API auto-applies page SEO title/description (PUT) and
+        # JSON-LD schema (site custom-code injection). FAQ/content/author still
+        # need the Webflow Designer, so keep those manual (honest).
+        if provider == "webflow":
+            webflow_auto = (
+                "meta description",
+                "seo title",
+                "title tag",
+                "meta title",
+                "schema",
+                "json-ld",
+                "structured data",
+            )
+            return any(kw in title_lower for kw in webflow_auto)
+
+        # The homepage-manual restriction is Shopify-specific: on Shopify the
+        # homepage's content/meta/schema live in the theme, so they can't be
+        # pushed to a page. WordPress homepages ARE real, editable pages.
+        if is_homepage and provider == "shopify":
             for kw in self.AUTO_FIX_TITLE_KEYWORDS:
                 if kw in title_lower:
                     return True
-            # Schema category on homepage = theme extension (auto)
-            # but schema issues like "missing schema" on homepage = manual
             return False
 
-        # On product/page URLs: most things can be auto-fixed
+        # On product/page URLs (and WP homepages): most things auto-fix.
         return True
 
 

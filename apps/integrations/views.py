@@ -174,30 +174,31 @@ def _verify_state(state_str: str) -> dict | None:
     return None
 
 
+_STORE_PROVIDERS = (
+    Integration.Provider.SHOPIFY,
+    Integration.Provider.WORDPRESS,
+    Integration.Provider.WEBFLOW,
+)
+
+
 def _deactivate_other_store_integration(org: Organization, keep_provider: str) -> None:
     """
-    Only one store platform (WordPress or Shopify) may be active per organization.
-    When connecting `keep_provider`, deactivate the other integration row if present.
+    Only one store platform (WordPress, Shopify, or Webflow) may be active per
+    organization. When connecting `keep_provider`, deactivate any other store
+    integration rows so `resolve_store_integration_for_run` stays unambiguous.
     """
-    if keep_provider not in (
-        Integration.Provider.SHOPIFY,
-        Integration.Provider.WORDPRESS,
-    ):
+    if keep_provider not in _STORE_PROVIDERS:
         return
-    other = (
-        Integration.Provider.WORDPRESS
-        if keep_provider == Integration.Provider.SHOPIFY
-        else Integration.Provider.SHOPIFY
-    )
+    others = [p for p in _STORE_PROVIDERS if p != keep_provider]
     n = Integration.objects.filter(
         organization=org,
-        provider=other,
+        provider__in=others,
         is_active=True,
     ).update(is_active=False)
     if n:
         logger.info(
-            "Deactivated %s for org %s; %s is now the active store.",
-            other,
+            "Deactivated %d other store integration(s) for org %s; %s is now the active store.",
+            n,
             org.id,
             keep_provider,
         )
@@ -2620,3 +2621,384 @@ class WooCommerceDataView(APIView):
 
         serializer = WooCommerceDataSnapshotSerializer(snapshot)
         return Response(serializer.data)
+
+
+# ============================================================================
+# Webflow (OAuth + content editing via the Webflow Data API v2)
+# ============================================================================
+
+
+def _get_active_webflow(org: Organization) -> Integration | None:
+    return Integration.objects.filter(
+        organization=org,
+        provider=Integration.Provider.WEBFLOW,
+        is_active=True,
+    ).first()
+
+
+class WebflowAuthURLView(APIView):
+    """GET /api/integrations/webflow/auth-url/?email=&return_to=&org_id=
+
+    Returns the Webflow OAuth consent URL. The frontend redirects the user
+    to it; Webflow calls back to WebflowCallbackView with a code.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from .services.webflow import WebflowNotConfigured, build_authorize_url
+
+        email = request.query_params.get("email", "").lower().strip()
+        if not email:
+            return Response(
+                {"error": "Email parameter is required."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        org_id = request.query_params.get("org_id")
+        org_id = int(org_id) if org_id and org_id.isdigit() else None
+        org, err = _resolve_org(email, org_id)
+        if err:
+            return err
+
+        allowed, sub_err = integration_connect_allowed_for_email(email)
+        if not allowed:
+            return Response({"error": sub_err}, status=status.HTTP_403_FORBIDDEN)
+
+        state = _sign_state(
+            {
+                "org_id": org.id,
+                "email": email,
+                "return_to": (request.query_params.get("return_to") or "").strip(),
+                "frontend_base": (request.query_params.get("frontend_base") or "").strip(),
+            }
+        )
+        try:
+            auth_url = build_authorize_url(state)
+        except WebflowNotConfigured as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response({"auth_url": auth_url})
+
+
+class WebflowCallbackView(APIView):
+    """GET /api/integrations/webflow/callback/?code=&state=
+
+    Exchanges the code for a token, stores the integration, and picks the
+    Webflow site. If the account has exactly one site we auto-select it;
+    otherwise we store the token and redirect with webflow=select_site so the
+    frontend can prompt for a choice.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from .services.webflow import (
+            WebflowClient,
+            WebflowError,
+            WebflowNotConfigured,
+            exchange_code,
+        )
+
+        def _redirect(ok, reason="", return_to="", frontend_base="", extra=""):
+            base = frontend_base or os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
+            safe_return = return_to or "/dashboard"
+            sep = "&" if "?" in safe_return else "?"
+            qs = f"webflow={'connected' if ok else 'error'}"
+            if not ok and reason:
+                qs += f"&reason={reason}"
+            if ok and extra:
+                qs += f"&{extra}"
+            return HttpResponseRedirect(f"{base}{safe_return}{sep}{qs}")
+
+        code = request.query_params.get("code", "").strip()
+        state = request.query_params.get("state", "").strip()
+        if not code:
+            return _redirect(False, "missing_code")
+
+        # Two entry points:
+        #  1. Signalor-initiated ("Connect Webflow" button) — `state` is a
+        #     signed payload carrying the org/email.
+        #  2. Webflow-initiated (Install from the Webflow Apps panel) — no
+        #     `state`; we identify the org from the authorizing Webflow user's
+        #     email instead.
+        payload = _verify_state(state) if state else None
+        return_to = payload.get("return_to", "") if payload else ""
+        frontend_base = payload.get("frontend_base", "") if payload else ""
+
+        try:
+            token = exchange_code(code)
+        except WebflowNotConfigured:
+            return _redirect(False, "oauth_not_configured", return_to, frontend_base)
+        except WebflowError:
+            return _redirect(False, "token_exchange_failed", return_to, frontend_base)
+
+        try:
+            client = WebflowClient(token)
+        except WebflowError:
+            return _redirect(False, "token_exchange_failed", return_to, frontend_base)
+
+        # Resolve the org.
+        org = None
+        if payload:
+            org_id = payload.get("org_id")
+            if org_id:
+                org = Organization.objects.filter(pk=org_id).first()
+            if org is None:
+                email = (payload.get("email") or "").lower().strip()
+                if email:
+                    org = Organization.objects.filter(owner_email=email).first()
+        else:
+            # No state → match by the authorizing Webflow user's email.
+            try:
+                user = client.get_authorized_user()
+                email = (user.get("email") or "").lower().strip()
+            except WebflowError:
+                email = ""
+            if email:
+                org = Organization.objects.filter(owner_email__iexact=email).first()
+            if org is None:
+                logger.warning("Webflow install had no state and no matching Signalor org (email=%r).", email)
+                return _redirect(False, "no_matching_account", return_to, frontend_base)
+
+        if org is None:
+            return _redirect(False, "org_not_found", return_to, frontend_base)
+
+        try:
+            sites = client.list_sites()
+        except WebflowError:
+            logger.exception("Webflow list_sites failed after OAuth")
+            return _redirect(False, "sites_fetch_failed", return_to, frontend_base)
+
+        integration, _ = Integration.objects.update_or_create(
+            organization=org,
+            provider=Integration.Provider.WEBFLOW,
+            defaults={"is_active": True},
+        )
+        integration.set_access_token(token)
+
+        # Persist a lightweight site list for the select-site prompt.
+        site_choices = [
+            {
+                "id": s.get("id"),
+                "name": s.get("displayName") or s.get("shortName") or s.get("id"),
+                "short_name": s.get("shortName", ""),
+                "preview_url": s.get("previewUrl", ""),
+            }
+            for s in sites
+            if s.get("id")
+        ]
+
+        # Auto-select when unambiguous: exactly one authorized site, OR one
+        # whose domain matches the org's URL (so a multi-site account still
+        # lands on the right site without a manual pick).
+        from .services.webflow import _host_of, _site_domains
+
+        chosen = None
+        if len(site_choices) == 1:
+            chosen = site_choices[0]
+        elif org.url:
+            host = _host_of(org.url)
+            for s in sites:
+                if host and any(
+                    host == d or host.endswith("." + d) or d.endswith("." + host)
+                    for d in _site_domains(s)
+                ):
+                    chosen = next((c for c in site_choices if c["id"] == s.get("id")), None)
+                    break
+
+        if chosen:
+            integration.metadata = {
+                "site_id": chosen["id"],
+                "site_name": chosen["name"],
+                "auth_type": "oauth",
+                "sites": site_choices,
+            }
+            integration.save()
+            _deactivate_other_store_integration(org, Integration.Provider.WEBFLOW)
+            _maybe_set_org_url_from_webflow(org, client, chosen["id"])
+            return _redirect(True, return_to=return_to, frontend_base=frontend_base)
+
+        # 0 or many sites — store token + choices, let the user pick.
+        integration.metadata = {
+            "site_id": "",
+            "auth_type": "oauth",
+            "sites": site_choices,
+        }
+        integration.save()
+        return _redirect(
+            True, return_to=return_to, frontend_base=frontend_base, extra="webflow_state=select_site"
+        )
+
+
+def _maybe_set_org_url_from_webflow(org, client, site_id) -> None:
+    """Best-effort: set org.url from the Webflow site's default/custom domain."""
+    try:
+        site = client.get_site(site_id)
+    except Exception:
+        return
+    url = ""
+    domains = site.get("customDomains") or []
+    if domains and domains[0].get("url"):
+        url = domains[0]["url"]
+    elif site.get("previewUrl"):
+        url = site["previewUrl"]
+    if url:
+        if not url.startswith("http"):
+            url = f"https://{url}"
+        if org.url != url:
+            org.url = url
+            org.save(update_fields=["url"])
+
+
+class WebflowSitesView(APIView):
+    """GET /api/integrations/webflow/sites/?email=&org_id=
+
+    Return the connected account's Webflow sites (for the select-site prompt).
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        email = request.query_params.get("email", "").lower().strip()
+        org_id = request.query_params.get("org_id")
+        org_id = int(org_id) if org_id and org_id.isdigit() else None
+        org, err = _resolve_org(email, org_id)
+        if err:
+            return err
+        integration = _get_active_webflow(org)
+        if not integration:
+            return Response({"error": "Webflow not connected."}, status=status.HTTP_404_NOT_FOUND)
+        meta = integration.metadata or {}
+        return Response(
+            {"sites": meta.get("sites", []), "selected_site_id": meta.get("site_id", "")}
+        )
+
+
+class WebflowSelectSiteView(APIView):
+    """POST /api/integrations/webflow/select-site/  {email, site_id, org_id?}"""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from .services.webflow import WebflowClient, WebflowError
+
+        email = (request.data.get("email", "") or "").lower().strip()
+        site_id = (request.data.get("site_id", "") or "").strip()
+        org_id = request.data.get("org_id")
+        org_id = int(org_id) if isinstance(org_id, int) or (org_id and str(org_id).isdigit()) else None
+
+        if not email or not site_id:
+            return Response(
+                {"error": "email and site_id are required."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        org, err = _resolve_org(email, org_id)
+        if err:
+            return err
+        integration = _get_active_webflow(org)
+        if not integration:
+            return Response({"error": "Webflow not connected."}, status=status.HTTP_404_NOT_FOUND)
+
+        meta = integration.metadata or {}
+        sites = meta.get("sites", [])
+        chosen = next((s for s in sites if s.get("id") == site_id), None)
+        if not chosen:
+            return Response({"error": "Site not found on this account."}, status=status.HTTP_400_BAD_REQUEST)
+
+        meta["site_id"] = site_id
+        meta["site_name"] = chosen.get("name", site_id)
+        integration.metadata = meta
+        integration.save(update_fields=["metadata", "updated_at"])
+        _deactivate_other_store_integration(org, Integration.Provider.WEBFLOW)
+
+        try:
+            _maybe_set_org_url_from_webflow(org, WebflowClient(integration.get_access_token()), site_id)
+        except WebflowError:
+            pass
+
+        return Response(
+            {
+                "message": f"Selected Webflow site “{chosen.get('name', site_id)}”.",
+                "integration": IntegrationSerializer(integration).data,
+            }
+        )
+
+
+class WebflowPagesView(APIView):
+    """GET /api/integrations/webflow/pages/?email=&org_id=
+
+    List the connected Webflow site's pages (id, title, slug, url).
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from .services.webflow import (
+            WebflowError,
+            _client_from_integration,
+            resolve_site_id_for_url,
+        )
+
+        email = request.query_params.get("email", "").lower().strip()
+        org_id = request.query_params.get("org_id")
+        org_id = int(org_id) if org_id and org_id.isdigit() else None
+        org, err = _resolve_org(email, org_id)
+        if err:
+            return err
+        integration = _get_active_webflow(org)
+        if not integration:
+            return Response({"error": "Webflow not connected."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            client = _client_from_integration(integration)
+            site_id = resolve_site_id_for_url(integration, org.url or "")
+            pages = client.list_pages(site_id)
+        except WebflowError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        base_url = (org.url or "").rstrip("/")
+        out = []
+        for p in pages:
+            slug = (p.get("slug") or "").strip("/")
+            path = "/" if (p.get("isHomePage") or not slug) else f"/{slug}"
+            out.append(
+                {
+                    "id": p.get("id"),
+                    "title": p.get("title") or slug or "Home",
+                    "slug": slug,
+                    "path": path,
+                    "url": f"{base_url}{path}" if base_url else path,
+                    "is_home": bool(p.get("isHomePage")),
+                }
+            )
+        return Response({"pages": out})
+
+
+class WebflowDisconnectView(APIView):
+    """DELETE /api/integrations/webflow/disconnect/?email=&org_id="""
+
+    permission_classes = [AllowAny]
+
+    def delete(self, request):
+        email = request.query_params.get("email", "").lower().strip()
+        if not email:
+            return Response(
+                {"error": "Email parameter is required."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        org_id = request.query_params.get("org_id")
+        org_id = int(org_id) if org_id and org_id.isdigit() else None
+        org, err = _resolve_org(email, org_id)
+        if err:
+            return err
+
+        try:
+            integration = Integration.objects.get(
+                organization=org,
+                provider=Integration.Provider.WEBFLOW,
+            )
+        except Integration.DoesNotExist:
+            return Response(
+                {"error": "Webflow integration not found."}, status=status.HTTP_404_NOT_FOUND
+            )
+
+        integration.delete()
+        return Response({"message": "Webflow disconnected."})

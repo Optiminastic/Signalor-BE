@@ -704,9 +704,13 @@ def apply_element_edit(
     url: str,
     original_text: str,
     new_text: str,
+    tag: str = "",
 ) -> dict:
     """Replace `original_text` inside the page's body_html with `new_text`,
     then push the updated body_html through the connected plugin.
+
+    `tag` is the clicked element's HTML tag (e.g. "h2"); it disambiguates which
+    node to edit when the same text appears more than once (used by Webflow).
 
     First-occurrence replacement — fragile when the same text appears multiple
     times, but acceptable for v1 since most landing pages have unique copy.
@@ -719,6 +723,35 @@ def apply_element_edit(
         raise ContentOptimisationError("original and new text are required")
     if original_text == new_text:
         return {"saved": [], "failed": [], "plugin_responses": {}, "noop": True}
+
+    # Webflow: edit the DOM text node directly via the Data API (Webflow has no
+    # editable body_html blob — text lives in individual nodes addressed by id).
+    integration = (
+        resolve_store_integration_for_run(run.organization, url) if run.organization_id else None
+    )
+    if integration and integration.provider == "webflow":
+        from apps.integrations.services.webflow import (
+            WebflowError,
+            replace_visible_text_on_url,
+        )
+
+        try:
+            result = replace_visible_text_on_url(integration, url, original_text, new_text, tag)
+        except WebflowError as exc:
+            raise ContentOptimisationError(str(exc)) from exc
+        if result.get("ok"):
+            return {
+                "saved": ["body_html"],
+                "failed": [],
+                "plugin_responses": {
+                    "type": "webflow_dom",
+                    "node_id": result.get("node_id", ""),
+                    "message": result.get("message", ""),
+                },
+            }
+        raise ContentOptimisationError(
+            result.get("message", "Couldn't update that text in Webflow.")
+        )
 
     fields = fetch_page_fields(run, url)
     body_html = fields.get("body_html") or ""

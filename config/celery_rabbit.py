@@ -78,6 +78,15 @@ analysis_app.conf.task_routes = {"analyzer.run_analysis": {"queue": "analysis"}}
 # task registers on this RabbitMQ app.
 analysis_app.autodiscover_tasks(related_name="analysis_tasks")
 
+# Push-based liveness: ping a Better Stack heartbeat monitor while this worker
+# runs. No-op unless BETTERSTACK_HEARTBEAT_URL_ANALYSIS is set (i.e. only the
+# signalor-analysis-worker service, per render.yaml).
+from config.heartbeat import register_worker_heartbeat  # noqa: E402
+
+register_worker_heartbeat(
+    analysis_app, os.getenv("BETTERSTACK_HEARTBEAT_URL_ANALYSIS", ""), label="analysis"
+)
+
 
 @worker_ready.connect
 def _ensure_dlq_topology(sender=None, **_):

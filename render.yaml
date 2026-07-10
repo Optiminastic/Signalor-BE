@@ -168,6 +168,22 @@ services:
         sync: false
       - key: B2_REGION
         sync: false
+      # Satellite blog network (auto-backlinks) S3 store. The public read API
+      # (PublicBlogListView/DetailView) and the manual "Add"/edit/delete endpoints
+      # run on THIS web service, so it needs the same S3 creds as the
+      # signalor-backlink-scheduler cron — otherwise reads return [] and the
+      # satellite sites 404. Set the values (and matching PREFIX) in the Render
+      # dashboard; PREFIX must match what wrote the posts or the folder reads empty.
+      - key: BACKLINKS_BLOG_AWS_BUCKET
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_REGION
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_PREFIX
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_ACCESS_KEY_ID
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_SECRET_ACCESS_KEY
+        sync: false
 
   - type: worker
     name: signalor-celery-worker
@@ -219,6 +235,11 @@ services:
         sync: false
       - key: DATAFORSEO_PASSWORD
         sync: false
+      # Better Stack Uptime heartbeat monitor URL for this (sitemap) worker.
+      # While the worker runs it pings this URL every ~60s; if it stops, Better
+      # Stack alerts after the monitor's grace period. Unset → heartbeat off.
+      - key: BETTERSTACK_HEARTBEAT_URL_SITEMAP
+        sync: false
 
   - type: worker
     name: signalor-analysis-worker
@@ -265,6 +286,11 @@ services:
       - key: DATAFORSEO_LOGIN
         sync: false
       - key: DATAFORSEO_PASSWORD
+        sync: false
+      # Better Stack Uptime heartbeat monitor URL for this (analysis) worker.
+      # While the worker runs it pings this URL every ~60s; if it stops, Better
+      # Stack alerts after the monitor's grace period. Unset → heartbeat off.
+      - key: BETTERSTACK_HEARTBEAT_URL_ANALYSIS
         sync: false
 
   - type: cron

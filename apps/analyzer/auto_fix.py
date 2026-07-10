@@ -220,8 +220,13 @@ def _send_to_plugin(integration, run, fix_type: str, content: str) -> dict:
         return _send_to_wp_plugin(integration, run, fix_type, content)
     elif provider == "shopify":
         return _send_to_shopify_app(integration, run, fix_type, content)
+    elif provider == "webflow":
+        return _send_to_webflow(integration, run, fix_type, content)
     else:
-        return {"status": "failed", "message": f"Unknown provider: {provider}. Connect WordPress or Shopify."}
+        return {
+            "status": "failed",
+            "message": f"Unknown provider: {provider}. Connect WordPress, Shopify, or Webflow.",
+        }
 
 
 def _build_payload(fix_type: str, url: str, content: str, shop: str = "") -> dict:
@@ -330,6 +335,98 @@ def _send_to_shopify_app(integration, run, fix_type: str, content: str) -> dict:
     except Exception as exc:
         logger.warning("Shopify app error: %s", exc)
         return {"status": "failed", "message": f"Could not reach Shopify app: {exc}"}
+
+
+_WEBFLOW_MANUAL_HINTS = {
+    "schema": (
+        "Webflow: add this JSON-LD in Site Settings → Custom Code → Head Code "
+        "(or Page Settings → Custom Code for a single page), then publish."
+    ),
+    "ai_meta": (
+        "Webflow: add these AI-crawler meta tags in Page Settings → Custom Code → "
+        "Inside <head> tag, then publish."
+    ),
+    "llms": (
+        "Webflow doesn't serve a root /llms.txt on its hosting. Host it on a "
+        "subdomain/proxy you control, or add the content to a published page."
+    ),
+    "robots": (
+        "Webflow: edit robots.txt under Site Settings → SEO → Indexing "
+        "(the Data API can't write it), then publish."
+    ),
+    "content": (
+        "Webflow: add this content by editing the page in the Webflow Designer, "
+        "or use Signalor's visual Content editor to change existing text directly."
+    ),
+    "faq": (
+        "Webflow: add these Q&As as an FAQ section in the Webflow Designer, "
+        "then publish."
+    ),
+}
+
+
+def _send_to_webflow(integration, run, fix_type: str, content: str) -> dict:
+    """Apply a fix to a Webflow site via the Webflow Data API v2.
+
+    Only ``meta`` (SEO title/description) can be written cleanly through the
+    API today; everything else returns copy-paste guidance with the generated
+    content. Visible on-page text is edited through the Content editor
+    (content_optimisation.apply_element_edit), not here.
+    """
+    from apps.integrations.services.webflow import (
+        WebflowError,
+        WebflowNotConfigured,
+        apply_schema_via_custom_code,
+        apply_seo_to_url,
+    )
+
+    if not (integration.metadata or {}).get("site_id"):
+        return {
+            "status": "failed",
+            "message": "No Webflow site selected. Finish connecting Webflow in Settings → Integrations.",
+        }
+
+    if fix_type == "schema":
+        try:
+            return apply_schema_via_custom_code(integration, run.url or "", content)
+        except WebflowNotConfigured as exc:
+            return {"status": "failed", "message": str(exc)}
+        except WebflowError as exc:
+            return {"status": "failed", "message": f"Webflow API error: {exc}"}
+        except Exception as exc:
+            logger.exception("Webflow schema apply failed")
+            return {"status": "failed", "message": f"Could not update Webflow: {exc}"}
+
+    if fix_type == "meta":
+        try:
+            meta = json.loads(content)
+            seo_title = meta.get("seo_title", "")
+            seo_description = meta.get("seo_description", "")
+        except (ValueError, TypeError):
+            seo_title, seo_description = content, ""
+        try:
+            return apply_seo_to_url(integration, run.url or "", seo_title, seo_description)
+        except WebflowNotConfigured as exc:
+            return {"status": "failed", "message": str(exc)}
+        except WebflowError as exc:
+            return {"status": "failed", "message": f"Webflow API error: {exc}"}
+        except Exception as exc:
+            logger.exception("Webflow meta apply failed")
+            return {"status": "failed", "message": f"Could not update Webflow: {exc}"}
+
+    # Everything else → manual guidance. Only surface generated content when
+    # it's a concise, paste-ready snippet (JSON-LD, a small file). content/faq
+    # generate a full-page HTML rewrite that's useless (and overwhelming) as
+    # manual guidance — show just the instruction for those.
+    hint = _WEBFLOW_MANUAL_HINTS.get(fix_type, "Apply this change in the Webflow Designer, then publish.")
+    pasteable = {"schema", "ai_meta", "llms", "robots"}
+    if fix_type in pasteable and content and content not in ("enabled", run.url):
+        return {
+            "status": "manual",
+            "message": f"{hint}\n\n{content}",
+            "generated_content": content,
+        }
+    return {"status": "manual", "message": hint, "generated_content": ""}
 
 
 # ── Content Reader (read-only, for LLM prompt context) ───────────────────
@@ -879,12 +976,19 @@ def apply_fixes(run, integration, recommendations: list[Recommendation]) -> list
             job.response_data = result
             job.save(update_fields=["status", "response_data"])
 
+            # Surface a verifiable link to the changed page + a short summary of
+            # what changed. Fall back to the run URL so every successful fix has
+            # a "view on your site" link, not just Webflow.
+            changed_url = result.get("changed_url") or (run.url if norm == "success" else "")
+
             results.append(
                 {
                     "recommendation_id": rec.id,
                     "status": norm,
                     "message": result.get("message", ""),
                     "fix_type": fix_type,
+                    "changed_url": changed_url or "",
+                    "changes": result.get("changes", ""),
                 }
             )
         except Exception as e:

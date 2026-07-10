@@ -345,10 +345,10 @@ def _generate_blog_draft(
     from .pipeline.llm import ask_llm
 
     word_target, min_words, max_tokens = {
-        "short": ("about 500 words", 450, 1400),
-        "medium": ("1000-1500 words", 1000, 3200),
-        "long": ("1500-3000 words", 1800, 6000),
-    }.get((length or "medium").lower(), ("1000-1500 words", 1000, 3200))
+        "short": ("about 700 words", 650, 2600),
+        "medium": ("1000-1400 words", 1000, 4096),
+        "long": ("1500-3000 words", 1800, 7000),
+    }.get((length or "medium").lower(), ("1000-1400 words", 1000, 4096))
 
     src_lines = []
     for s in sources or []:
@@ -368,34 +368,52 @@ def _generate_blog_draft(
     )
 
     prompt = f"""
-You are an expert SEO + GEO content strategist.
-Generate a long-form blog post draft for this website:
+You are an expert content strategist optimizing for SEO (Google), GEO (AI-search /
+generative engines like ChatGPT Search, Perplexity, Google AI Overviews, Gemini) and
+AEO (answer engines: featured snippets, People-Also-Ask, voice). Write ONE genuinely
+useful, original, comprehensive blog post.
 
-Site URL: {site_url}
-Primary Topic: {topic}
-Target Keywords: {", ".join(keywords) if keywords else "none"}
-Technical recommendations to align with:
-{chr(10).join(f"- {item}" for item in recommendations[:6]) if recommendations else "- Improve AI visibility and crawlability"}
+Brand site to link back to: {site_url}
+Primary topic / angle: {topic}
+Target keywords: {", ".join(keywords) if keywords else "infer 3-5 relevant keywords from the topic"}
+Weave in these technical recommendations where natural:
+{chr(10).join(f"- {item}" for item in recommendations[:6]) if recommendations else "- Practical, actionable guidance for the reader"}
 {sources_block}
 
-Return STRICT JSON only with keys:
-title, slug, meta_description, excerpt, content_markdown, tags
+Return STRICT JSON ONLY — no markdown fences, no commentary — with EXACTLY these keys:
+  "title", "slug", "meta_description", "excerpt", "content_markdown", "key_takeaways", "faq", "tags"
 
-Requirements:
-- title: a punchy headline, MAX 12 words. Do NOT restate the prompt verbatim and
-  do NOT append the site name or "Guide for ...".
-- slug: URL-safe
-- meta_description: max 160 chars
-- excerpt: 2-3 sentences
-- meta_description: ALWAYS write a 140-160 char SEO summary (never leave blank)
-- content_markdown: write {word_target} — HARD requirement: the body MUST be at
-  least {min_words} words. Do NOT stop early or summarize; use multiple H2/H3
-  sections with examples and actionable detail to reach the length.
-- content_markdown MUST include 1-2 natural, contextual links back to the brand
-  site ({site_url}) using markdown link syntax [anchor]({site_url}), placed where
-  they read naturally — these are the backlinks.
-- tags: array of 4-8 short tags
-- Mention practical steps readers can apply.
+Field rules:
+- title: a compelling, specific SEO headline in Title Case. HARD LIMIT 60 characters
+  AND max 10 words. Lead with the primary keyword. Do NOT restate the angle/prompt
+  verbatim, do NOT append the site or domain name, no "Guide for ...".
+- slug: short, url-safe, keyword-focused, hyphenated (max 8 words).
+- meta_description: EXACTLY 150-160 characters, includes the primary keyword and a
+  concrete benefit, compelling enough to earn the click. Never blank.
+- excerpt: 2-3 punchy sentences summarizing the value.
+- content_markdown: {word_target} — HARD requirement: at least {min_words} words of
+  REAL substance (no fluff or padding). Structure it for SEO + AEO:
+    * Do NOT include a top-level "# H1" — the page renders the title separately.
+      Start every section at "## H2".
+    * Open with a 40-60 word DIRECT-ANSWER paragraph that answers the core question
+      immediately (this is what wins featured snippets and AI overviews).
+    * Use several "## H2" sections; phrase multiple of them as natural questions
+      ("How does X work?", "What should you look for in Y?").
+    * Include at least ONE numbered list (1. 2. 3. for steps or rankings) AND, where
+      the topic compares options, a markdown TABLE ("| Option | Pros | Cons |").
+    * Be specific and fact-dense: concrete examples, numbers, criteria, and a clear
+      point of view an AI engine would want to cite.
+    * Include 1-2 natural contextual backlinks to the brand using
+      [descriptive anchor]({site_url}) placed where they read naturally.
+    * End with a "## Key Takeaways" section as a bullet list (3-5 bullets).
+    * Do NOT put an FAQ inside content_markdown — the FAQ goes in the "faq" field.
+- key_takeaways: array of 3-5 short strings (mirror the takeaways bullets).
+- faq: array of 3-5 objects, each {{"question": "...", "answer": "..."}} — real
+  questions a reader or voice search would ask; each answer 40-70 words, standalone
+  and genuinely useful (these power FAQ rich results).
+- tags: array of 4-8 short topical tags.
+
+Write for humans first: accurate, comprehensive, well-structured, and citable.
 """
 
     raw = ask_llm(
@@ -434,12 +452,32 @@ Requirements:
         tags = [k for k in keywords[:6]]
     tags = [str(t).strip() for t in tags if str(t).strip()]
 
+    faq_raw = parsed.get("faq")
+    faq = []
+    if isinstance(faq_raw, list):
+        for item in faq_raw:
+            if isinstance(item, dict):
+                q = str(item.get("question") or "").strip()
+                a = str(item.get("answer") or "").strip()
+                if q and a:
+                    faq.append({"question": q, "answer": a})
+    faq = faq[:6]
+
+    kt_raw = parsed.get("key_takeaways")
+    key_takeaways = (
+        [str(x).strip() for x in kt_raw if str(x).strip()][:6]
+        if isinstance(kt_raw, list)
+        else []
+    )
+
     return {
         "title": title,
         "slug": slug,
         "meta_description": meta_description,
         "excerpt": excerpt,
         "content_markdown": content_markdown,
+        "key_takeaways": key_takeaways,
+        "faq": faq,
         "tags": tags,
         "llm_raw": raw[:1500] if raw else "",
     }
@@ -479,41 +517,90 @@ def _to_html_from_markdownish(text: str) -> str:
         return s
 
     out: list[str] = []
-    list_buf: list[str] = []
+    ul_buf: list[str] = []
+    ol_buf: list[str] = []
     para_buf: list[str] = []
 
-    def flush_list():
-        if list_buf:
-            out.append("<ul>" + "".join(f"<li>{inline(x)}</li>" for x in list_buf) + "</ul>")
-            list_buf.clear()
+    def flush_ul():
+        if ul_buf:
+            out.append("<ul>" + "".join(f"<li>{inline(x)}</li>" for x in ul_buf) + "</ul>")
+            ul_buf.clear()
+
+    def flush_ol():
+        if ol_buf:
+            out.append("<ol>" + "".join(f"<li>{inline(x)}</li>" for x in ol_buf) + "</ol>")
+            ol_buf.clear()
 
     def flush_para():
         if para_buf:
             out.append(f"<p>{inline(' '.join(para_buf))}</p>")
             para_buf.clear()
 
-    for line in raw.split("\n"):
-        stripped = line.strip()
+    def flush_all():
+        flush_para()
+        flush_ul()
+        flush_ol()
+
+    def _cells(row: str) -> list[str]:
+        return [c.strip() for c in row.strip().strip("|").split("|")]
+
+    lines = raw.split("\n")
+    i, n = 0, len(lines)
+    while i < n:
+        stripped = lines[i].strip()
         if not stripped:
-            flush_para()
-            flush_list()
+            flush_all()
+            i += 1
             continue
+
+        # Markdown table: "| h | h |" header followed by a "|---|---|" separator row.
+        nxt = lines[i + 1].strip() if i + 1 < n else ""
+        if stripped.startswith("|") and _re.match(r"^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$", nxt):
+            flush_all()
+            header = _cells(stripped)
+            i += 2
+            body = []
+            while i < n and lines[i].strip().startswith("|"):
+                body.append(_cells(lines[i].strip()))
+                i += 1
+            thead = "<thead><tr>" + "".join(f"<th>{inline(c)}</th>" for c in header) + "</tr></thead>"
+            tbody = "".join(
+                "<tr>" + "".join(f"<td>{inline(c)}</td>" for c in r) + "</tr>" for r in body
+            )
+            out.append(f"<table>{thead}<tbody>{tbody}</tbody></table>")
+            continue
+
         heading = _re.match(r"^(#{1,6})\s+(.*)$", stripped)
         if heading:
-            flush_para()
-            flush_list()
+            flush_all()
             level = min(len(heading.group(1)), 6)
+            if level == 1:  # demote a stray H1 so the page title stays the only <h1>
+                level = 2
             out.append(f"<h{level}>{inline(heading.group(2))}</h{level}>")
+            i += 1
             continue
+
+        ol_m = _re.match(r"^\d+[.)]\s+(.*)$", stripped)
+        if ol_m:
+            flush_para()
+            flush_ul()
+            ol_buf.append(ol_m.group(1))
+            i += 1
+            continue
+
         if _re.match(r"^[-*]\s+", stripped):
             flush_para()
-            list_buf.append(_re.sub(r"^[-*]\s+", "", stripped))
+            flush_ol()
+            ul_buf.append(_re.sub(r"^[-*]\s+", "", stripped))
+            i += 1
             continue
-        flush_list()
-        para_buf.append(stripped)
 
-    flush_para()
-    flush_list()
+        flush_ul()
+        flush_ol()
+        para_buf.append(stripped)
+        i += 1
+
+    flush_all()
     return "".join(out) or "<p></p>"
 
 
@@ -5649,6 +5736,7 @@ class ContentApplyElementView(APIView):
         url = (request.data.get("url") or "").strip()
         original_text = (request.data.get("original_text") or "").strip()
         new_text = (request.data.get("new_text") or "").strip()
+        tag = (request.data.get("tag") or "").strip()
         if not url or not original_text or not new_text:
             return Response(
                 {"detail": "url, original_text, and new_text are required"},
@@ -5656,7 +5744,7 @@ class ContentApplyElementView(APIView):
             )
 
         try:
-            result = co.apply_element_edit(run, url, original_text, new_text)
+            result = co.apply_element_edit(run, url, original_text, new_text, tag)
         except co.ContentOptimisationError as exc:
             msg = str(exc)
             status_code = 503 if "integration" in msg.lower() else 400
@@ -6952,6 +7040,8 @@ class BlogPublishNetworkView(APIView):
             "title": title[:300],
             "description": (data.get("description") or data.get("meta_description") or "")[:2000],
             "content_html": content_html,
+            "faq": data.get("faq") if isinstance(data.get("faq"), list) else [],
+            "key_takeaways": data.get("key_takeaways") if isinstance(data.get("key_takeaways"), list) else [],
             "image_url": (data.get("image_url") or "")[:2048],
             "category": (data.get("category") or "")[:80],
             "brand_url": brand_url,

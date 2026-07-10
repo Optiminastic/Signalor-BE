@@ -108,7 +108,7 @@ def run_auto_backlinks(run) -> dict:
         try:
             angle = AUTO_SITE_ANGLE.get(site, "an article about {subject}").format(subject=subject)
             draft = _generate_blog_draft(
-                site_url, angle, [], recommendations, length="short", sources=sources
+                site_url, angle, [], recommendations, length="medium", sources=sources
             )
             title = _short_title(draft.get("title") or f"{brand}: {subject}")[:300]
             content_html = _to_html_from_markdownish(draft.get("content_markdown") or "")
@@ -132,6 +132,8 @@ def run_auto_backlinks(run) -> dict:
                 "title": title,
                 "description": meta[:2000],
                 "content_html": content_html,
+                "faq": draft.get("faq", []),
+                "key_takeaways": draft.get("key_takeaways", []),
                 "image_url": "",
                 "category": "",
                 "brand_url": ref_url,
