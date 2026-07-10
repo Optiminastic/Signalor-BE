@@ -44,6 +44,54 @@ def is_internal_email(email: str | None) -> bool:
     return domain in INTERNAL_DOMAINS
 
 
+# Free / personal email providers that are NOT allowed for Agency accounts.
+# Keep in sync with the frontend list in `src/lib/work-email.ts`.
+FREE_EMAIL_DOMAINS = {
+    "gmail.com",
+    "googlemail.com",
+    "outlook.com",
+    "outlook.co.uk",
+    "hotmail.com",
+    "hotmail.co.uk",
+    "live.com",
+    "live.co.uk",
+    "msn.com",
+    "yahoo.com",
+    "yahoo.co.uk",
+    "yahoo.in",
+    "ymail.com",
+    "rocketmail.com",
+    "icloud.com",
+    "me.com",
+    "mac.com",
+    "proton.me",
+    "protonmail.com",
+    "pm.me",
+    "aol.com",
+    "gmx.com",
+    "gmx.net",
+    "mail.com",
+    "zoho.com",
+    "yandex.com",
+    "yandex.ru",
+    "tutanota.com",
+    "tuta.io",
+    "hey.com",
+    "fastmail.com",
+    "hushmail.com",
+    "inbox.com",
+}
+
+
+def is_free_email(email: str | None) -> bool:
+    """True if the email is from a known free/personal provider (not a work
+    address). Used to gate Agency accounts, which require a company email."""
+    raw = (email or "").strip().lower()
+    if not raw or "@" not in raw:
+        return False
+    return raw.rsplit("@", 1)[1] in FREE_EMAIL_DOMAINS
+
+
 def _integration_subscription_required() -> bool:
     """
     Whether Shopify/WordPress OAuth must have an active active subscription.
@@ -227,17 +275,19 @@ def is_agency(email: str | None) -> bool:
 def effective_max_projects(email: str | None) -> int:
     """max_projects after applying account type.
 
-    This is the single seam that unlocks multiple projects for agencies (and
-    the place a later per-brand-billing phase will swap the constant for a
-    count of active per-brand subscriptions). Internal emails keep the
-    business cap; agencies get the interim AGENCY_MAX_PROJECTS ceiling.
+    A brand IS a project, and Individual accounts are single-brand by design —
+    so they are always capped at exactly one, regardless of plan or internal
+    status. Agencies are the multi-brand tier: this is the single seam that
+    unlocks multiple projects for them (and where a later per-brand-billing
+    phase will swap the constant for a count of active per-brand subscriptions).
     """
+    if not is_agency(email):
+        return 1
+    # Agency: internal accounts get the full ceiling; paid agencies get the
+    # interim AGENCY_MAX_PROJECTS ceiling (never below their plan's base).
     if is_internal_email(email):
-        return PLAN_LIMITS["business"]["max_projects"]
-    base = get_plan_limits(email)["max_projects"]
-    if is_agency(email):
-        return max(base, AGENCY_MAX_PROJECTS)
-    return base
+        return AGENCY_MAX_PROJECTS
+    return max(get_plan_limits(email)["max_projects"], AGENCY_MAX_PROJECTS)
 
 
 def _tracked_prompt_count(email: str) -> int:
@@ -267,19 +317,33 @@ def _tracked_prompt_count(email: str) -> int:
 
 def project_limit_reached(email: str | None) -> tuple[bool, str]:
     """Check if user has reached their project (organization) limit."""
+    em = (email or "").strip().lower()
+    if not em:
+        return True, "Email is required."
+
+    from apps.organizations.models import Organization
+
+    count = Organization.objects.filter(owner_email=em).count()
+
+    # Individual accounts are single-brand by design (a brand IS a project).
+    # This is a product invariant, so it is enforced even for internal emails
+    # and even when the plan-limit toggle is off — unlike the billing caps below.
+    if not is_agency(email):
+        if count >= 1:
+            return True, (
+                "Individual accounts include a single brand. Switch to an Agency "
+                "account to manage multiple brands."
+            )
+        return False, ""
+
+    # Agencies: honour the internal bypass and the plan-limit enforcement toggle,
+    # then compare against the effective (multi-brand) cap.
     if is_internal_email(email):
         return False, ""
     if not is_plan_limits_enforcement_enabled():
         return False, ""
 
-    em = (email or "").strip().lower()
-    if not em:
-        return True, "Email is required."
-
     limits = get_plan_limits(email)
-    from apps.organizations.models import Organization
-
-    count = Organization.objects.filter(owner_email=em).count()
     max_projects = effective_max_projects(email)
     if count >= max_projects:
         pk = _effective_plan_key(email)

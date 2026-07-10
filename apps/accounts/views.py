@@ -32,7 +32,7 @@ from .dodo_invoice import (
 )
 from .invoice_pdf import resolve_invoice_pdf
 from .models import PLAN_LIMITS, InvoiceRecord, Subscription
-from .subscription_utils import get_account_type, is_internal_email
+from .subscription_utils import get_account_type, is_free_email, is_internal_email
 
 
 def _dodo_opposite_mode_hint() -> str:
@@ -337,15 +337,21 @@ class AccountTypeView(APIView):
     throttle_classes = [PollingThrottle]
 
     def get(self, request):
+        from .models import AccountProfile
+
         email = (request.query_params.get("email") or "").lower().strip()
         if not email:
             return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
         account_type = get_account_type(email)
+        agency_name = (
+            AccountProfile.objects.filter(email=email).values_list("agency_name", flat=True).first() or ""
+        )
         return Response(
             {
                 "email": email,
                 "account_type": account_type,
                 "is_agency": account_type == "agency",
+                "agency_name": agency_name,
             }
         )
 
@@ -359,15 +365,49 @@ class AccountTypeView(APIView):
         if account_type not in AccountProfile.AccountType.values:
             return Response({"error": "Invalid account_type."}, status=status.HTTP_400_BAD_REQUEST)
 
-        profile, _ = AccountProfile.objects.get_or_create(email=email)
+        # Agency accounts require a work email. Personal/free providers are
+        # rejected here as defense-in-depth — the client enforces the same rule
+        # on both the typed-email and Google paths, but never trust the client.
+        # Internal (@optiminastic) emails are exempt for testing.
+        if (
+            account_type == AccountProfile.AccountType.AGENCY
+            and not is_internal_email(email)
+            and is_free_email(email)
+        ):
+            return Response(
+                {"error": "Agency accounts require a work email."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Optional agency name, captured on the dedicated agency sign-up step.
+        # Trimmed and length-capped; only stored for agency accounts (ignored
+        # for individuals, who have no agency name).
+        agency_name = (request.data.get("agency_name") or "").strip()[:255]
+
+        # Set the NOT NULL string fields explicitly on create so a schema/code
+        # drift (DB has the column NOT NULL but a deployed build lacks the model
+        # default) can't insert null and 500 the onboarding step.
+        profile, _ = AccountProfile.objects.get_or_create(
+            email=email,
+            defaults={"role": "", "agency_name": ""},
+        )
+        update_fields = []
         if profile.account_type != account_type:
             profile.account_type = account_type
-            profile.save(update_fields=["account_type", "updated_at"])
+            update_fields.append("account_type")
+        if account_type == AccountProfile.AccountType.AGENCY and agency_name:
+            if profile.agency_name != agency_name:
+                profile.agency_name = agency_name
+                update_fields.append("agency_name")
+        if update_fields:
+            update_fields.append("updated_at")
+            profile.save(update_fields=update_fields)
         return Response(
             {
                 "email": email,
                 "account_type": profile.account_type,
                 "is_agency": profile.account_type == "agency",
+                "agency_name": profile.agency_name,
             }
         )
 
