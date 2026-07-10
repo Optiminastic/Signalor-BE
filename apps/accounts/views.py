@@ -385,7 +385,13 @@ class AccountTypeView(APIView):
         agency_name = (request.data.get("agency_name") or "").strip()[:255]
         role = (request.data.get("role") or "").strip()[:100]
 
-        profile, _ = AccountProfile.objects.get_or_create(email=email)
+        # Set the NOT NULL string fields explicitly on create so a schema/code
+        # drift (DB has the column NOT NULL but a deployed build lacks the model
+        # default) can't insert null and 500 the onboarding step.
+        profile, _ = AccountProfile.objects.get_or_create(
+            email=email,
+            defaults={"role": "", "agency_name": ""},
+        )
         update_fields = []
         if profile.account_type != account_type:
             profile.account_type = account_type
