@@ -146,6 +146,9 @@ class AccountProfile(models.Model):
     # Distinct from the brand/project name entered during onboarding. Blank for
     # individuals (and agencies created before this field existed).
     agency_name = models.CharField(max_length=255, blank=True, default="")
+    # The signing-up person's role/job title, captured on the agency sign-up
+    # dropdown; blank for individuals.
+    role = models.CharField(max_length=100, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
