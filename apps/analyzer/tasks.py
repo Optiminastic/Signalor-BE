@@ -590,11 +590,22 @@ def run_single_page_analysis(run_id: int):
         industry = detect_industry(crawl.soup, crawl.text)
         logger.info("Run %d: detected industry = %s", run_id, industry)
 
+        # Optional SiteOne technical/SEO enrichment (gated by SIGNALOR_USE_SITEONE;
+        # best-effort — a failure never blocks the analysis).
+        from .pipeline import siteone_crawl
+
+        siteone_report = None
+        if siteone_crawl.is_configured():
+            try:
+                siteone_report = siteone_crawl.run_report(run.url, max_urls=12)
+            except siteone_crawl.SiteOneError as exc:
+                logger.warning("SiteOne report skipped for %s: %s", run.url, exc)
+
         # Phase 2: Run static pillars across ALL crawled pages
         # Score homepage first
-        content_score, content_details = score_content(crawl)
+        content_score, content_details = score_content(crawl, siteone=siteone_report)
         schema_score_val, schema_details = score_schema(crawl)
-        technical_score_val, technical_details = score_technical(crawl)
+        technical_score_val, technical_details = score_technical(crawl, siteone=siteone_report)
 
         # Score additional pages and aggregate
         all_content_scores = [content_score]

@@ -217,6 +217,42 @@ def _rows(table: object) -> list[dict]:
     return []
 
 
+def to_check_payload(report: SiteOneReport) -> dict:
+    """Serialise a report into the ``details["checks"]["siteone"]`` payload.
+
+    Pure data (JSON-serialisable) for the technical/content pillars to embed —
+    category scores, each category's deductions (reason + fix), issue counts by
+    severity, and crawl performance. Does not alter any numeric pillar score.
+    """
+    return {
+        "overall_score": report.overall_score,
+        "categories": [
+            {
+                "code": c.code,
+                "name": c.name,
+                "score": c.score,
+                "weight": c.weight,
+                "label": c.label,
+                "deductions": [
+                    {"reason": d.reason, "fix": d.fix, "points": d.points} for d in c.deductions
+                ],
+            }
+            for c in report.categories
+        ],
+        "severity_counts": report.summary_by_severity,
+        "counts": {
+            "broken_links": len(report.broken_links),
+            "redirects": len(report.redirects),
+            "security_findings": len(report.security_findings),
+            "pages_crawled": report.total_urls,
+        },
+        "performance": {
+            "request_ms_avg": report.request_ms_avg,
+            "request_ms_p90": report.request_ms_p90,
+        },
+    }
+
+
 def _num(value: object) -> float:
     try:
         return float(value)  # type: ignore[arg-type]
