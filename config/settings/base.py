@@ -231,7 +231,12 @@ LOGGING = {
         "console": {"level": "INFO", "class": "logging.StreamHandler", "formatter": "simple"},
         "file": {
             "level": "INFO",
-            "class": "logging.handlers.RotatingFileHandler",
+            # ConcurrentRotatingFileHandler (not stdlib RotatingFileHandler) so
+            # rotation is multiprocess-safe. On Windows the stdlib handler's
+            # os.rename() during rollover fails with WinError 32 whenever a second
+            # process (dev-server autoreloader) or the analyzer thread-pool still
+            # holds django.log open, which then errors on every log emit.
+            "class": "concurrent_log_handler.ConcurrentRotatingFileHandler",
             "filename": LOGS_DIR / "django.log",
             "maxBytes": 1024 * 1024 * 15,  # 15MB
             "backupCount": 10,
