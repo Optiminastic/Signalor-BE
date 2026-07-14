@@ -19,7 +19,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE: ghcr.io/rishi-optiminastic/signalor-be
+  IMAGE: ghcr.io/optiminastic/signalor-be
 
 jobs:
   build:
