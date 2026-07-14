@@ -31,6 +31,8 @@ from .models import (
 
 class RecommendationSerializer(serializers.ModelSerializer):
     can_auto_fix = serializers.SerializerMethodField()
+    code_fixable = serializers.SerializerMethodField()
+    steps = serializers.SerializerMethodField()
 
     class Meta:
         model = Recommendation
@@ -107,6 +109,29 @@ class RecommendationSerializer(serializers.ModelSerializer):
         "shipping",
         "product description",
     ]
+
+    def get_steps(self, obj):
+        """Coerce steps into the {n, title, detail, xp} shape the frontend expects.
+
+        AI-insight recommendations (source="ai_insight", see
+        apps/analyzer/services/overview_insights.py) store `steps` as a plain
+        list of strings, but the frontend schema requires objects — normalize
+        here rather than letting validation fail the whole run.
+        """
+        steps = obj.steps or []
+        normalized = []
+        for i, step in enumerate(steps):
+            if isinstance(step, dict):
+                normalized.append(step)
+            else:
+                normalized.append({"n": i + 1, "title": str(step), "detail": "", "xp": 0})
+        return normalized
+
+    def get_code_fixable(self, obj):
+        """True when the GitHub code agent can fix this finding (in-repo edit)."""
+        from apps.github_agent.services.fixable import is_agent_fixable
+
+        return is_agent_fixable(obj.finding_code or "")
 
     def get_can_auto_fix(self, obj):
         title_lower = (obj.title or "").lower()
