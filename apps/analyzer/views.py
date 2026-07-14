@@ -1366,8 +1366,8 @@ class UpdateUserActionView(APIView):
                     action.score_after = data["score_after"]
                     if action.score_before:
                         action.score_improvement = data["score_after"] - action.score_before
-                        gamification.total_score_improvement += action
-                        gamification.score_improvement.total_actions_verified += 1
+                        gamification.total_score_improvement += action.score_improvement
+                        gamification.total_actions_verified += 1
                         gamification.save()
                 # Award bonus points for verification
                 gamification.add_points(action.points_value // 2)

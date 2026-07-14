@@ -48,6 +48,8 @@ htmlcov/
 
 # Hetzner deploy — live secrets (template is committed as deploy/stack.env.example)
 deploy/stack.env
+# Local Docker stack env (template is committed as deploy/stack.local.env.example)
+deploy/stack.local.env
 # Cloudflare Origin Certificate (private key) — never commit
 deploy/certs/
 origin.cert

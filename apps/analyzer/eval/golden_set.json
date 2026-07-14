@@ -1,0 +1,16 @@
+[
+  {
+    "name": "eeat-grounded",
+    "task": "Assess E-E-A-T signals for this page and list concrete gaps.",
+    "context": "About page: 'Founded 2019. Team of 12 ex-Google engineers. SOC2 certified. No author bylines on blog posts. No external citations.'",
+    "output": "E-E-A-T is moderate. Experience/Expertise are supported (ex-Google team, since 2019) and Trust is aided by SOC2. Gaps: blog posts lack author bylines and no external citations back claims. Add named authors with bios and cite primary sources.",
+    "reference": "Should credit the ex-Google team and SOC2 as positives, and flag missing author bylines and missing citations as the main gaps."
+  },
+  {
+    "name": "eeat-hallucinated",
+    "task": "Assess E-E-A-T signals for this page and list concrete gaps.",
+    "context": "About page: 'Founded 2019. Team of 12 ex-Google engineers. SOC2 certified.'",
+    "output": "E-E-A-T is excellent. The company has won three Webby awards, is featured in Forbes, and its CEO is a Nobel laureate, all of which strongly establish authority.",
+    "reference": "Should credit the ex-Google team and SOC2, and must NOT invent awards, press, or credentials that the context does not contain."
+  }
+]
