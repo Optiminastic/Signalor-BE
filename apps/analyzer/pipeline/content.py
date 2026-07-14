@@ -12,6 +12,7 @@ import math
 import re
 from collections import Counter
 
+from . import siteone_crawl
 from .crawler import CrawlResult
 from .utils import count_words, safe_score
 
@@ -408,7 +409,10 @@ def _score_structure_flow(crawl: CrawlResult) -> tuple[float, dict]:
 
 # ── Main Scorer ───────────────────────────────────────────────────────────
 
-def score_content(crawl: CrawlResult) -> tuple[float, dict]:
+def score_content(
+    crawl: CrawlResult,
+    siteone: "siteone_crawl.SiteOneReport | None" = None,
+) -> tuple[float, dict]:
     """
     Content Score v3 — Impact-based.
 
@@ -462,5 +466,9 @@ def score_content(crawl: CrawlResult) -> tuple[float, dict]:
     total = safe_score(total)
     details["score"] = total
     details["checks"]["word_count"] = count_words(crawl.text)
+
+    # Optional SiteOne enrichment (data only — does not change the score).
+    if siteone is not None:
+        details["checks"]["siteone"] = siteone_crawl.to_check_payload(siteone)
 
     return total, details

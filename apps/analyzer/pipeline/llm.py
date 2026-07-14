@@ -31,9 +31,14 @@ _OPUS_MODEL_DEFAULT = "anthropic/claude-opus-4.1"
 OPUS_MODEL = os.getenv("OPENROUTER_OPUS_MODEL", "").strip() or _OPUS_MODEL_DEFAULT
 # Claude Sonnet — routed through OpenRouter. Override via OPENROUTER_SONNET_MODEL.
 SONNET_MODEL = os.getenv("OPENROUTER_SONNET_MODEL", "anthropic/claude-sonnet-4.5")
+# Claude Haiku — the fast "claude" engine for Prompt Track. The old
+# ``claude-3.5-haiku`` slug was retired on OpenRouter (HTTP 404 "No endpoints
+# found"); ``claude-haiku-4.5`` is the current, available id. Override via
+# OPENROUTER_HAIKU_MODEL.
+HAIKU_MODEL = os.getenv("OPENROUTER_HAIKU_MODEL", "").strip() or "anthropic/claude-haiku-4.5"
 MODELS = {
     "gpt": "openai/gpt-4o-mini",
-    "claude": "anthropic/claude-3.5-haiku",
+    "claude": HAIKU_MODEL,
     "opus": OPUS_MODEL,
     "gemini": GEMINI_MODEL,
     "perplexity": "perplexity/sonar",
@@ -42,7 +47,7 @@ MODELS = {
 
 MODEL_LABELS = {
     "openai/gpt-4o-mini": "GPT-4o Mini",
-    "anthropic/claude-3.5-haiku": "Claude 3.5 Haiku",
+    HAIKU_MODEL: "Claude Haiku 4.5",
     OPUS_MODEL: "Claude Opus",
     GEMINI_MODEL: "Gemini 2.5 Flash",
     "perplexity/sonar": "Perplexity Sonar",

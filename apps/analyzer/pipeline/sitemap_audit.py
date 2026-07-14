@@ -21,14 +21,13 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urljoin, urlparse
 from xml.etree import ElementTree as ET
 
 import requests
 from bs4 import BeautifulSoup
-from django.db import close_old_connections
+from django.db import IntegrityError, close_old_connections
 
 logger = logging.getLogger("apps")
 
@@ -51,6 +50,7 @@ AI_BOTS = [
 # ----------------------------------------------------------------------------
 # Sitemap discovery
 # ----------------------------------------------------------------------------
+
 
 def _http_get(url: str, timeout: int = DEFAULT_TIMEOUT) -> requests.Response | None:
     try:
@@ -190,6 +190,7 @@ def discover_sitemap(domain: str) -> dict[str, Any]:
 # robots.txt
 # ----------------------------------------------------------------------------
 
+
 def fetch_robots(domain: str) -> dict[str, Any]:
     """
     Return {
@@ -275,6 +276,7 @@ def fetch_robots(domain: str) -> dict[str, Any]:
 # ----------------------------------------------------------------------------
 # Per-URL audit
 # ----------------------------------------------------------------------------
+
 
 def _visible_text_length(soup: BeautifulSoup) -> tuple[int, int]:
     for tag in soup(["script", "style", "noscript"]):
@@ -451,6 +453,7 @@ def audit_page(url: str, robots_allowed: dict[str, bool] | None = None) -> dict[
 # Scoring
 # ----------------------------------------------------------------------------
 
+
 def score_page(fields: dict[str, Any]) -> tuple[int, str, list[dict[str, Any]]]:
     """
     Returns (score 0-100, severity 'ok'|'warn'|'fail', findings list).
@@ -576,6 +579,7 @@ def score_page(fields: dict[str, Any]) -> tuple[int, str, list[dict[str, Any]]]:
 # PageSpeed Insights
 # ----------------------------------------------------------------------------
 
+
 def fetch_psi_vitals(url: str) -> dict[str, Any]:
     """Call Google PageSpeed Insights. Returns {} on any error."""
     api_key = os.environ.get("PAGESPEED_INSIGHTS_API_KEY", "").strip()
@@ -585,6 +589,7 @@ def fetch_psi_vitals(url: str) -> dict[str, Any]:
         params["key"] = api_key
     try:
         from apps.integrations._http import request_with_retry
+
         resp = request_with_retry(
             "GET",
             endpoint,
@@ -602,10 +607,7 @@ def fetch_psi_vitals(url: str) -> dict[str, Any]:
     except ValueError:
         return {}
 
-    audits = (
-        data.get("lighthouseResult", {})
-        .get("audits", {})
-    )
+    audits = data.get("lighthouseResult", {}).get("audits", {})
 
     def get_num(audit_key: str) -> int | None:
         node = audits.get(audit_key) or {}
@@ -629,6 +631,7 @@ def fetch_psi_vitals(url: str) -> dict[str, Any]:
 # Orchestrator
 # ----------------------------------------------------------------------------
 
+
 def _avg_int(values: list[int | None]) -> int | None:
     nums = [v for v in values if isinstance(v, int)]
     return int(sum(nums) / len(nums)) if nums else None
@@ -637,6 +640,7 @@ def _avg_int(values: list[int | None]) -> int | None:
 def run_sitemap_audit(audit_id: int) -> None:
     """Orchestrator — runs in a daemon thread. Mutates SitemapAudit + pages."""
     from django.utils import timezone as djtz
+
     from apps.analyzer.models import SitemapAudit, SitemapAuditPage
 
     try:
@@ -726,6 +730,7 @@ def run_sitemap_audit(audit_id: int) -> None:
         def update_counts_and_avgs() -> None:
             """Recompute audit roll-ups from persisted pages."""
             from django.db.models import Avg, Count, Q
+
             agg = audit.pages.aggregate(
                 indexed=Count("id", filter=Q(state="crawled")),
                 redirect=Count("id", filter=Q(state="redirect")),
@@ -746,6 +751,12 @@ def run_sitemap_audit(audit_id: int) -> None:
                 avg_ttfb_ms=int(agg["ttfb"]) if agg["ttfb"] is not None else None,
                 avg_ai_score=int(agg["ai"]) if agg["ai"] is not None else None,
             )
+
+        def audit_was_deleted() -> bool:
+            """The audit (or its parent AnalysisRun, via CASCADE) may be deleted
+            while this long-running task is still persisting pages. Detect that so
+            we can stop cleanly instead of FK-violating on every remaining page."""
+            return not SitemapAudit.objects.filter(pk=audit_id).exists()
 
         # Pass 1 — fetch + parse + persist each URL as it finishes
         def work(u: str) -> dict[str, Any]:
@@ -768,6 +779,17 @@ def run_sitemap_audit(audit_id: int) -> None:
                     close_old_connections()
                     pid = persist_row(fields)
                     page_ids[url] = pid
+                except IntegrityError:
+                    # An FK violation here almost always means the audit was
+                    # deleted mid-run. Confirm, then stop the whole run cleanly
+                    # rather than logging an exception for every remaining URL.
+                    if audit_was_deleted():
+                        logger.warning(
+                            "run_sitemap_audit: audit %s deleted mid-run; stopping",
+                            audit_id,
+                        )
+                        return
+                    logger.exception("persist_row failed for %s", url)
                 except Exception:
                     logger.exception("persist_row failed for %s", url)
                 with lock:
@@ -780,9 +802,7 @@ def run_sitemap_audit(audit_id: int) -> None:
         update_counts_and_avgs()
 
         # Pass 2 — PSI for successful pages only (rate-limit conscious)
-        crawled_urls = list(
-            audit.pages.filter(state="crawled").values_list("url", "id")
-        )
+        crawled_urls = list(audit.pages.filter(state="crawled").values_list("url", "id"))
         psi_done = 0
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = {pool.submit(fetch_psi_vitals, u): (u, pid) for u, pid in crawled_urls}

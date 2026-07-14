@@ -7,11 +7,11 @@ After an analysis run completes, this service:
 3. Pushes those fixes back to the connected platform (Shopify or WordPress)
 4. Records each applied improvement in the GeoImprovement model
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from datetime import timezone
 
 from django.utils import timezone as django_timezone
 
@@ -20,9 +20,11 @@ logger = logging.getLogger("apps")
 
 # ─── LLM helper ──────────────────────────────────────────────────────────────
 
+
 def _llm_generate(prompt: str) -> str:
     """Call the project's LLM (OpenRouter / Gemini) and return the text."""
     import os
+
     import requests
 
     api_key = os.getenv("OPENROUTER_API_KEY", "")
@@ -36,7 +38,7 @@ def _llm_generate(prompt: str) -> str:
             "Content-Type": "application/json",
         },
         json={
-            "model": "anthropic/claude-3-haiku",
+            "model": "anthropic/claude-haiku-4.5",
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.3,
             "max_tokens": 800,
@@ -48,6 +50,7 @@ def _llm_generate(prompt: str) -> str:
 
 
 # ─── Issue extraction ─────────────────────────────────────────────────────────
+
 
 def _extract_issues(page_score) -> list[dict]:
     """
@@ -80,9 +83,7 @@ def _extract_issues(page_score) -> list[dict]:
             else:
                 llms_quality = checks.get("llms_txt_quality")
                 if llms_quality in {"minimal", "basic"}:
-                    issues.append(
-                        {"pillar": "technical", "finding": f"llms_txt_{llms_quality}_content"}
-                    )
+                    issues.append({"pillar": "technical", "finding": f"llms_txt_{llms_quality}_content"})
 
             if not checks.get("has_sitemap"):
                 issues.append({"pillar": "technical", "finding": "no_sitemap"})
@@ -249,6 +250,7 @@ def get_all_recommendations_fix_plan(run) -> list[dict]:
     page_score = None
     try:
         from apps.analyzer.models import PageScore
+
         page_score = PageScore.objects.filter(analysis_run=run).first()
     except Exception:
         page_score = None
@@ -273,10 +275,7 @@ def get_all_recommendations_fix_plan(run) -> list[dict]:
     if page_score:
         auto_keys = _infer_fix_keys(_extract_issues(page_score))
 
-    recs = (
-        Recommendation.objects.filter(analysis_run=run)
-        .order_by("priority", "pillar", "id")
-    )
+    recs = Recommendation.objects.filter(analysis_run=run).order_by("priority", "pillar", "id")
 
     plan: list[dict] = []
     for rec in recs:
@@ -337,6 +336,7 @@ def get_all_recommendations_fix_plan(run) -> list[dict]:
 
 # ─── Fix generation ───────────────────────────────────────────────────────────
 
+
 def _generate_meta_fix(brand_name: str, site_url: str, current_title: str, current_desc: str) -> dict:
     """Use LLM to produce an improved meta title and description."""
     prompt = f"""You are a GEO SEO expert. Generate an improved meta title and meta description
@@ -344,8 +344,8 @@ for this website to improve its geographic search visibility.
 
 Brand: {brand_name}
 Site URL: {site_url}
-Current meta title: {current_title or '(not set)'}
-Current meta description: {current_desc or '(not set)'}
+Current meta title: {current_title or "(not set)"}
+Current meta description: {current_desc or "(not set)"}
 
 Requirements:
 - Meta title: 50-60 characters, include brand name and a geographic signal if relevant
@@ -372,7 +372,7 @@ def _generate_schema_markup(brand_name: str, site_url: str, description: str) ->
 
 Brand: {brand_name}
 URL: {site_url}
-Description: {description or 'A business website'}
+Description: {description or "A business website"}
 
 Return ONLY the JSON-LD script tag, nothing else:
 <script type="application/ld+json">
@@ -388,13 +388,15 @@ Return ONLY the JSON-LD script tag, nothing else:
 
 # ─── Shopify improvements ─────────────────────────────────────────────────────
 
+
 def _apply_shopify_improvements(run, integration, issues: list[dict]) -> list[dict]:
     """
     Apply GEO SEO improvements to Shopify store pages/products.
     Returns list of improvement dicts.
     """
     import requests as req_lib
-    from apps.integrations.services.shopify import normalize_shop_domain, API_VERSION
+
+    from apps.integrations.services.shopify import API_VERSION, normalize_shop_domain
 
     shop_domain = integration.metadata.get("shop_domain", "")
     access_token = integration.get_access_token()
@@ -439,31 +441,35 @@ def _apply_shopify_improvements(run, integration, issues: list[dict]) -> list[di
                         timeout=15,
                     )
                     if update_resp.ok:
-                        improvements.append({
-                            "provider": "shopify",
-                            "improvement_type": "meta_description",
-                            "resource_type": "page",
-                            "resource_id": str(page_id),
-                            "resource_title": current_title,
-                            "field_name": "metafields_global_description_tag",
-                            "old_value": current_meta_desc,
-                            "new_value": fix["description"],
-                            "status": "applied",
-                        })
+                        improvements.append(
+                            {
+                                "provider": "shopify",
+                                "improvement_type": "meta_description",
+                                "resource_type": "page",
+                                "resource_id": str(page_id),
+                                "resource_title": current_title,
+                                "field_name": "metafields_global_description_tag",
+                                "old_value": current_meta_desc,
+                                "new_value": fix["description"],
+                                "status": "applied",
+                            }
+                        )
                         logger.info("Applied Shopify page meta description to page %s", page_id)
                     else:
-                        improvements.append({
-                            "provider": "shopify",
-                            "improvement_type": "meta_description",
-                            "resource_type": "page",
-                            "resource_id": str(page_id),
-                            "resource_title": current_title,
-                            "field_name": "metafields_global_description_tag",
-                            "old_value": current_meta_desc,
-                            "new_value": fix["description"],
-                            "status": "failed",
-                            "error_message": f"HTTP {update_resp.status_code}",
-                        })
+                        improvements.append(
+                            {
+                                "provider": "shopify",
+                                "improvement_type": "meta_description",
+                                "resource_type": "page",
+                                "resource_id": str(page_id),
+                                "resource_title": current_title,
+                                "field_name": "metafields_global_description_tag",
+                                "old_value": current_meta_desc,
+                                "new_value": fix["description"],
+                                "status": "failed",
+                                "error_message": f"HTTP {update_resp.status_code}",
+                            }
+                        )
                 except Exception as exc:
                     logger.warning("Failed to update Shopify page %s: %s", page_id, exc)
 
@@ -506,18 +512,20 @@ Keep it under 200 words, focus on benefits and geographic availability. Plain te
                     },
                     timeout=15,
                 )
-                improvements.append({
-                    "provider": "shopify",
-                    "improvement_type": "content_update",
-                    "resource_type": "product",
-                    "resource_id": str(product_id),
-                    "resource_title": product_title,
-                    "field_name": "body_html",
-                    "old_value": plain_desc,
-                    "new_value": new_desc[:500],
-                    "status": "applied" if update_resp.ok else "failed",
-                    "error_message": "" if update_resp.ok else f"HTTP {update_resp.status_code}",
-                })
+                improvements.append(
+                    {
+                        "provider": "shopify",
+                        "improvement_type": "content_update",
+                        "resource_type": "product",
+                        "resource_id": str(product_id),
+                        "resource_title": product_title,
+                        "field_name": "body_html",
+                        "old_value": plain_desc,
+                        "new_value": new_desc[:500],
+                        "status": "applied" if update_resp.ok else "failed",
+                        "error_message": "" if update_resp.ok else f"HTTP {update_resp.status_code}",
+                    }
+                )
             except Exception as exc:
                 logger.warning("Product description update failed for %s: %s", product_id, exc)
 
@@ -537,18 +545,20 @@ Keep it under 200 words, focus on benefits and geographic availability. Plain te
                         json={"page": {"id": page_id, "body_html": f"{body_html}\n{schema_block}"}},
                         timeout=15,
                     )
-                    improvements.append({
-                        "provider": "shopify",
-                        "improvement_type": "schema_markup",
-                        "resource_type": "page",
-                        "resource_id": str(page_id),
-                        "resource_title": page_title,
-                        "field_name": "body_html",
-                        "old_value": "no-json-ld",
-                        "new_value": "json-ld-added",
-                        "status": "applied" if update_resp.ok else "failed",
-                        "error_message": "" if update_resp.ok else f"HTTP {update_resp.status_code}",
-                    })
+                    improvements.append(
+                        {
+                            "provider": "shopify",
+                            "improvement_type": "schema_markup",
+                            "resource_type": "page",
+                            "resource_id": str(page_id),
+                            "resource_title": page_title,
+                            "field_name": "body_html",
+                            "old_value": "no-json-ld",
+                            "new_value": "json-ld-added",
+                            "status": "applied" if update_resp.ok else "failed",
+                            "error_message": "" if update_resp.ok else f"HTTP {update_resp.status_code}",
+                        }
+                    )
                 except Exception as exc:
                     logger.warning("Schema injection failed for Shopify page %s: %s", page_id, exc)
 
@@ -584,8 +594,8 @@ Requirements:
         return (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
-            f'  <url><loc>{base}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>\n'
-            f'  <url><loc>{base}/llms.txt</loc><changefreq>weekly</changefreq><priority>0.3</priority></url>\n'
+            f"  <url><loc>{base}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>\n"
+            f"  <url><loc>{base}/llms.txt</loc><changefreq>weekly</changefreq><priority>0.3</priority></url>\n"
             "</urlset>"
         )
 
@@ -700,15 +710,17 @@ Requirements:
 
 # ─── WordPress improvements ───────────────────────────────────────────────────
 
+
 def _apply_wordpress_improvements(run, integration, issues: list[dict]) -> list[dict]:
     """
     Apply GEO SEO improvements to WordPress posts and pages.
     Branches between WordPress.com OAuth (public-api.wordpress.com REST API)
     and self-hosted WordPress (wp-json/wp/v2 + Application Passwords).
     """
-    import requests as req_lib
-    from urllib.parse import urljoin
     import base64
+    from urllib.parse import urljoin
+
+    import requests as req_lib
 
     site_url = integration.metadata.get("site_url", "").rstrip("/")
     username = integration.metadata.get("username", "")
@@ -760,18 +772,20 @@ def _apply_wordpress_improvements(run, integration, issues: list[dict]) -> list[
                             json={"excerpt": fix["description"]},
                             timeout=15,
                         )
-                        improvements.append({
-                            "provider": "wordpress",
-                            "improvement_type": "meta_description",
-                            "resource_type": "page",
-                            "resource_id": str(page_id),
-                            "resource_title": title,
-                            "field_name": "excerpt",
-                            "old_value": excerpt,
-                            "new_value": fix["description"],
-                            "status": "applied" if r.ok else "failed",
-                            "error_message": "" if r.ok else f"HTTP {r.status_code}",
-                        })
+                        improvements.append(
+                            {
+                                "provider": "wordpress",
+                                "improvement_type": "meta_description",
+                                "resource_type": "page",
+                                "resource_id": str(page_id),
+                                "resource_title": title,
+                                "field_name": "excerpt",
+                                "old_value": excerpt,
+                                "new_value": fix["description"],
+                                "status": "applied" if r.ok else "failed",
+                                "error_message": "" if r.ok else f"HTTP {r.status_code}",
+                            }
+                        )
                     except Exception as exc:
                         logger.warning("WPcom page excerpt update failed %s: %s", page_id, exc)
 
@@ -791,18 +805,20 @@ def _apply_wordpress_improvements(run, integration, issues: list[dict]) -> list[
                             json={"content": f"{content}\n{schema_block}"},
                             timeout=15,
                         )
-                        improvements.append({
-                            "provider": "wordpress",
-                            "improvement_type": "schema_markup",
-                            "resource_type": "page",
-                            "resource_id": str(page_id),
-                            "resource_title": page_title,
-                            "field_name": "content",
-                            "old_value": "no-json-ld",
-                            "new_value": "json-ld-added",
-                            "status": "applied" if r.ok else "failed",
-                            "error_message": "" if r.ok else f"HTTP {r.status_code}",
-                        })
+                        improvements.append(
+                            {
+                                "provider": "wordpress",
+                                "improvement_type": "schema_markup",
+                                "resource_type": "page",
+                                "resource_id": str(page_id),
+                                "resource_title": page_title,
+                                "field_name": "content",
+                                "old_value": "no-json-ld",
+                                "new_value": "json-ld-added",
+                                "status": "applied" if r.ok else "failed",
+                                "error_message": "" if r.ok else f"HTTP {r.status_code}",
+                            }
+                        )
                     except Exception as exc:
                         logger.warning("WPcom schema inject failed: %s", exc)
 
@@ -833,18 +849,20 @@ def _apply_wordpress_improvements(run, integration, issues: list[dict]) -> list[
                             json={"excerpt": fix["description"]},
                             timeout=15,
                         )
-                        improvements.append({
-                            "provider": "wordpress",
-                            "improvement_type": "meta_description",
-                            "resource_type": "post",
-                            "resource_id": str(post_id),
-                            "resource_title": title,
-                            "field_name": "excerpt",
-                            "old_value": excerpt,
-                            "new_value": fix["description"],
-                            "status": "applied" if r.ok else "failed",
-                            "error_message": "" if r.ok else f"HTTP {r.status_code}",
-                        })
+                        improvements.append(
+                            {
+                                "provider": "wordpress",
+                                "improvement_type": "meta_description",
+                                "resource_type": "post",
+                                "resource_id": str(post_id),
+                                "resource_title": title,
+                                "field_name": "excerpt",
+                                "old_value": excerpt,
+                                "new_value": fix["description"],
+                                "status": "applied" if r.ok else "failed",
+                                "error_message": "" if r.ok else f"HTTP {r.status_code}",
+                            }
+                        )
                     except Exception as exc:
                         logger.warning("WPcom post excerpt update failed %s: %s", post_id, exc)
 
@@ -880,18 +898,20 @@ def _apply_wordpress_improvements(run, integration, issues: list[dict]) -> list[
                             json={"excerpt": fix["description"]},
                             timeout=15,
                         )
-                        improvements.append({
-                            "provider": "wordpress",
-                            "improvement_type": "meta_description",
-                            "resource_type": "page",
-                            "resource_id": str(page_id),
-                            "resource_title": title_rendered,
-                            "field_name": "excerpt",
-                            "old_value": excerpt_rendered,
-                            "new_value": fix["description"],
-                            "status": "applied" if r.ok else "failed",
-                            "error_message": "" if r.ok else f"HTTP {r.status_code}",
-                        })
+                        improvements.append(
+                            {
+                                "provider": "wordpress",
+                                "improvement_type": "meta_description",
+                                "resource_type": "page",
+                                "resource_id": str(page_id),
+                                "resource_title": title_rendered,
+                                "field_name": "excerpt",
+                                "old_value": excerpt_rendered,
+                                "new_value": fix["description"],
+                                "status": "applied" if r.ok else "failed",
+                                "error_message": "" if r.ok else f"HTTP {r.status_code}",
+                            }
+                        )
                     except Exception as exc:
                         logger.warning("WP page update failed %s: %s", page_id, exc)
 
@@ -922,18 +942,20 @@ def _apply_wordpress_improvements(run, integration, issues: list[dict]) -> list[
                             json={"excerpt": fix["description"]},
                             timeout=15,
                         )
-                        improvements.append({
-                            "provider": "wordpress",
-                            "improvement_type": "meta_description",
-                            "resource_type": "post",
-                            "resource_id": str(post_id),
-                            "resource_title": title_rendered,
-                            "field_name": "excerpt",
-                            "old_value": excerpt_rendered,
-                            "new_value": fix["description"],
-                            "status": "applied" if r.ok else "failed",
-                            "error_message": "" if r.ok else f"HTTP {r.status_code}",
-                        })
+                        improvements.append(
+                            {
+                                "provider": "wordpress",
+                                "improvement_type": "meta_description",
+                                "resource_type": "post",
+                                "resource_id": str(post_id),
+                                "resource_title": title_rendered,
+                                "field_name": "excerpt",
+                                "old_value": excerpt_rendered,
+                                "new_value": fix["description"],
+                                "status": "applied" if r.ok else "failed",
+                                "error_message": "" if r.ok else f"HTTP {r.status_code}",
+                            }
+                        )
                     except Exception as exc:
                         logger.warning("WP post update failed %s: %s", post_id, exc)
 
@@ -941,6 +963,7 @@ def _apply_wordpress_improvements(run, integration, issues: list[dict]) -> list[
 
 
 # ─── Main entry point ─────────────────────────────────────────────────────────
+
 
 def run_geo_improvements(run_id: int) -> int:
     """
@@ -979,7 +1002,9 @@ def run_geo_improvements(run_id: int) -> int:
 
     score_before = run.composite_score or 0.0
     issues = _extract_issues(page_score)
-    logger.info("GeoImprovement: run %d has %d issues, provider=%s", run_id, len(issues), integration.provider)
+    logger.info(
+        "GeoImprovement: run %d has %d issues, provider=%s", run_id, len(issues), integration.provider
+    )
 
     # Apply platform-specific improvements
     try:
@@ -990,7 +1015,9 @@ def run_geo_improvements(run_id: int) -> int:
         else:
             raw_improvements = []
     except Exception as exc:
-        logger.error("GeoImprovement: applying improvements failed for run %d: %s", run_id, exc, exc_info=True)
+        logger.error(
+            "GeoImprovement: applying improvements failed for run %d: %s", run_id, exc, exc_info=True
+        )
         return 0
 
     # Persist each improvement

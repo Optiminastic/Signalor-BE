@@ -10,6 +10,7 @@ import logging
 import re
 from urllib.parse import urlparse
 
+from . import siteone_crawl
 from .crawler import CrawlResult, check_file_exists, fetch_file_content
 from .utils import safe_score
 
@@ -431,7 +432,10 @@ def _score_structure_quality(crawl: CrawlResult) -> tuple[float, dict]:
 
 # ── Main Scorer ───────────────────────────────────────────────────────────
 
-def score_technical(crawl: CrawlResult) -> tuple[float, dict]:
+def score_technical(
+    crawl: CrawlResult,
+    siteone: "siteone_crawl.SiteOneReport | None" = None,
+) -> tuple[float, dict]:
     """
     Technical Score v3 — Real AI readiness.
 
@@ -492,5 +496,9 @@ def score_technical(crawl: CrawlResult) -> tuple[float, dict]:
 
     total = safe_score(total)
     details["score"] = total
+
+    # Optional SiteOne enrichment (data only — does not change the score).
+    if siteone is not None:
+        details["checks"]["siteone"] = siteone_crawl.to_check_payload(siteone)
 
     return total, details

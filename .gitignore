@@ -49,3 +49,5 @@ deploy/stack.env
 # Cloudflare Origin Certificate (private key) — never commit
 deploy/certs/
 origin.cert
+# concurrent-log-handler runtime lock files
+logs/*.lock

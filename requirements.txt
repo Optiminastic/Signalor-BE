@@ -94,3 +94,10 @@ sentry-sdk>=2.0,<3
 
 # Crawlee — in-process HTTP crawler for the analyzer site crawl (crawl_site)
 crawlee>=1.7,<2
+
+# Multiprocess-safe rotating file log handler. Stock RotatingFileHandler cannot
+# rotate django.log on Windows when the dev-server autoreloader (2 procs) or the
+# analyzer thread-pool hold the file open — os.rename() raises WinError 32.
+# ConcurrentRotatingFileHandler coordinates rotation with a portalocker file lock.
+# (Pulls pywin32 on Windows only, via its own env markers.)
+concurrent-log-handler>=0.9,<1
