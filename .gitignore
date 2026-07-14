@@ -16,7 +16,9 @@ staging.env
 # Django
 # db.sqlite3
 *.log
+*.log.*
 logs/*.log
+logs/*.log.*
 staticfiles/
 media/
 
