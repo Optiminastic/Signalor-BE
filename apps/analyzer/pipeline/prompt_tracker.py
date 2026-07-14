@@ -514,7 +514,9 @@ def generate_brand_prompts(
         loc = ", ".join(filter(None, [location, country]))
         context_parts.append(f"Location/Region: {loc}")
     if page_content:
-        context_parts.append(f"Website content (first 2000 chars):\n{page_content[:2000]}")
+        # ``page_content`` is retrieved, relevant knowledge when the KB has content
+        # (Epic 4), else a raw crawl-text fallback. The slice is a safety cap only.
+        context_parts.append(f"Relevant website content:\n{page_content[:2500]}")
     if products:
         context_parts.append(f"Pages/products found on site: {', '.join(products[:10])}")
 

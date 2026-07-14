@@ -22,8 +22,9 @@ DEFAULT_EMBED_MODEL = os.getenv("CORPUS_EMBED_MODEL", "models/text-embedding-004
 # Gemini caps batch embedding requests; stay well under it.
 _MAX_BATCH = 100
 # task_type tunes the vector for its role; documents and queries use different
-# types (the query side lives in Epic 4's retrieval).
+# types so a query vector lands near the docs that answer it (Epic 4 retrieval).
 _TASK_DOCUMENT = "retrieval_document"
+_TASK_QUERY = "retrieval_query"
 
 
 def _google_key() -> str | None:
@@ -85,3 +86,25 @@ def embed_documents(texts: list[str], *, model: str | None = None) -> list[list[
     for start in range(0, len(texts), _MAX_BATCH):
         out.extend(_embed_batch(genai, texts[start : start + _MAX_BATCH], model))
     return out
+
+
+def embed_query(text: str, *, model: str | None = None) -> list[float] | None:
+    """Embed a search query for retrieval (Epic 4).
+
+    Uses ``retrieval_query`` task type so the vector lands near the documents that
+    answer it (documents are embedded with ``retrieval_document``). Returns the
+    768-float vector, or ``None`` if it could not be embedded. Never raises.
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+    genai = _configure()
+    if genai is None:
+        return None
+    model = model or DEFAULT_EMBED_MODEL
+    try:
+        resp = genai.embed_content(model=model, content=text, task_type=_TASK_QUERY)
+        return list(resp["embedding"])
+    except Exception as exc:  # noqa: BLE001 - fail-soft
+        logger.warning("Query embedding failed: %s", exc)
+        return None

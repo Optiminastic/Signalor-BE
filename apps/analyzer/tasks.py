@@ -193,12 +193,20 @@ def _save_probes_and_tracks(
     else:
         try:
             from apps.organizations.services.brand_context import build_context
+            from apps.organizations.services.retrieval import build_knowledge_block
+
+            # Epic 4 (RAG): reason over retrieved, relevant knowledge instead of a raw
+            # crawl-text slice. The knowledge base is populated late in a run, so the
+            # brand's first analysis has an empty KB and cleanly falls back to crawl_text;
+            # later runs retrieve real content. The brand card stays the system= prompt.
+            kb_query = " ".join(filter(None, [brand_name, industry, "products, services, pricing, audience"]))
+            page_content = build_knowledge_block(run, kb_query) or crawl_text
 
             brand_prompts = generate_brand_prompts(
                 brand_name=brand_name,
                 brand_url=brand_url,
                 industry=industry,
-                page_content=crawl_text,
+                page_content=page_content,
                 meta_description=meta_description,
                 products=site_pages,
                 location="",
