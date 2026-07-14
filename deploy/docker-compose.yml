@@ -29,7 +29,7 @@ name: signalor
 # .env present, APP_TAG defaults to `latest` and `docker compose build` builds
 # the image locally under the same name.
 x-app: &app
-  image: ghcr.io/rishi-optiminastic/signalor-be:${APP_TAG:-latest}
+  image: ghcr.io/optiminastic/signalor-be:${APP_TAG:-latest}
   build:
     context: ..
     dockerfile: Dockerfile

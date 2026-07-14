@@ -36,7 +36,7 @@ pillow==12.1.1
 pgvector==0.3.6
 proto-plus==1.27.1
 protobuf==5.29.2
-psycopg2-binary==2.9.9
+psycopg2-binary==2.9.10
 pyasn1==0.6.2
 pyasn1_modules==0.4.2
 pydantic==2.12.5

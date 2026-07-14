@@ -3,6 +3,34 @@
 from django.db import migrations, models
 
 
+def _existing_columns(schema_editor, table):
+    return {
+        col.name
+        for col in schema_editor.connection.introspection.get_table_description(
+            schema_editor.connection.cursor(), table
+        )
+    }
+
+
+def add_storefront_password(apps, schema_editor):
+    table = "analyzer_analysisrun"
+    if "storefront_password" in _existing_columns(schema_editor, table):
+        return
+    with schema_editor.connection.cursor() as cursor:
+        cursor.execute(
+            f'ALTER TABLE "{table}" ADD COLUMN "storefront_password" '
+            "VARCHAR(255) NOT NULL DEFAULT '';"
+        )
+
+
+def drop_storefront_password(apps, schema_editor):
+    table = "analyzer_analysisrun"
+    if "storefront_password" not in _existing_columns(schema_editor, table):
+        return
+    with schema_editor.connection.cursor() as cursor:
+        cursor.execute(f'ALTER TABLE "{table}" DROP COLUMN "storefront_password";')
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -10,23 +38,15 @@ class Migration(migrations.Migration):
     ]
 
     # Wrap the column add in SeparateDatabaseAndState so Django updates its
-    # model state regardless, but the SQL itself is idempotent via
-    # `IF NOT EXISTS` — staging already has this column from a previous
-    # deploy and would otherwise fail with `DuplicateColumn`.
+    # model state regardless, but the DB op is idempotent via a column-exists
+    # check — staging already has this column from a previous deploy and
+    # would otherwise fail with `DuplicateColumn`. Uses RunPython (not
+    # RunSQL with `IF NOT EXISTS`) so it also works on SQLite (dev), which
+    # doesn't support that clause.
     operations = [
         migrations.SeparateDatabaseAndState(
             database_operations=[
-                migrations.RunSQL(
-                    sql=(
-                        "ALTER TABLE analyzer_analysisrun "
-                        "ADD COLUMN IF NOT EXISTS storefront_password "
-                        "VARCHAR(255) NOT NULL DEFAULT '';"
-                    ),
-                    reverse_sql=(
-                        "ALTER TABLE analyzer_analysisrun "
-                        "DROP COLUMN IF EXISTS storefront_password;"
-                    ),
-                ),
+                migrations.RunPython(add_storefront_password, reverse_code=drop_storefront_password),
             ],
             state_operations=[
                 migrations.AddField(

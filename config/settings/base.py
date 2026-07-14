@@ -27,7 +27,9 @@ if SENTRY_DSN:
         dsn=SENTRY_DSN,
         integrations=[DjangoIntegration()],
         traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0")),
-        send_default_pii=False,
+        # Attach request headers and user IP to events. See
+        # https://docs.sentry.io/platforms/python/data-management/data-collected/
+        send_default_pii=True,
         environment=os.getenv("SENTRY_ENVIRONMENT", "production"),
     )
 
