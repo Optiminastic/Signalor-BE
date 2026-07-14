@@ -12,6 +12,7 @@ import logging
 import requests
 
 from .models import AutoFixJob, Recommendation
+from .prompts import render
 
 logger = logging.getLogger("apps")
 
@@ -310,26 +311,15 @@ def _generate_content_fix(run, recommendation) -> tuple[str, str | None]:
     integration = resolve_store_integration_for_run(org, run.url) if org else None
     page_content = _read_page_content(integration, run.url) if integration else ""
 
-    prompt = f"""You are a GEO (Generative Engine Optimization) expert improving a webpage.
-
-TASK: Apply this specific recommendation to the page content below.
-
-RECOMMENDATION: {recommendation.title}
-DESCRIPTION: {recommendation.description}
-INSTRUCTIONS: {recommendation.action}
-BRAND: {brand_name}
-URL: {run.url}
-
-CURRENT PAGE CONTENT (HTML):
-{page_content[:10000]}
-
-RULES:
-1. Keep ALL existing content — do NOT remove anything.
-2. ADD improvements naturally inline.
-3. Use real, verifiable facts only — NO fake statistics or citations.
-4. If this is a product page, improve it as a product page.
-5. Use proper HTML formatting.
-6. Return ONLY the improved HTML content. No markdown, no explanations."""
+    prompt = render(
+        "auto_fix_content",
+        title=recommendation.title,
+        description=recommendation.description,
+        action=recommendation.action,
+        brand=brand_name,
+        url=run.url,
+        page_content=page_content[:10000],
+    )
 
     raw = _call_llm(prompt, f"fix-{recommendation.category}", tier="medium")
     return _sanitize_llm_output(raw, "content")
@@ -344,20 +334,12 @@ def _generate_schema_fix(run, recommendation) -> tuple[str, str | None]:
     integration = resolve_store_integration_for_run(org, run.url) if org else None
     page_content = _read_page_content(integration, run.url) if integration else ""
 
-    prompt = f"""Generate comprehensive JSON-LD structured data for this website.
-
-BRAND: {brand_name}
-URL: {run.url}
-PAGE CONTENT (first 3000 chars): {page_content[:3000]}
-
-Generate valid JSON-LD wrapped in <script type="application/ld+json"> tags. Include:
-1. Organization schema (name, url, logo if mentioned)
-2. WebSite schema with SearchAction
-3. If product page: Product schema
-4. If article/blog: Article schema
-5. BreadcrumbList if applicable
-
-Return ONLY the <script> tag(s). No markdown, no explanations."""
+    prompt = render(
+        "auto_fix_jsonld",
+        brand=brand_name,
+        url=run.url,
+        page_content=page_content[:3000],
+    )
 
     raw = _call_llm(prompt, "fix-schema", tier="medium")
     schema_html, err = _sanitize_llm_output(raw, "schema")
@@ -379,16 +361,14 @@ def _generate_meta_fix(run, recommendation) -> tuple[str, str | None]:
     integration = resolve_store_integration_for_run(org, run.url) if org else None
     page_content = _read_page_content(integration, run.url) if integration else ""
 
-    prompt = f"""Generate an SEO-optimized title and meta description for this page.
-
-BRAND: {brand_name}
-URL: {run.url}
-RECOMMENDATION: {recommendation.title}
-INSTRUCTIONS: {recommendation.action}
-CURRENT CONTENT (first 3000 chars): {page_content[:3000]}
-
-Return ONLY a JSON object: {{"seo_title": "...", "seo_description": "..."}}
-Title max 60 chars. Description max 160 chars. No markdown."""
+    prompt = render(
+        "auto_fix_meta",
+        brand=brand_name,
+        url=run.url,
+        title=recommendation.title,
+        action=recommendation.action,
+        page_content=page_content[:3000],
+    )
 
     from .pipeline.schemas import MetaFix
     from .pipeline.structured import ask_structured
@@ -403,30 +383,12 @@ def _generate_llms_txt(run, recommendation) -> tuple[str, str | None]:
     """Generate llms.txt content. Returns (content, error)."""
     brand_name = run.brand_name or "the website"
 
-    prompt = f"""Create an llms.txt file following the llmstxt.org specification.
-
-BRAND: {brand_name}
-URL: {run.url}
-INSTRUCTIONS: {recommendation.action}
-
-The llms.txt format is Markdown with this EXACT structure:
-
-# {brand_name}
-
-> One sentence describing what this site/business is about.
-
-## Section Name
-
-- [Page Title](https://full-url): Brief description of the page
-
-RULES:
-1. Start with H1 (# Brand Name) — exactly one
-2. Blockquote (>) with a one-line description right after H1
-3. Use H2 (##) for sections: Products, Pages, Info, etc.
-4. Each item is a Markdown link with description: - [Title](URL): Description
-5. Use REAL URLs from the site (based on the URL pattern)
-6. Keep it concise — table of contents, NOT essays
-7. Return ONLY the markdown content. No code blocks."""
+    prompt = render(
+        "auto_fix_llms_txt",
+        brand=brand_name,
+        url=run.url,
+        action=recommendation.action,
+    )
 
     raw = _call_llm(prompt, "fix-llms", tier="cheap")
     return _sanitize_llm_output(raw, "file")
@@ -436,12 +398,11 @@ def _generate_robots_txt(run, recommendation) -> tuple[str, str | None]:
     """Generate robots.txt content. Returns (content, error)."""
     brand_name = run.brand_name or "the website"
 
-    prompt = f"""Create a robots.txt file for:
-BRAND: {brand_name}
-URL: {run.url}
-
-Include standard rules + allow all AI crawlers (GPTBot, ClaudeBot, Google-Extended, PerplexityBot, ChatGPT-User, CCBot).
-Return ONLY the robots.txt content."""
+    prompt = render(
+        "auto_fix_robots",
+        brand=brand_name,
+        url=run.url,
+    )
 
     raw = _call_llm(prompt, "fix-robots", tier="cheap")
     return _sanitize_llm_output(raw, "file")

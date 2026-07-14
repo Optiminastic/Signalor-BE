@@ -14,6 +14,8 @@ import logging
 
 from django.utils import timezone as django_timezone
 
+from ..prompts import render
+
 logger = logging.getLogger("apps")
 
 
@@ -322,21 +324,13 @@ def get_all_recommendations_fix_plan(run) -> list[dict]:
 
 def _generate_meta_fix(brand_name: str, site_url: str, current_title: str, current_desc: str) -> dict:
     """Use LLM to produce an improved meta title and description."""
-    prompt = f"""You are a GEO SEO expert. Generate an improved meta title and meta description
-for this website to improve its geographic search visibility.
-
-Brand: {brand_name}
-Site URL: {site_url}
-Current meta title: {current_title or "(not set)"}
-Current meta description: {current_desc or "(not set)"}
-
-Requirements:
-- Meta title: 50-60 characters, include brand name and a geographic signal if relevant
-- Meta description: 140-160 characters, compelling, include a geographic keyword naturally
-- JSON only, no extra text
-
-Return exactly:
-{{"title": "...", "description": "..."}}"""
+    prompt = render(
+        "geo_meta",
+        brand_name=brand_name,
+        site_url=site_url,
+        current_title=current_title or "(not set)",
+        current_desc=current_desc or "(not set)",
+    )
 
     from .schemas import MetaFix
     from .structured import ask_structured
@@ -351,16 +345,12 @@ Return exactly:
 
 def _generate_schema_markup(brand_name: str, site_url: str, description: str) -> str:
     """Generate JSON-LD Organization schema."""
-    prompt = f"""Generate a clean JSON-LD Organization schema markup for this website.
-
-Brand: {brand_name}
-URL: {site_url}
-Description: {description or "A business website"}
-
-Return ONLY the JSON-LD script tag, nothing else:
-<script type="application/ld+json">
-{{...}}
-</script>"""
+    prompt = render(
+        "geo_jsonld",
+        brand_name=brand_name,
+        site_url=site_url,
+        description=description or "A business website",
+    )
 
     try:
         return _llm_generate(prompt)
@@ -478,10 +468,11 @@ def _apply_shopify_improvements(run, integration, issues: list[dict]) -> list[di
 
         if "content_quality" in fix_keys and len(plain_desc) < 140:
             # Description is too short — generate an improved one
-            prompt = f"""Write a compelling SEO product description for this Shopify product.
-Product title: {product_title}
-Brand: {brand_name}
-Keep it under 200 words, focus on benefits and geographic availability. Plain text only."""
+            prompt = render(
+                "geo_product_desc",
+                product_title=product_title,
+                brand_name=brand_name,
+            )
             try:
                 new_desc = _llm_generate(prompt)
                 update_resp = req_lib.put(
@@ -553,22 +544,7 @@ Keep it under 200 words, focus on benefits and geographic availability. Plain te
     # (e.g. /apps/signalor/llms.txt — see technical.py fallbacks) or another edge route.
     # Filename must be llms.txt (two m's), not llm.txt.
     def _generate_llms_txt(brand_name: str, site_url: str) -> str:
-        prompt = f"""You are writing llms.txt for AI crawl guidance.
-
-Brand: {brand_name}
-Site URL: {site_url}
-
-Write plain text for /llms.txt (no markdown, no code fences).
-Include:
-- A short 2-3 sentence site summary
-- Key sections/offerings (5-8 bullet lines)
-- 4-7 absolute URLs the AI agent should follow (use the Site URL as base)
-- Notes for AI agents about crawl behavior (very short)
-
-Requirements:
-- Must be at least 400 characters
-- Must contain the words "Sitemap" and "Robots"
-- Output ONLY the text."""
+        prompt = render("geo_llms_txt", brand_name=brand_name, site_url=site_url)
         return _llm_generate(prompt)
 
     def _generate_sitemap_xml(site_url: str) -> str:

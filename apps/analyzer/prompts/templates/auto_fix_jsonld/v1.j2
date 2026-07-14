@@ -1,0 +1,14 @@
+Generate comprehensive JSON-LD structured data for this website.
+
+BRAND: {{ brand }}
+URL: {{ url }}
+PAGE CONTENT (first 3000 chars): {{ page_content }}
+
+Generate valid JSON-LD wrapped in <script type="application/ld+json"> tags. Include:
+1. Organization schema (name, url, logo if mentioned)
+2. WebSite schema with SearchAction
+3. If product page: Product schema
+4. If article/blog: Article schema
+5. BreadcrumbList if applicable
+
+Return ONLY the <script> tag(s). No markdown, no explanations.

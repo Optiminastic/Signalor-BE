@@ -16,12 +16,6 @@ import logging
 
 logger = logging.getLogger("apps")
 
-_SYNTH_SYSTEM = (
-    "You are a brand analyst. Synthesize a structured brand profile ONLY from the data "
-    "provided. Never invent facts (no fabricated founders, dates, revenue, or claims). "
-    "Leave any unknown field as an empty string or empty list."
-)
-
 _MAX_COMPETITORS = 8
 
 
@@ -110,13 +104,14 @@ def _gather_competitors(run) -> list:
 
 def _synthesize(run, kit, market, competitors):
     from apps.analyzer.pipeline.structured import ask_structured
+    from apps.analyzer.prompts import render
     from apps.organizations.schemas import BrandSynthesis
 
     return ask_structured(
         _build_synth_prompt(run, kit, market, competitors),
         BrandSynthesis,
         tier="medium",
-        system=_SYNTH_SYSTEM,
+        system=render("brand_synthesis_system"),
         max_tokens=1200,
         temperature=0.2,
         purpose=f"brand_profile:org={getattr(run, 'organization_id', '?')}",
@@ -124,14 +119,14 @@ def _synthesize(run, kit, market, competitors):
 
 
 def _build_synth_prompt(run, kit, market, competitors) -> str:
+    from apps.analyzer.prompts import render
+
     comp_names = ", ".join(getattr(c, "name", "") for c in competitors if getattr(c, "name", ""))
-    return (
-        "Synthesize a structured brand profile for the brand below.\n\n"
-        f"=== Brand submission kit ===\n{_fmt_kit(kit, run)}\n\n"
-        f"=== Market signals ===\n{_fmt_market(market)}\n\n"
-        f"=== Known competitors ===\n{comp_names or '(none found)'}\n\n"
-        "Produce identity, positioning, audience, and voice. Ground target_markets and "
-        "model_type in the market signals above. Keep copy concise and factual."
+    return render(
+        "brand_synthesis",
+        kit_block=_fmt_kit(kit, run),
+        market_block=_fmt_market(market),
+        competitors=comp_names or "(none found)",
     )
 
 

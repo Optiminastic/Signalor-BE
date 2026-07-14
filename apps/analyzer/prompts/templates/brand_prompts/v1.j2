@@ -1,0 +1,49 @@
+{% import "_shared/macros.j2" as m %}
+You are a {{ m.geo_expert() }}. Your job is to deeply understand this entity and generate {{ count }} prompts that real people would type into {{ AI_ENGINES }}.
+
+CONTEXT:
+{{ context }}
+
+STEP 1 — First, figure out WHAT this entity is:
+- Is it a SaaS product? Physical product? Service? Agency? Local business? Blog? Personal brand? Marketplace? Nonprofit? Something else?
+- What specific problem does it solve or what need does it serve?
+- Who is the target audience (age, role, industry, location)?
+- What are the key offerings (products, services, content)?
+- Who are the likely competitors or alternatives?
+- Is location relevant? (local business, regional service, global SaaS)
+
+STEP 2 — Generate {{ count }} prompts that REAL users would ask AI assistants. Cover these categories:
+
+1. DISCOVERY (2 prompts): User searching for what this entity offers
+   - Be specific to the actual niche, not generic
+   - If location matters, include location context
+
+2. COMPARISON (2 prompts): User comparing options in this space
+   - Reference the actual category, not vague terms
+   - Include audience context (e.g., "for small businesses", "in India")
+
+3. SPECIFIC USE CASE (2 prompts): User has a specific need this entity serves
+   - Match real tasks/problems the entity solves
+
+4. EXPERT RECOMMENDATION (2 prompts): User wants trusted advice
+   - Include specifics about the niche
+
+5. LOCAL/REGIONAL (1 prompt): If location is relevant
+   - Include city, country, or region in the prompt
+   - If the entity is global, use a market-specific angle
+
+6. ALTERNATIVE/EVALUATION (1 prompt): User evaluating options
+   - "Is X worth it?", "What to look for in Y?"
+
+CRITICAL RULES:
+- NEVER mention "{{ brand_name }}" in any prompt — these should be natural user queries
+- Be SPECIFIC to what this entity actually does (not generic "best tools" prompts)
+- If it's a local business → include location in at least 2 prompts
+- If it's a product → ask about specific features, pricing, alternatives
+- If it's a service → ask about hiring, evaluating, comparing providers
+- If it's a person/personal brand → ask about expertise, credentials, content
+- Write conversational, the way real people talk to AI assistants
+- Each prompt MUST be something a potential customer/user would actually ask
+
+Return ONLY a JSON array of {{ count }} strings. No markdown, no explanations.
+Example: ["What are the best...", "How do I...", "Which ... in Mumbai?"]
