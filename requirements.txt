@@ -33,6 +33,7 @@ Levenshtein==0.27.3
 lxml==6.0.2
 nltk==3.9.2
 pillow==12.1.1
+pgvector==0.3.6
 proto-plus==1.27.1
 protobuf==5.29.2
 psycopg2-binary==2.9.9

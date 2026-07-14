@@ -58,6 +58,15 @@ MODEL_LABELS = {
 # Default rotation order
 MODEL_ORDER = ["gemini", "gpt", "claude"]
 
+# Model tiers (Cheap / Medium / Strong). Values are MODELS nicknames, so tiers
+# reuse the same model-id + OPENROUTER_*_MODEL env plumbing (one source of truth).
+# Opus is intentionally not a tier default -- reach it via preferred_provider="opus".
+TIERS = {
+    "cheap": os.getenv("LLM_TIER_CHEAP", "gemini"),  # google/gemini-2.5-flash
+    "medium": os.getenv("LLM_TIER_MEDIUM", "claude"),  # anthropic/claude-haiku-4.5
+    "strong": os.getenv("LLM_TIER_STRONG", "sonnet"),  # anthropic/claude-sonnet-4.5
+}
+
 _call_counter = 0
 
 # Cache availability check so we don't re-check every call
@@ -132,15 +141,28 @@ def _get_google_key() -> str | None:
     return os.environ.get("GOOGLE_API_KEY", "").strip() or None
 
 
-def _pick_model(preferred: str | None = None) -> str:
-    """Pick a model. If preferred is set, use that. Otherwise rotate."""
+def _pick_model(preferred: str | None = None, tier: str | None = None) -> str:
+    """Pick a model. Precedence: explicit ``preferred`` nickname (back-compat) ->
+    ``tier`` (cheap/medium/strong) -> round-robin rotation."""
     if preferred and preferred in MODELS:
         return MODELS[preferred]
+
+    if tier and tier in TIERS:
+        nickname = TIERS[tier]
+        if nickname in MODELS:
+            return MODELS[nickname]
 
     global _call_counter
     _call_counter += 1
     provider = MODEL_ORDER[_call_counter % len(MODEL_ORDER)]
     return MODELS[provider]
+
+
+def _supports_json_object(model: str) -> bool:
+    """Whether a model id accepts OpenRouter ``response_format={"type":"json_object"}``.
+    Anthropic models commonly reject/ignore it, so we only send it to OpenAI/Gemini
+    and keep prompt + Pydantic validation as the real correctness gate."""
+    return model.startswith(("openai/", "google/"))
 
 
 def is_available() -> bool:
@@ -170,10 +192,20 @@ def ask_llm(
     max_tokens: int = 1024,
     temperature: float = 0.0,
     purpose: str = "",
+    *,
+    system: str | None = None,
+    tier: str | None = None,
+    response_format: dict | None = None,
 ) -> str:
     """
     Send a prompt to an LLM via OpenRouter, or direct Gemini as fallback.
     Returns response text string. Empty string on failure.
+
+    Optional keyword-only extras (omitting them reproduces the previous payload):
+      system:          system-role instruction sent ahead of the user prompt.
+      tier:            "cheap" | "medium" | "strong" model routing (see TIERS).
+      response_format: OpenAI-style dict, e.g. {"type": "json_object"} (best-effort;
+                       only forwarded to models that support it).
     """
     text, _ = ask_llm_with_citations(
         prompt,
@@ -181,6 +213,9 @@ def ask_llm(
         max_tokens=max_tokens,
         temperature=temperature,
         purpose=purpose,
+        system=system,
+        tier=tier,
+        response_format=response_format,
     )
     return text
 
@@ -191,6 +226,10 @@ def ask_llm_with_citations(
     max_tokens: int = 1024,
     temperature: float = 0.0,
     purpose: str = "",
+    *,
+    system: str | None = None,
+    tier: str | None = None,
+    response_format: dict | None = None,
 ) -> tuple[str, list[dict]]:
     """
     Send a prompt to an LLM and return (text, citations[]).
@@ -198,6 +237,8 @@ def ask_llm_with_citations(
     Citations come from provider-specific fields OpenRouter passes through
     (Perplexity `citations`, annotations with `url_citation`, Gemini grounding).
     Empty list when the provider does not attach source metadata.
+
+    See ``ask_llm`` for the keyword-only ``system`` / ``tier`` / ``response_format`` extras.
     """
     if not is_available():
         return ("", [])
@@ -205,9 +246,24 @@ def ask_llm_with_citations(
     openrouter_key = _get_openrouter_key()
 
     if openrouter_key:
-        return _call_openrouter(prompt, preferred_provider, max_tokens, temperature, openrouter_key, purpose)
+        return _call_openrouter(
+            prompt,
+            preferred_provider,
+            max_tokens,
+            temperature,
+            openrouter_key,
+            purpose,
+            system=system,
+            tier=tier,
+            response_format=response_format,
+        )
     else:
-        return (_call_gemini_direct(prompt, purpose), [])
+        return (
+            _call_gemini_direct(
+                prompt, purpose, system=system, temperature=temperature, response_format=response_format
+            ),
+            [],
+        )
 
 
 def _cache_last_block(msg: dict) -> dict:
@@ -428,6 +484,15 @@ def _extract_citations_from_openrouter(data: dict) -> list[dict]:
     return out
 
 
+def _build_messages(prompt: str, system: str | None) -> list[dict]:
+    """OpenAI-style message list, with an optional leading system message."""
+    messages: list[dict] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    return messages
+
+
 def _call_openrouter(
     prompt: str,
     preferred_provider: str | None,
@@ -435,9 +500,13 @@ def _call_openrouter(
     temperature: float,
     api_key: str,
     purpose: str = "",
+    *,
+    system: str | None = None,
+    tier: str | None = None,
+    response_format: dict | None = None,
 ) -> tuple[str, list[dict]]:
     """Call OpenRouter API. Returns (text, citations[])."""
-    model = _pick_model(preferred_provider)
+    model = _pick_model(preferred_provider, tier)
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -448,10 +517,14 @@ def _call_openrouter(
 
     payload = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": _build_messages(prompt, system),
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
+    # Best-effort JSON mode: only send to models that accept it so Anthropic
+    # never 400s. Correctness is enforced downstream by Pydantic validation.
+    if response_format and _supports_json_object(model):
+        payload["response_format"] = response_format
 
     prompt_preview = _log_preview(prompt, 120)
     logger.info('[LLM REQUEST] >> %s | %s | prompt: "%s..."', model, purpose, prompt_preview)
@@ -484,13 +557,33 @@ def _call_openrouter(
 
         logger.warning("[LLM FAILED] << %s | HTTP %d: %s", model, resp.status_code, resp.text[:200])
         _log_call(model, purpose, prompt, f"HTTP {resp.status_code}", "error", duration_ms)
-        return _retry_with_next(prompt, model, max_tokens, temperature, api_key, headers, purpose)
+        return _retry_with_next(
+            prompt,
+            model,
+            max_tokens,
+            temperature,
+            api_key,
+            headers,
+            purpose,
+            system=system,
+            response_format=response_format,
+        )
 
     except requests.Timeout:
         duration_ms = int((time.time() - t0) * 1000)
         logger.warning("OpenRouter timeout for %s", model)
         _log_call(model, purpose, prompt, "Timeout", "error", duration_ms)
-        return _retry_with_next(prompt, model, max_tokens, temperature, api_key, headers, purpose)
+        return _retry_with_next(
+            prompt,
+            model,
+            max_tokens,
+            temperature,
+            api_key,
+            headers,
+            purpose,
+            system=system,
+            response_format=response_format,
+        )
     except Exception as exc:
         duration_ms = int((time.time() - t0) * 1000)
         logger.warning("OpenRouter error for %s: %s", model, exc)
@@ -506,6 +599,9 @@ def _retry_with_next(
     api_key: str,
     headers: dict,
     purpose: str = "",
+    *,
+    system: str | None = None,
+    response_format: dict | None = None,
 ) -> tuple[str, list[dict]]:
     """Try the next model if the first one fails. Returns (text, citations[])."""
     all_models = list(MODELS.values())
@@ -517,10 +613,12 @@ def _retry_with_next(
         try:
             payload = {
                 "model": model,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": _build_messages(prompt, system),
                 "max_tokens": max_tokens,
                 "temperature": temperature,
             }
+            if response_format and _supports_json_object(model):
+                payload["response_format"] = response_format
             resp = requests.post(
                 OPENROUTER_API_URL,
                 headers=headers,
@@ -541,7 +639,14 @@ def _retry_with_next(
     return ("", [])
 
 
-def _call_gemini_direct(prompt: str, purpose: str = "") -> str:
+def _call_gemini_direct(
+    prompt: str,
+    purpose: str = "",
+    *,
+    system: str | None = None,
+    temperature: float = 0.0,
+    response_format: dict | None = None,
+) -> str:
     """Direct Gemini API call -- used when no OpenRouter key is set."""
     google_key = _get_google_key()
     if not google_key:
@@ -555,8 +660,21 @@ def _call_gemini_direct(prompt: str, purpose: str = "") -> str:
         import google.generativeai as genai
 
         genai.configure(api_key=google_key)
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        response = model.generate_content(prompt, generation_config={"temperature": 0.0})
+        # system_instruction / response_mime_type are guarded: some installed SDK
+        # versions reject them. On TypeError we fall back to prompt-only (with the
+        # system text prepended so the instruction is not silently lost).
+        gen_config: dict = {"temperature": temperature}
+        if response_format:
+            gen_config["response_mime_type"] = "application/json"
+        try:
+            model = genai.GenerativeModel("gemini-2.5-flash", system_instruction=system or None)
+            response = model.generate_content(prompt, generation_config=gen_config)
+        except TypeError:
+            effective_prompt = f"{system}\n\n{prompt}" if system else prompt
+            model = genai.GenerativeModel("gemini-2.5-flash")
+            response = model.generate_content(
+                effective_prompt, generation_config={"temperature": temperature}
+            )
         text = response.text.strip()
         duration_ms = int((time.time() - t0) * 1000)
         response_preview = _log_preview(text, 200)

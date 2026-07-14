@@ -12,7 +12,6 @@ extracts signals, and computes 5-factor weighted AI visibility scores.
   Final Score = authority×0.40 + content_quality×0.35 + structural×0.25
 """
 
-import json
 import logging
 
 logger = logging.getLogger("apps")
@@ -490,12 +489,17 @@ def generate_brand_prompts(
     location: str = "",
     country: str = "",
     count: int = 10,
+    brand_card: str | None = None,
 ) -> list[str]:
     """
     Use AI to deeply understand the brand — what it is (product, service, person,
     local business, anything) — then generate prompts real users would ask AI.
+
+    ``brand_card`` (Epic 2) is an optional verified brand-context block passed as the
+    system prompt so generation is grounded in the approved BrandProfile.
     """
-    from .llm import ask_llm as ask_single_llm
+    from .schemas import PromptList
+    from .structured import ask_structured
 
     # Build rich context
     context_parts = [
@@ -587,16 +591,18 @@ CRITICAL RULES:
 Return ONLY a JSON array of {count} strings. No markdown, no explanations.
 Example: ["What are the best...", "How do I...", "Which ... in Mumbai?"]"""
 
-    try:
-        raw = ask_single_llm(prompt, purpose="Generate Brand Prompts", max_tokens=1200)
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        prompts = json.loads(raw)
-        if isinstance(prompts, list) and len(prompts) > 0:
-            return [str(p).strip() for p in prompts[:count] if str(p).strip()]
-    except Exception as exc:
-        logger.warning("generate_brand_prompts failed: %s", exc)
+    result = ask_structured(
+        prompt,
+        PromptList,
+        tier="cheap",
+        purpose="Generate Brand Prompts",
+        max_tokens=1200,
+        system=brand_card or None,
+    )
+    if result is not None:
+        cleaned = [str(p).strip() for p in result.root[:count] if str(p).strip()]
+        if cleaned:
+            return cleaned
 
     # Fallback with whatever context we have
     niche = industry or "services"

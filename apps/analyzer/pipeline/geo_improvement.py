@@ -10,7 +10,6 @@ After an analysis run completes, this service:
 
 from __future__ import annotations
 
-import json
 import logging
 
 from django.utils import timezone as django_timezone
@@ -22,31 +21,15 @@ logger = logging.getLogger("apps")
 
 
 def _llm_generate(prompt: str) -> str:
-    """Call the project's LLM (OpenRouter / Gemini) and return the text."""
-    import os
+    """Generate text via the shared LLM client. Routes to the medium tier
+    (claude-haiku-4.5, matching the previous hardcoded model) at temperature 0.3.
+    Raises on an empty response so the callers' try/except still skips the write."""
+    from .llm import ask_llm
 
-    import requests
-
-    api_key = os.getenv("OPENROUTER_API_KEY", "")
-    if not api_key:
-        raise ValueError("OPENROUTER_API_KEY not set")
-
-    resp = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": "anthropic/claude-haiku-4.5",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.3,
-            "max_tokens": 800,
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip()
+    text = ask_llm(prompt, tier="medium", temperature=0.3, max_tokens=800, purpose="GEO Improvement")
+    if not text:
+        raise ValueError("LLM returned an empty response")
+    return text
 
 
 # ─── Issue extraction ─────────────────────────────────────────────────────────
@@ -355,15 +338,15 @@ Requirements:
 Return exactly:
 {{"title": "...", "description": "..."}}"""
 
-    try:
-        raw = _llm_generate(prompt)
-        # Extract JSON from response
-        start = raw.find("{")
-        end = raw.rfind("}") + 1
-        return json.loads(raw[start:end])
-    except Exception as exc:
-        logger.warning("Meta fix generation failed: %s", exc)
+    from .schemas import MetaFix
+    from .structured import ask_structured
+
+    meta = ask_structured(
+        prompt, MetaFix, tier="medium", temperature=0.3, max_tokens=800, purpose="GEO Meta Fix"
+    )
+    if meta is None:
         return {}
+    return {"title": meta.seo_title, "description": meta.seo_description}
 
 
 def _generate_schema_markup(brand_name: str, site_url: str, description: str) -> str:

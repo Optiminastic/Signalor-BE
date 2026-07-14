@@ -5,14 +5,15 @@ from urllib.parse import quote_plus, unquote, urlparse
 
 import requests
 
-from .crawler import CrawlResult, crawl_page
-from .content import score_content
-from .schema import score_schema
-from .eeat import score_eeat
-from .technical import score_technical
 from .aggregator import compute_static_composite
-from .utils import extract_brand_name
+from .content import score_content
+from .crawler import CrawlResult, crawl_page
+from .eeat import score_eeat
 from .market_profiler import build_brand_market_profile
+from .schema import score_schema
+from .structured import extract_json
+from .technical import score_technical
+from .utils import extract_brand_name
 
 logger = logging.getLogger("apps")
 
@@ -204,10 +205,20 @@ KNOWN_COUNTRIES = sorted(
 
 
 GLOBAL_KEYWORDS = {
-    "worldwide", "global", "internationally", "international",
-    "across the globe", "all over the world", "50+ countries",
-    "100+ countries", "180+ countries", "available in", "ships to",
-    "serving customers in", "operating in", "offices in",
+    "worldwide",
+    "global",
+    "internationally",
+    "international",
+    "across the globe",
+    "all over the world",
+    "50+ countries",
+    "100+ countries",
+    "180+ countries",
+    "available in",
+    "ships to",
+    "serving customers in",
+    "operating in",
+    "offices in",
 }
 
 
@@ -353,7 +364,9 @@ def _passes_source_specific_gate(comp: dict, is_marketplace: bool, source_flags:
     if is_marketplace:
         if any(k in blob for k in ("dtc", "direct-to-consumer", "single brand", "single-brand")):
             return False
-        if not (_is_likely_marketplace(comp) or any(k in blob for k in ("marketplace", "platform", "retailer"))):
+        if not (
+            _is_likely_marketplace(comp) or any(k in blob for k in ("marketplace", "platform", "retailer"))
+        ):
             return False
 
     if source_flags.get("derm_led"):
@@ -395,7 +408,9 @@ def _infer_source_is_marketplace(
         reasons.append(f"market_profile:product_brand_count={product_brand_count}")
 
     business_model = str((understanding or {}).get("business_model") or "").lower()
-    if any(k in business_model for k in ("marketplace", "multi-brand", "multibrand", "aggregator", "platform")):
+    if any(
+        k in business_model for k in ("marketplace", "multi-brand", "multibrand", "aggregator", "platform")
+    ):
         reasons.append(f"site_understanding:business_model={business_model[:60]}")
 
     context_sample = f"{site_context}\n{crawl.text[:2000]}".lower()
@@ -405,6 +420,7 @@ def _infer_source_is_marketplace(
 
     # At least one strong signal is enough for marketplace mode.
     return (len(reasons) > 0), reasons
+
 
 def _detect_country_from_signals(crawl: CrawlResult) -> tuple[str | None, bool]:
     """
@@ -450,7 +466,9 @@ def _detect_country_from_signals(crawl: CrawlResult) -> tuple[str | None, bool]:
     if multi_currency or multi_phone or global_language_count >= 2:
         logger.info(
             "Global brand detected: global_keywords=%d, currencies=%s, phone_countries=%s",
-            global_language_count, currencies_found, phone_countries_found,
+            global_language_count,
+            currencies_found,
+            phone_countries_found,
         )
         return None, True
 
@@ -468,37 +486,76 @@ def _detect_country_from_signals(crawl: CrawlResult) -> tuple[str | None, bool]:
 
     # ── 5. City / country keywords in page text (last resort) ──
     country_keywords = {
-        "india": "India", "bangalore": "India", "bengaluru": "India",
-        "mumbai": "India", "delhi": "India", "hyderabad": "India",
-        "chennai": "India", "pune": "India", "kolkata": "India",
-        "ahmedabad": "India", "jaipur": "India", "noida": "India",
-        "gurugram": "India", "gurgaon": "India",
-        "united kingdom": "United Kingdom", "london": "United Kingdom",
-        "germany": "Germany", "berlin": "Germany",
-        "france": "France", "paris": "France",
-        "australia": "Australia", "sydney": "Australia", "melbourne": "Australia",
-        "brazil": "Brazil", "são paulo": "Brazil",
+        "india": "India",
+        "bangalore": "India",
+        "bengaluru": "India",
+        "mumbai": "India",
+        "delhi": "India",
+        "hyderabad": "India",
+        "chennai": "India",
+        "pune": "India",
+        "kolkata": "India",
+        "ahmedabad": "India",
+        "jaipur": "India",
+        "noida": "India",
+        "gurugram": "India",
+        "gurgaon": "India",
+        "united kingdom": "United Kingdom",
+        "london": "United Kingdom",
+        "germany": "Germany",
+        "berlin": "Germany",
+        "france": "France",
+        "paris": "France",
+        "australia": "Australia",
+        "sydney": "Australia",
+        "melbourne": "Australia",
+        "brazil": "Brazil",
+        "são paulo": "Brazil",
         "singapore": "Singapore",
-        "dubai": "United Arab Emirates", "abu dhabi": "United Arab Emirates",
-        "pakistan": "Pakistan", "karachi": "Pakistan", "lahore": "Pakistan",
-        "nigeria": "Nigeria", "lagos": "Nigeria",
-        "south africa": "South Africa", "johannesburg": "South Africa",
-        "mexico": "Mexico", "mexico city": "Mexico",
-        "indonesia": "Indonesia", "jakarta": "Indonesia",
-        "malaysia": "Malaysia", "kuala lumpur": "Malaysia",
-        "philippines": "Philippines", "manila": "Philippines",
-        "vietnam": "Vietnam", "ho chi minh": "Vietnam",
-        "thailand": "Thailand", "bangkok": "Thailand",
-        "turkey": "Turkey", "istanbul": "Turkey",
-        "poland": "Poland", "warsaw": "Poland",
-        "netherlands": "Netherlands", "amsterdam": "Netherlands",
-        "sweden": "Sweden", "stockholm": "Sweden",
-        "spain": "Spain", "madrid": "Spain",
-        "italy": "Italy", "rome": "Italy", "milan": "Italy",
-        "japan": "Japan", "tokyo": "Japan",
-        "south korea": "South Korea", "seoul": "South Korea",
-        "china": "China", "beijing": "China", "shanghai": "China",
-        "canada": "Canada", "toronto": "Canada", "vancouver": "Canada",
+        "dubai": "United Arab Emirates",
+        "abu dhabi": "United Arab Emirates",
+        "pakistan": "Pakistan",
+        "karachi": "Pakistan",
+        "lahore": "Pakistan",
+        "nigeria": "Nigeria",
+        "lagos": "Nigeria",
+        "south africa": "South Africa",
+        "johannesburg": "South Africa",
+        "mexico": "Mexico",
+        "mexico city": "Mexico",
+        "indonesia": "Indonesia",
+        "jakarta": "Indonesia",
+        "malaysia": "Malaysia",
+        "kuala lumpur": "Malaysia",
+        "philippines": "Philippines",
+        "manila": "Philippines",
+        "vietnam": "Vietnam",
+        "ho chi minh": "Vietnam",
+        "thailand": "Thailand",
+        "bangkok": "Thailand",
+        "turkey": "Turkey",
+        "istanbul": "Turkey",
+        "poland": "Poland",
+        "warsaw": "Poland",
+        "netherlands": "Netherlands",
+        "amsterdam": "Netherlands",
+        "sweden": "Sweden",
+        "stockholm": "Sweden",
+        "spain": "Spain",
+        "madrid": "Spain",
+        "italy": "Italy",
+        "rome": "Italy",
+        "milan": "Italy",
+        "japan": "Japan",
+        "tokyo": "Japan",
+        "south korea": "South Korea",
+        "seoul": "South Korea",
+        "china": "China",
+        "beijing": "China",
+        "shanghai": "China",
+        "canada": "Canada",
+        "toronto": "Canada",
+        "vancouver": "Canada",
     }
     for keyword, country in country_keywords.items():
         if keyword in soup_text:
@@ -591,7 +648,7 @@ def _understand_site(
     """
     try:
         from .llm import ask_llm
-        
+
         country_hint = (
             f"User-selected target country: {user_country}. "
             f"Treat this as authoritative and keep primary_country aligned to {user_country}."
@@ -621,20 +678,18 @@ def _understand_site(
         )
 
         text = ask_llm(prompt, preferred_provider="gemini", max_tokens=600, purpose="Site Understanding")
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            data = json.loads(match.group())
-            if isinstance(data, dict) and data.get("product_category"):
-                # Hard signals always override LLM's answer
-                if user_country:
-                    data["primary_country"] = user_country
-                    # When user picks country, avoid mismatched city from model inference.
-                    data["primary_city"] = ""
-                elif is_global:
-                    data["primary_country"] = "Global"
-                elif detected_country:
-                    data["primary_country"] = detected_country
-                return data
+        data = extract_json(text, expect=dict)
+        if isinstance(data, dict) and data.get("product_category"):
+            # Hard signals always override LLM's answer
+            if user_country:
+                data["primary_country"] = user_country
+                # When user picks country, avoid mismatched city from model inference.
+                data["primary_city"] = ""
+            elif is_global:
+                data["primary_country"] = "Global"
+            elif detected_country:
+                data["primary_country"] = detected_country
+            return data
     except Exception as exc:
         logger.warning("Site understanding failed: %s", exc)
 
@@ -848,8 +903,7 @@ def _select_competitors_from_web_candidates_llm(
         )
         shortlisted = _parse_competitors_from_llm(text, brand_name, is_marketplace=is_marketplace)
         allowed_hosts = {
-            urlparse(_normalize_homepage_url(item.get("url", ""))).netloc.lower()
-            for item in web_candidates
+            urlparse(_normalize_homepage_url(item.get("url", ""))).netloc.lower() for item in web_candidates
         }
         filtered = []
         for comp in shortlisted:
@@ -885,7 +939,12 @@ def _discover_competitors_llm(
             industry = understanding.get("industry", "")
             # Market profiler country always wins, then hard-detected country, then LLM guess.
             profile_top_market = (market_profile or {}).get("top_market")
-            primary_country = user_country or profile_top_market or detected_country or understanding.get("primary_country", "")
+            primary_country = (
+                user_country
+                or profile_top_market
+                or detected_country
+                or understanding.get("primary_country", "")
+            )
             primary_city = understanding.get("primary_city", "")
             business_model = understanding.get("business_model", "")
             customer_segment = understanding.get("customer_segment", "")
@@ -1088,11 +1147,15 @@ def _discover_competitors_llm(
                 max_tokens=900,
                 purpose="Competitor Discovery Refill",
             )
-            refill_candidates = _parse_competitors_from_llm(refill_text, brand_name, is_marketplace=is_marketplace)
+            refill_candidates = _parse_competitors_from_llm(
+                refill_text, brand_name, is_marketplace=is_marketplace
+            )
             gated_refill_candidates = [
                 comp
                 for comp in refill_candidates
-                if _passes_source_specific_gate(comp, is_marketplace=is_marketplace, source_flags=source_flags)
+                if _passes_source_specific_gate(
+                    comp, is_marketplace=is_marketplace, source_flags=source_flags
+                )
             ]
             if gated_refill_candidates:
                 refill_candidates = gated_refill_candidates
@@ -1161,7 +1224,7 @@ def _normalize_homepage_url(url: str) -> str:
     if not raw:
         return ""
     if raw.startswith("http://"):
-        raw = "https://" + raw[len("http://"):]
+        raw = "https://" + raw[len("http://") :]
     elif not raw.startswith("https://"):
         raw = "https://" + raw.lstrip("/")
     parsed = urlparse(raw)
@@ -1244,14 +1307,7 @@ def _normalize_competitor_item(item: object, brand_name: str) -> dict | None:
 
 
 def _parse_competitors_from_llm(text: str, brand_name: str, is_marketplace: bool = False) -> list[dict]:
-    match = re.search(r"\[.*\]", text or "", re.DOTALL)
-    if not match:
-        return []
-
-    try:
-        data = json.loads(match.group())
-    except json.JSONDecodeError:
-        return []
+    data = extract_json(text or "", expect=list)
     if not isinstance(data, list):
         return []
 
@@ -1264,7 +1320,9 @@ def _parse_competitors_from_llm(text: str, brand_name: str, is_marketplace: bool
         if comp["relevance_score"] is not None and comp["relevance_score"] < RELEVANCE_THRESHOLD:
             logger.info(
                 "Dropping competitor %s: relevance score %d < threshold %d",
-                comp["name"], comp["relevance_score"], RELEVANCE_THRESHOLD,
+                comp["name"],
+                comp["relevance_score"],
+                RELEVANCE_THRESHOLD,
             )
             continue
         if not is_marketplace and _is_likely_marketplace(comp):
@@ -1335,9 +1393,13 @@ def discover_competitors(crawl: CrawlResult, user_country: str | None = None) ->
         market_profile.get("model_type") == "marketplace"
         or int(model_details.get("product_brand_count") or 0) >= 8
     )
-    normalized_user_country = _normalize_country_name(user_country) or (str(user_country or "").strip() or None)
+    normalized_user_country = _normalize_country_name(user_country) or (
+        str(user_country or "").strip() or None
+    )
     detected_country = normalized_user_country or market_profile.get("top_market")
-    is_global = False if normalized_user_country else (market_profile.get("model_type") == "global_dropshipping")
+    is_global = (
+        False if normalized_user_country else (market_profile.get("model_type") == "global_dropshipping")
+    )
     logger.info(
         "Market profiler for %s: top_market=%s conf=%s model=%s marketplace=%s top_scores=%s addresses=%s",
         brand_name,
@@ -1429,7 +1491,10 @@ def discover_competitors(crawl: CrawlResult, user_country: str | None = None) ->
 
     logger.info(
         "Competitors for %s: %d discovered, %d validated, %d returned",
-        brand_name, len(competitors), len(validated), len(selected),
+        brand_name,
+        len(competitors),
+        len(validated),
+        len(selected),
     )
     return selected[:5]
 
@@ -1445,9 +1510,7 @@ def score_competitor(url: str) -> tuple[dict | None, float]:
     eeat_score_val, eeat_details = score_eeat(crawl)
     technical_score_val, technical_details = score_technical(crawl)
 
-    composite = compute_static_composite(
-        content_score, schema_score_val, eeat_score_val, technical_score_val
-    )
+    composite = compute_static_composite(content_score, schema_score_val, eeat_score_val, technical_score_val)
 
     page_data = {
         "url": url,

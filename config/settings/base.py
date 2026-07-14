@@ -286,6 +286,17 @@ GITHUB_APP_SLUG = os.getenv("GITHUB_APP_SLUG", "")
 GITHUB_APP_PRIVATE_KEY = os.getenv("GITHUB_APP_PRIVATE_KEY", "")
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 
+# Knowledge base ingestion (Epic 3). Each analysis run chunks + embeds the pages
+# it already crawled into BrandCorpusChunk rows (org-scoped, fail-soft). Bounds
+# keep per-run embedding cost predictable; skip-unchanged keeps steady state cheap.
+SIGNALOR_ENABLE_INGESTION = os.getenv("SIGNALOR_ENABLE_INGESTION", "true").lower() != "false"
+CORPUS_EMBED_MODEL = os.getenv("CORPUS_EMBED_MODEL", "models/text-embedding-004")
+CORPUS_CHUNK_MAX_CHARS = int(os.getenv("CORPUS_CHUNK_MAX_CHARS", 2800))
+CORPUS_CHUNK_OVERLAP_CHARS = int(os.getenv("CORPUS_CHUNK_OVERLAP_CHARS", 200))
+CORPUS_CHUNK_MIN_CHARS = int(os.getenv("CORPUS_CHUNK_MIN_CHARS", 40))
+CORPUS_MAX_PAGES = int(os.getenv("CORPUS_MAX_PAGES", 25))
+CORPUS_MAX_CHUNKS_PER_RUN = int(os.getenv("CORPUS_MAX_CHUNKS_PER_RUN", 300))
+
 DATAFORSEO_LOGIN = os.getenv("DATAFORSEO_LOGIN", "")
 DATAFORSEO_PASSWORD = os.getenv("DATAFORSEO_PASSWORD", "")
 

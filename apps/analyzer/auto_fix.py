@@ -8,8 +8,6 @@ import hashlib
 import hmac
 import json
 import logging
-import os
-import time
 
 import requests
 
@@ -64,25 +62,12 @@ _REFUSAL_PHRASES = [
 
 def _sanitize_llm_output(text: str, purpose: str = "content") -> tuple[str, str | None]:
     """Clean and validate LLM output. Returns (cleaned_text, error_or_none)."""
+    from .pipeline.structured import extract_json, strip_code_fences
+
     if not text or not text.strip():
         return "", "AI returned empty content."
 
-    cleaned = text.strip()
-
-    if cleaned.startswith("```"):
-        lines = cleaned.split("\n")
-        start = 0
-        end = len(lines)
-        for i, line in enumerate(lines):
-            if line.strip().startswith("```"):
-                start = i + 1
-                break
-        for i in range(len(lines) - 1, start - 1, -1):
-            if lines[i].strip().startswith("```"):
-                end = i
-                break
-        cleaned = "\n".join(lines[start:end]).strip()
-
+    cleaned = strip_code_fences(text)
     if not cleaned:
         return "", "AI output was empty after cleanup."
 
@@ -91,15 +76,11 @@ def _sanitize_llm_output(text: str, purpose: str = "content") -> tuple[str, str 
         if lower.startswith(phrase):
             return "", f"AI declined: {cleaned[:100]}..."
 
-    if purpose == "schema":
-        import re as _re
-
-        json_match = _re.search(r"\{.*\}", cleaned, _re.DOTALL)
-        if json_match:
-            try:
-                json.loads(json_match.group())
-            except json.JSONDecodeError as e:
-                return "", f"Generated schema has invalid JSON: {e}"
+    # Schema output is a <script>...</script> tag; extract_json validates the JSON
+    # body inside it (json.loads fails on the tag, the {...} slice fallback parses it).
+    if purpose == "schema" and "{" in cleaned:
+        if extract_json(cleaned) is None:
+            return "", "Generated schema has invalid JSON."
 
     return cleaned, None
 
@@ -159,53 +140,12 @@ def _detect_fix_type(recommendation: Recommendation) -> str:
 # ── LLM ───────────────────────────────────────────────────────────────────
 
 
-def _call_llm(prompt: str, purpose: str = "auto-fix") -> str:
-    """Call LLM via OpenRouter (fallback to Gemini direct)."""
-    openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
-    google_key = os.getenv("GOOGLE_API_KEY", "")
+def _call_llm(prompt: str, purpose: str = "auto-fix", tier: str = "medium") -> str:
+    """Generate text via the shared LLM client (``pipeline.llm``). Returns "" on
+    failure. ``tier`` is cheap/medium/strong (see ``llm.TIERS``)."""
+    from .pipeline.llm import ask_llm
 
-    t0 = time.time()
-
-    if openrouter_key:
-        try:
-            resp = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {openrouter_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": os.getenv("OPENROUTER_GEMINI_MODEL", "google/gemini-2.5-flash"),
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 8192,
-                },
-                timeout=90,
-            )
-            if resp.ok:
-                text = resp.json()["choices"][0]["message"]["content"].strip()
-                duration_ms = int((time.time() - t0) * 1000)
-                logger.info("[AUTO-FIX LLM] %s | %dms | %d chars", purpose, duration_ms, len(text))
-                return text
-            logger.warning("[AUTO-FIX LLM] OpenRouter %d: %s", resp.status_code, resp.text[:200])
-        except Exception as exc:
-            logger.warning("[AUTO-FIX LLM] OpenRouter failed: %s", exc)
-
-    if google_key:
-        try:
-            import google.generativeai as genai
-
-            genai.configure(api_key=google_key)
-            model = genai.GenerativeModel("gemini-2.5-flash")
-            response = model.generate_content(prompt)
-            text = response.text.strip()
-            duration_ms = int((time.time() - t0) * 1000)
-            logger.info("[AUTO-FIX LLM] %s | %dms | %d chars (gemini)", purpose, duration_ms, len(text))
-            return text
-        except Exception as exc:
-            logger.warning("[AUTO-FIX LLM] Gemini failed: %s", exc)
-            raise
-
-    raise ValueError("No LLM API key configured")
+    return ask_llm(prompt, tier=tier, max_tokens=8192, purpose=purpose)
 
 
 # ── Plugin / App Router ──────────────────────────────────────────────────
@@ -391,7 +331,7 @@ RULES:
 5. Use proper HTML formatting.
 6. Return ONLY the improved HTML content. No markdown, no explanations."""
 
-    raw = _call_llm(prompt, f"fix-{recommendation.category}")
+    raw = _call_llm(prompt, f"fix-{recommendation.category}", tier="medium")
     return _sanitize_llm_output(raw, "content")
 
 
@@ -419,7 +359,7 @@ Generate valid JSON-LD wrapped in <script type="application/ld+json"> tags. Incl
 
 Return ONLY the <script> tag(s). No markdown, no explanations."""
 
-    raw = _call_llm(prompt, "fix-schema")
+    raw = _call_llm(prompt, "fix-schema", tier="medium")
     schema_html, err = _sanitize_llm_output(raw, "schema")
     if err:
         return "", err
@@ -450,19 +390,13 @@ CURRENT CONTENT (first 3000 chars): {page_content[:3000]}
 Return ONLY a JSON object: {{"seo_title": "...", "seo_description": "..."}}
 Title max 60 chars. Description max 160 chars. No markdown."""
 
-    raw = _call_llm(prompt, "fix-meta")
-    cleaned, err = _sanitize_llm_output(raw, "content")
-    if err:
-        return "", err
+    from .pipeline.schemas import MetaFix
+    from .pipeline.structured import ask_structured
 
-    # Validate it's JSON
-    try:
-        meta = json.loads(cleaned)
-        return json.dumps(
-            {"seo_title": meta.get("seo_title", ""), "seo_description": meta.get("seo_description", "")}
-        ), None
-    except (ValueError, TypeError):
-        return json.dumps({"seo_title": cleaned[:60], "seo_description": ""}), None
+    meta = ask_structured(prompt, MetaFix, tier="cheap", purpose="fix-meta", max_tokens=8192)
+    if meta is None:
+        return "", "AI returned invalid meta JSON."
+    return json.dumps({"seo_title": meta.seo_title, "seo_description": meta.seo_description}), None
 
 
 def _generate_llms_txt(run, recommendation) -> tuple[str, str | None]:
@@ -494,7 +428,7 @@ RULES:
 6. Keep it concise — table of contents, NOT essays
 7. Return ONLY the markdown content. No code blocks."""
 
-    raw = _call_llm(prompt, "fix-llms")
+    raw = _call_llm(prompt, "fix-llms", tier="cheap")
     return _sanitize_llm_output(raw, "file")
 
 
@@ -509,7 +443,7 @@ URL: {run.url}
 Include standard rules + allow all AI crawlers (GPTBot, ClaudeBot, Google-Extended, PerplexityBot, ChatGPT-User, CCBot).
 Return ONLY the robots.txt content."""
 
-    raw = _call_llm(prompt, "fix-robots")
+    raw = _call_llm(prompt, "fix-robots", tier="cheap")
     return _sanitize_llm_output(raw, "file")
 
 
