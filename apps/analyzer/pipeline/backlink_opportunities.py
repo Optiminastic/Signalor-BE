@@ -6,12 +6,11 @@ can submit a listing, claim a profile, or earn a citation that's relevant to
 the prompt's intent. Output is persisted as BacklinkOpportunity rows tied to
 the prompt; subsequent loads read from the DB without re-prompting the LLM.
 """
+
 from __future__ import annotations
 
-import json
 import logging
-import re
-from typing import Iterable
+from collections.abc import Iterable
 
 from apps.analyzer.models import BacklinkOpportunity, PromptTrack
 from apps.analyzer.pipeline.llm import ask_llm
@@ -19,15 +18,6 @@ from apps.analyzer.pipeline.llm import ask_llm
 logger = logging.getLogger("apps")
 
 VALID_CATEGORIES = {c.value for c in BacklinkOpportunity.Category}
-
-
-def _strip_code_fences(text: str) -> str:
-    text = text.strip()
-    if text.startswith("```"):
-        # ```json ... ``` or ``` ... ```
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    return text.strip()
 
 
 def _build_prompt(
@@ -39,8 +29,8 @@ def _build_prompt(
     cited = ", ".join(sorted({d for d in cited_domains if d})) or "(none)"
     return f"""You are a backlink acquisition strategist helping a brand earn citations on the open web.
 
-BRAND: {brand_name or '(no name)'}
-BRAND SITE: {brand_url or '(unknown)'}
+BRAND: {brand_name or "(no name)"}
+BRAND SITE: {brand_url or "(unknown)"}
 USER QUERY: {prompt_text}
 DOMAINS ALREADY CITED FOR THIS QUERY: {cited}
 
@@ -75,11 +65,12 @@ URLs MUST be the actual submission/signup/contribution page if known, otherwise 
 
 
 def _parse_response(raw: str) -> list[dict]:
-    cleaned = _strip_code_fences(raw)
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        logger.warning("backlink_opportunities: JSON parse failed: %s; raw=%r", e, cleaned[:300])
+    # Epic 8: shared extractor (was a private fence-stripper + json.loads).
+    from .structured import extract_json
+
+    data = extract_json(raw, expect=list)
+    if data is None:
+        logger.warning("backlink_opportunities: JSON parse failed; raw=%r", (raw or "")[:300])
         return []
     if not isinstance(data, list):
         logger.warning("backlink_opportunities: top-level not a list, got %s", type(data).__name__)
@@ -103,14 +94,16 @@ def _parse_response(raw: str) -> list[dict]:
         except (TypeError, ValueError):
             priority = 2
         priority = max(1, min(3, priority))
-        out.append({
-            "name": name[:200],
-            "description": (row.get("description") or "").strip()[:400],
-            "rationale": (row.get("rationale") or "").strip()[:400],
-            "submit_url": url[:2048],
-            "category": category,
-            "priority": priority,
-        })
+        out.append(
+            {
+                "name": name[:200],
+                "description": (row.get("description") or "").strip()[:400],
+                "rationale": (row.get("rationale") or "").strip()[:400],
+                "submit_url": url[:2048],
+                "category": category,
+                "priority": priority,
+            }
+        )
     return out
 
 
@@ -123,11 +116,7 @@ def generate_for_prompt(track: PromptTrack) -> list[BacklinkOpportunity]:
     Returns the list of newly-created BacklinkOpportunity objects.
     """
     run = track.analysis_run
-    cited = (
-        track.results.values_list("citations__domain", flat=True)
-        .exclude(citations__domain="")
-        .distinct()
-    )
+    cited = track.results.values_list("citations__domain", flat=True).exclude(citations__domain="").distinct()
     cited_domains = [d for d in cited if d]
 
     prompt = _build_prompt(
@@ -154,23 +143,23 @@ def generate_for_prompt(track: PromptTrack) -> list[BacklinkOpportunity]:
 
     # De-dupe on (track, submit_url) so a regeneration doesn't multiply rows.
     existing_urls = set(
-        BacklinkOpportunity.objects
-        .filter(prompt_track=track)
-        .values_list("submit_url", flat=True)
+        BacklinkOpportunity.objects.filter(prompt_track=track).values_list("submit_url", flat=True)
     )
     created: list[BacklinkOpportunity] = []
     for r in rows:
         if r["submit_url"] in existing_urls:
             continue
-        created.append(BacklinkOpportunity.objects.create(
-            prompt_track=track,
-            name=r["name"],
-            description=r["description"],
-            rationale=r["rationale"],
-            submit_url=r["submit_url"],
-            category=r["category"],
-            priority=r["priority"],
-        ))
+        created.append(
+            BacklinkOpportunity.objects.create(
+                prompt_track=track,
+                name=r["name"],
+                description=r["description"],
+                rationale=r["rationale"],
+                submit_url=r["submit_url"],
+                category=r["category"],
+                priority=r["priority"],
+            )
+        )
         existing_urls.add(r["submit_url"])
     return created
 

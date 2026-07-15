@@ -344,16 +344,16 @@ def _generate_meta_fix(brand_name: str, site_url: str, current_title: str, curre
 
 
 def _generate_schema_markup(brand_name: str, site_url: str, description: str) -> str:
-    """Generate JSON-LD Organization schema."""
-    prompt = render(
-        "geo_jsonld",
-        brand_name=brand_name,
-        site_url=site_url,
-        description=description or "A business website",
-    )
+    """Generate JSON-LD via the shared generator (Epic 8: one prompt, not two)."""
+    from .schema_gen import build_jsonld_prompt, ensure_script_wrapped
 
+    prompt = build_jsonld_prompt(
+        brand=brand_name,
+        url=site_url,
+        context=description or "A business website",
+    )
     try:
-        return _llm_generate(prompt)
+        return ensure_script_wrapped(_llm_generate(prompt))
     except Exception as exc:
         logger.warning("Schema generation failed: %s", exc)
         return ""
@@ -536,133 +536,13 @@ def _apply_shopify_improvements(run, integration, issues: list[dict]) -> list[di
                 except Exception as exc:
                     logger.warning("Schema injection failed for Shopify page %s: %s", page_id, exc)
 
-    # 5. Publish technical crawl files (llms.txt, robots.txt, sitemap.xml)
-    #
-    # Shopify limitation: uploading these as theme assets does NOT make them available at
-    # https://{shop}.myshopify.com/llms.txt — the storefront router does not map theme files
-    # to the site root. Crawlers succeed only if you also expose the file via App Proxy
-    # (e.g. /apps/signalor/llms.txt — see technical.py fallbacks) or another edge route.
-    # Filename must be llms.txt (two m's), not llm.txt.
-    def _generate_llms_txt(brand_name: str, site_url: str) -> str:
-        prompt = render("geo_llms_txt", brand_name=brand_name, site_url=site_url)
-        return _llm_generate(prompt)
-
-    def _generate_sitemap_xml(site_url: str) -> str:
-        base = site_url.rstrip("/")
-        # Minimal valid sitemap for faster indexing + easier crawler validation.
-        return (
-            '<?xml version="1.0" encoding="UTF-8"?>\n'
-            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
-            f"  <url><loc>{base}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>\n"
-            f"  <url><loc>{base}/llms.txt</loc><changefreq>weekly</changefreq><priority>0.3</priority></url>\n"
-            "</urlset>"
-        )
-
-    def _generate_robots_txt(site_url: str) -> str:
-        base = site_url.rstrip("/")
-        # The technical checker only fails when Disallow matches AI bot paths.
-        # So we intentionally omit Disallow entirely to allow AI crawlers.
-        return f"User-agent: *\nAllow: /\nSitemap: {base}/sitemap.xml\n"
-
-    def _shopify_get_main_theme_id() -> str | None:
-        try:
-            themes_resp = req_lib.get(
-                f"{base_url}/themes.json",
-                headers=headers,
-                params={"limit": 10, "fields": "id,name,role"},
-                timeout=15,
-            )
-            if not themes_resp.ok:
-                return None
-            themes = themes_resp.json().get("themes", []) if themes_resp.text else []
-            for t in themes:
-                if t.get("role") == "main":
-                    return str(t.get("id"))
-            if themes:
-                return str(themes[0].get("id"))
-        except Exception as exc:
-            logger.warning("Failed to fetch Shopify themes: %s", exc)
-        return None
-
-    def _shopify_upsert_theme_asset(theme_id: str, asset_key: str, value: str) -> bool:
-        try:
-            update_resp = req_lib.put(
-                f"{base_url}/themes/{theme_id}/assets.json",
-                headers=headers,
-                json={"asset": {"key": asset_key, "value": value}},
-                timeout=15,
-            )
-            return bool(update_resp.ok)
-        except Exception as exc:
-            logger.warning("Shopify asset upsert failed for %s: %s", asset_key, exc)
-            return False
-
-    tech_needs = any(k in fix_keys for k in {"llms_txt", "sitemap", "robots_txt"})
-    if tech_needs:
-        theme_id = _shopify_get_main_theme_id()
-        if theme_id:
-            llms_value = None
-            sitemap_value = None
-            robots_value = None
-            try:
-                if "llms_txt" in fix_keys:
-                    llms_value = _generate_llms_txt(brand_name, run.url)
-                if "sitemap" in fix_keys:
-                    sitemap_value = _generate_sitemap_xml(run.url)
-                if "robots_txt" in fix_keys:
-                    robots_value = _generate_robots_txt(run.url)
-            except Exception as exc:
-                logger.warning("Failed to generate technical crawl files: %s", exc)
-
-            asset_key_candidates = {
-                "llms_txt": ["llms.txt", "assets/llms.txt", ".well-known/llms.txt"],
-                "sitemap": ["sitemap.xml", "assets/sitemap.xml"],
-                "robots_txt": ["robots.txt", "assets/robots.txt"],
-            }
-
-            for key, value in [
-                ("llms_txt", llms_value),
-                ("sitemap", sitemap_value),
-                ("robots_txt", robots_value),
-            ]:
-                if not value or key not in fix_keys:
-                    continue
-
-                applied = False
-                for asset_key in asset_key_candidates.get(key, [key]):
-                    if _shopify_upsert_theme_asset(theme_id, asset_key, value):
-                        improvements.append(
-                            {
-                                "provider": "shopify",
-                                "improvement_type": key,
-                                "resource_type": "file",
-                                "resource_id": asset_key,
-                                "resource_title": asset_key,
-                                "field_name": "content",
-                                "old_value": "",
-                                "new_value": value[:500],
-                                "status": "applied",
-                                "error_message": "",
-                            }
-                        )
-                        applied = True
-                        break
-
-                if not applied:
-                    improvements.append(
-                        {
-                            "provider": "shopify",
-                            "improvement_type": key,
-                            "resource_type": "file",
-                            "resource_id": key,
-                            "resource_title": key,
-                            "field_name": "content",
-                            "old_value": "",
-                            "new_value": value[:500] if value else "",
-                            "status": "failed",
-                            "error_message": "Failed to publish Shopify theme asset for this crawl file.",
-                        }
-                    )
+    # NOTE (Epic 8): llms.txt / sitemap.xml / robots.txt publishing was removed here.
+    # Uploading them as Shopify theme assets never worked -- the storefront router does
+    # not map theme files to the site root, so https://{shop}/llms.txt stayed a 404 while
+    # we recorded the improvement as "applied". Reporting a fix that did nothing is worse
+    # than reporting no fix. Serving these through a Shopify App Proxy route
+    # (/apps/signalor/llms.txt) is a real feature, not tech-debt cleanup; until that
+    # exists, Shopify stores get no crawl-file improvements from this path.
 
     return improvements
 

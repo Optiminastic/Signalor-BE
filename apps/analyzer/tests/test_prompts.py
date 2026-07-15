@@ -21,15 +21,12 @@ SAMPLES = {
     "auto_fix_content": dict(
         title="T", description="D", action="A", brand="Acme", url="u", page_content="PC"
     ),
-    "auto_fix_jsonld": dict(brand="Acme", url="u", page_content="PC"),
+    "jsonld": dict(brand="Acme", url="u", context="PC"),
     "auto_fix_meta": dict(brand="Acme", url="u", title="T", action="A", page_content="PC"),
     "auto_fix_llms_txt": dict(brand="Acme", url="u", action="A"),
-    "auto_fix_robots": dict(brand="Acme", url="u"),
     "geo_meta": dict(brand_name="Acme", site_url="u", current_title="(not set)", current_desc="(not set)"),
-    "geo_jsonld": dict(brand_name="Acme", site_url="u", description="A business website"),
     "geo_product_desc": dict(product_title="P", brand_name="Acme"),
     "judge_eval": dict(task="T", output="O", context="", reference="", format_spec=""),
-    "geo_llms_txt": dict(brand_name="Acme", site_url="u"),
 }
 
 
@@ -70,7 +67,7 @@ class PromptRegistryTests(SimpleTestCase):
 
     def test_missing_variable_fails_loudly(self):
         with self.assertRaises(UndefinedError):
-            render("auto_fix_robots")  # brand/url not provided -> StrictUndefined
+            render("jsonld")  # brand/url/context not provided -> StrictUndefined
 
     def test_brand_prompts_faithful_substitution(self):
         out = render("brand_prompts", count=7, context="MY-CONTEXT", brand_name="Zephyr")

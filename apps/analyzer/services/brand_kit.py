@@ -21,11 +21,10 @@ Why this exists: most users abandon backlink campaigns because filling out
 each directory's submission form is tedious. The kit pre-composes 80% of
 what they'd type, so submissions take seconds instead of minutes.
 """
+
 from __future__ import annotations
 
-import json
 import logging
-import re
 from typing import Any
 
 from django.core.cache import cache
@@ -61,9 +60,7 @@ def get_or_generate(run: AnalysisRun, *, force: bool = False) -> dict[str, Any]:
         raise BrandKitError("LLM returned an unparseable kit response.")
 
     kit = _normalize_kit(parsed, run)
-    BrandKit.objects.update_or_create(
-        analysis_run=run, defaults={"payload": kit}
-    )
+    BrandKit.objects.update_or_create(analysis_run=run, defaults={"payload": kit})
     return kit
 
 
@@ -71,7 +68,8 @@ def invalidate(slug: str) -> None:
     """Drop the persisted kit for a workspace."""
     if not slug:
         return
-    from apps.analyzer.models import AnalysisRun, BrandKit
+    from apps.analyzer.models import BrandKit
+
     try:
         BrandKit.objects.filter(analysis_run__slug=slug).delete()
     except Exception:
@@ -80,12 +78,13 @@ def invalidate(slug: str) -> None:
 
 # ── Internals ────────────────────────────────────────────────────────────────
 
+
 def _build_prompt(run: AnalysisRun) -> str:
     return f"""You are a brand-marketing copywriter producing a SUBMISSION KIT for directory and review-site listings.
 
-BRAND NAME: {run.brand_name or '(unknown — infer from URL)'}
-BRAND URL: {run.url or '(unknown)'}
-COUNTRY: {run.country or '(unknown)'}
+BRAND NAME: {run.brand_name or "(unknown — infer from URL)"}
+BRAND URL: {run.url or "(unknown)"}
+COUNTRY: {run.country or "(unknown)"}
 
 Produce a JSON object with these EXACT fields:
 
@@ -121,15 +120,12 @@ def _ask_llm_for_kit(run: AnalysisRun) -> str:
 
 
 def _parse_kit_response(raw: str) -> dict | None:
-    text = raw.strip()
-    # Strip ```json ... ``` fences if the model added them.
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        logger.warning("brand_kit JSON parse failed: %s; raw=%r", exc, text[:300])
+    # Epic 8: shared extractor handles fences/chatty text (was a local fence-stripper).
+    from apps.analyzer.pipeline.structured import extract_json
+
+    data = extract_json(raw, expect=dict)
+    if not isinstance(data, dict):
+        logger.warning("brand_kit JSON parse failed; raw=%r", (raw or "")[:300])
         return None
     return data if isinstance(data, dict) else None
 

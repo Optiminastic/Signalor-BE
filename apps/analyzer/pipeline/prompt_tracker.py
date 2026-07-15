@@ -490,6 +490,7 @@ def generate_brand_prompts(
     country: str = "",
     count: int = 10,
     brand_card: str | None = None,
+    cache_org=None,
 ) -> list[str]:
     """
     Use AI to deeply understand the brand — what it is (product, service, person,
@@ -497,6 +498,10 @@ def generate_brand_prompts(
 
     ``brand_card`` (Epic 2) is an optional verified brand-context block passed as the
     system prompt so generation is grounded in the approved BrandProfile.
+
+    ``cache_org`` (Epic 7) scopes the semantic response cache to one brand. Tracking
+    prompts are meant to be stable across re-runs, so replaying an identical prompt from
+    cache is the desired behavior and saves a generation per re-analysis.
     """
     from .schemas import PromptList
     from .structured import ask_structured
@@ -560,6 +565,8 @@ def generate_brand_prompts(
         purpose="Generate Brand Prompts",
         max_tokens=1200,
         system=brand_card or None,
+        cache=True,
+        cache_org=cache_org,
     )
     if result is not None:
         cleaned = [str(p).strip() for p in result.root[:count] if str(p).strip()]

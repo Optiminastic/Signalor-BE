@@ -12,6 +12,8 @@ import logging
 import requests
 
 from .models import AutoFixJob, Recommendation
+from .pipeline.crawl_files import build_robots_txt
+from .pipeline.schema_gen import build_jsonld_prompt, ensure_script_wrapped
 from .prompts import render
 
 logger = logging.getLogger("apps")
@@ -334,22 +336,14 @@ def _generate_schema_fix(run, recommendation) -> tuple[str, str | None]:
     integration = resolve_store_integration_for_run(org, run.url) if org else None
     page_content = _read_page_content(integration, run.url) if integration else ""
 
-    prompt = render(
-        "auto_fix_jsonld",
-        brand=brand_name,
-        url=run.url,
-        page_content=page_content[:3000],
-    )
+    prompt = build_jsonld_prompt(brand=brand_name, url=run.url, context=page_content[:3000])
 
     raw = _call_llm(prompt, "fix-schema", tier="medium")
     schema_html, err = _sanitize_llm_output(raw, "schema")
     if err:
         return "", err
 
-    if "<script" not in schema_html:
-        schema_html = f'<script type="application/ld+json">\n{schema_html}\n</script>'
-
-    return schema_html, None
+    return ensure_script_wrapped(schema_html), None
 
 
 def _generate_meta_fix(run, recommendation) -> tuple[str, str | None]:
@@ -395,17 +389,13 @@ def _generate_llms_txt(run, recommendation) -> tuple[str, str | None]:
 
 
 def _generate_robots_txt(run, recommendation) -> tuple[str, str | None]:
-    """Generate robots.txt content. Returns (content, error)."""
-    brand_name = run.brand_name or "the website"
+    """Build robots.txt deterministically. Returns (content, error).
 
-    prompt = render(
-        "auto_fix_robots",
-        brand=brand_name,
-        url=run.url,
-    )
-
-    raw = _call_llm(prompt, "fix-robots", tier="cheap")
-    return _sanitize_llm_output(raw, "file")
+    Epic 8: this used to ask an LLM to write robots.txt. The file's contents are fully
+    determined by the site URL and a fixed list of AI crawlers, so a model added cost and
+    a hallucination risk (an invented Disallow can deindex a site) for zero benefit.
+    """
+    return build_robots_txt(run.url), None
 
 
 # ── Fix Executor Map ─────────────────────────────────────────────────────

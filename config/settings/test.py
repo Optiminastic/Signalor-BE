@@ -31,5 +31,15 @@ class _DisableMigrations:
 
 MIGRATION_MODULES = _DisableMigrations()
 
-# Speed: cheap password hashing + in-memory cache.
+# Speed: cheap password hashing.
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
+
+# Caching is a NO-OP in tests by default. LocMemCache lives for the whole process, so it
+# outlives each test's DB rollback -- a cached value (e.g. a brand card) would leak into
+# the next test and make results order-dependent. Tests that specifically exercise caching
+# opt back in with @override_settings(CACHES={... LocMemCache ...}).
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.dummy.DummyCache",
+    }
+}

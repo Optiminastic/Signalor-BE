@@ -33,9 +33,9 @@ def build_context(run_or_org, *, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
     """Resolve the org's APPROVED BrandProfile and render a budgeted card for use as a
     ``system=`` prompt. Falls back to a run-derived ephemeral card; ``""`` if nothing usable."""
     org = _resolve_org(run_or_org)
-    profile = _approved_profile(org)
-    if profile is not None:
-        body = _budget_blocks(_ordered_blocks(profile), max_chars - len(_HEADER) - 1)
+    blocks = _approved_blocks_cached(org)
+    if blocks:
+        body = _budget_blocks(blocks, max_chars - len(_HEADER) - 1)
         return f"{_HEADER}\n{body}" if body else ""
 
     run = _resolve_run(run_or_org)
@@ -43,6 +43,27 @@ def build_context(run_or_org, *, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
         body = _budget_text(_ephemeral_card(run), max_chars - len(_EPH_HEADER) - 1)
         return f"{_EPH_HEADER}\n{body}" if body else ""
     return ""
+
+
+def _approved_blocks_cached(org) -> list[str]:
+    """Rendered blocks of the org's APPROVED profile, cached per org (Epic 7).
+
+    Caching the *unbudgeted* blocks (not the final string) keeps one key per org, so
+    ``invalidate_brand_card`` is a single delete and any max_chars still works. Only the
+    approved path is cached -- the ephemeral fallback is run-specific and stays live, which
+    preserves the only-approved guarantee.
+    """
+    if org is None:
+        return []
+    from apps.analyzer._cache import BRAND_CARD_TTL, brand_card_key, cached_or_compute
+
+    def _compute() -> list[str]:
+        profile = _approved_profile(org)
+        # "" (not None) so a no-profile org caches a miss instead of recomputing forever.
+        return _ordered_blocks(profile) if profile is not None else []
+
+    blocks = cached_or_compute(brand_card_key(org.pk), BRAND_CARD_TTL, _compute)
+    return blocks or []
 
 
 # ── Resolution ────────────────────────────────────────────────────────────

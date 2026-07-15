@@ -5,6 +5,15 @@ from django.utils import timezone
 from .models import BrandCorpusChunk, BrandProfile, Organization
 
 
+def _invalidate_cards(org_ids) -> None:
+    """Bulk actions use QuerySet.update(), which skips post_save -- so the cached
+    brand cards must be dropped by hand here (Epic 7)."""
+    from apps.analyzer._cache import invalidate_brand_card
+
+    for org_id in org_ids:
+        invalidate_brand_card(org_id)
+
+
 @admin.register(Organization)
 class OrganizationAdmin(admin.ModelAdmin):
     list_display = ("name", "owner_email", "url", "platform", "slug", "created_at")
@@ -36,14 +45,18 @@ class BrandProfileAdmin(admin.ModelAdmin):
 
     @admin.action(description="Approve selected brand profiles")
     def approve_profiles(self, request, queryset):
+        org_ids = list(queryset.values_list("organization_id", flat=True))
         with transaction.atomic():
             n = queryset.update(status=BrandProfile.Status.APPROVED, last_verified_at=timezone.now())
+        _invalidate_cards(org_ids)
         self.message_user(request, f"Approved {n} brand profile(s).", messages.SUCCESS)
 
     @admin.action(description="Reject selected brand profiles")
     def reject_profiles(self, request, queryset):
+        org_ids = list(queryset.values_list("organization_id", flat=True))
         with transaction.atomic():
             n = queryset.update(status=BrandProfile.Status.REJECTED, last_verified_at=timezone.now())
+        _invalidate_cards(org_ids)
         self.message_user(request, f"Rejected {n} brand profile(s).", messages.SUCCESS)
 
 

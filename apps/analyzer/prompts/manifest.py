@@ -13,15 +13,14 @@ MANIFEST: dict[str, str] = {
     "brand_synthesis_system": "v1",
     # Auto-fix (apps/analyzer/auto_fix.py)
     "auto_fix_content": "v1",
-    "auto_fix_jsonld": "v1",
     "auto_fix_meta": "v1",
     "auto_fix_llms_txt": "v1",
-    "auto_fix_robots": "v1",
+    # Structured data — ONE generator shared by auto_fix + geo_improvement (Epic 8
+    # replaced the separate auto_fix_jsonld / geo_jsonld prompts with this).
+    "jsonld": "v1",
     # GEO improvement (apps/analyzer/pipeline/geo_improvement.py)
     "geo_meta": "v1",
-    "geo_jsonld": "v1",
     "geo_product_desc": "v1",
-    "geo_llms_txt": "v1",
     # Evaluation (Epic 6): the LLM-as-judge prompt
     "judge_eval": "v1",
 }

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Any
 
 from django.utils.text import slugify
@@ -139,14 +138,12 @@ Rules:
 def _parse_json(raw: str | None) -> dict | None:
     if not raw:
         return None
-    text = raw.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        logger.warning("overview_insights JSON parse failed: %s; raw=%r", exc, text[:300])
+    # Epic 8: shared extractor handles fences/chatty text (was a local fence-stripper).
+    from apps.analyzer.pipeline.structured import extract_json
+
+    data = extract_json(raw, expect=dict)
+    if not isinstance(data, dict):
+        logger.warning("overview_insights JSON parse failed; raw=%r", (raw or "")[:300])
         return None
     return data if isinstance(data, dict) else None
 

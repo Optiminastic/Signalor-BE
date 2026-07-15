@@ -1,4 +1,3 @@
-import json
 import logging
 import re
 from urllib.parse import urlparse
@@ -11,8 +10,14 @@ from .utils import extract_brand_name, safe_score
 logger = logging.getLogger("apps")
 
 SOCIAL_DOMAINS = {
-    "linkedin.com", "twitter.com", "x.com", "facebook.com",
-    "instagram.com", "youtube.com", "github.com", "tiktok.com",
+    "linkedin.com",
+    "twitter.com",
+    "x.com",
+    "facebook.com",
+    "instagram.com",
+    "youtube.com",
+    "github.com",
+    "tiktok.com",
 }
 
 COMMUNITY_DOMAINS = {
@@ -55,50 +60,44 @@ def _check_wikipedia(brand_name: str) -> bool:
     return False
 
 
-def _llm_available() -> bool:
-    """Check if any LLM is available (OpenRouter or direct Gemini)."""
-    from .llm import is_available
-    return is_available()
+def _search_available() -> bool:
+    """Real search backend (Serper) available? Entity authority is measured, not guessed."""
+    from . import serper
+
+    return serper.is_configured()
 
 
-def _check_knowledge_panel(brand_name: str, industry: str) -> tuple[bool, float]:
-    """Use LLM to check if brand has a knowledge panel / is well-known."""
-    try:
-        from .llm import ask_llm
+def _brand_search_signals(brand_name: str, own_domain: str = "") -> tuple[bool | None, int | None]:
+    """One real Google search -> (has_knowledge_panel, third_party_mention_count).
 
-        prompt = (
-            f"Is '{brand_name}' a well-known brand/company in the {industry or 'technology'} industry? "
-            f"Does it have a Google Knowledge Panel? "
-            f"Reply with JSON: {{\"well_known\": true/false, \"confidence\": 0.0-1.0, \"description\": \"brief\"}}"
-        )
-        text = ask_llm(prompt, preferred_provider="gemini", max_tokens=512, purpose="Knowledge Panel Check")
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            data = json.loads(match.group())
-            return data.get("well_known", False), data.get("confidence", 0.0)
-    except Exception as exc:
-        logger.warning("Knowledge panel check failed: %s", exc)
-    return False, 0.0
+    Epic 8: these two signals used to be produced by asking an LLM whether a brand "has a
+    Google Knowledge Panel" and to "rate 0-10 how often it is mentioned" -- facts no model
+    can know, yet they were worth up to 50 entity points. Both now come from observed
+    Serper data, and a single search yields both (``knowledgeGraph`` + ``organic``), so a
+    brand costs one search rather than two.
 
+    Returns ``(None, None)`` when Serper is unavailable: **unknown**, never guessed. The
+    caller must award no points for an unknown.
+    """
+    from . import serper
 
-def _check_third_party_mentions(brand_name: str) -> tuple[int, float]:
-    """Use LLM to estimate third-party mentions."""
-    try:
-        from .llm import ask_llm
+    data = serper.search(brand_name, num=10)
+    if data is None:
+        return None, None
 
-        prompt = (
-            f"How often is '{brand_name}' mentioned in third-party publications, review sites, "
-            f"and industry directories? Rate from 0-10. "
-            f"Reply with JSON: {{\"mention_score\": 0-10, \"confidence\": 0.0-1.0}}"
-        )
-        text = ask_llm(prompt, preferred_provider="gemini", max_tokens=512, purpose="Third-Party Mentions")
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            data = json.loads(match.group())
-            return data.get("mention_score", 0), data.get("confidence", 0.0)
-    except Exception as exc:
-        logger.warning("Third-party check failed: %s", exc)
-    return 0, 0.0
+    has_panel = bool((data.get("knowledgeGraph") or {}).get("title"))
+
+    own = (own_domain or "").lower().removeprefix("www.")
+    brand_lower = (brand_name or "").lower()
+    mentions = 0
+    for item in (data.get("organic") or [])[:10]:
+        host = urlparse(item.get("link") or "").netloc.lower().removeprefix("www.")
+        if not host or (own and (host == own or host.endswith("." + own))):
+            continue  # the brand's own site is not a third-party mention
+        blob = f"{item.get('title', '')} {item.get('snippet', '')}".lower()
+        if brand_lower and brand_lower in blob:
+            mentions += 1
+    return has_panel, mentions
 
 
 def _static_entity_signals(soup, crawl_url: str) -> tuple[float, dict]:
@@ -130,6 +129,7 @@ def _static_entity_signals(soup, crawl_url: str) -> tuple[float, dict]:
 
     # Organization schema present (10 pts)
     import json as json_mod
+
     for script in soup.find_all("script", type="application/ld+json"):
         try:
             data = json_mod.loads(script.string or "")
@@ -164,7 +164,11 @@ def _static_entity_signals(soup, crawl_url: str) -> tuple[float, dict]:
 
     # Contact info present (10 pts)
     contact_patterns = [
-        r"contact", r"email", r"phone", r"tel:", r"mailto:",
+        r"contact",
+        r"email",
+        r"phone",
+        r"tel:",
+        r"mailto:",
     ]
     html_lower = str(soup).lower()
     contact_found = sum(1 for p in contact_patterns if p in html_lower)
@@ -216,26 +220,30 @@ def score_entity(crawl: CrawlResult, industry: str = "", override_brand: str = "
     else:
         details["findings"].append("no_wikipedia_presence")
 
-    # Check if LLM is available
-    use_llm = _llm_available()
-    details["checks"]["llm_available"] = use_llm
+    # Real search signals (Serper). Gating on the search backend -- not on an LLM --
+    # is the Epic 8 fix: authority is measured, or it is unknown. It is never invented.
+    use_search = _search_available()
+    details["checks"]["search_available"] = use_search
 
-    if use_llm:
-        # Knowledge Panel via LLM (25 pts)
-        well_known, kp_confidence = _check_knowledge_panel(brand_name, industry)
-        details["checks"]["knowledge_panel"] = well_known
-        details["checks"]["kp_confidence"] = kp_confidence
-        if well_known:
+    if use_search:
+        # One search yields both the knowledge panel and third-party mentions.
+        has_panel, mention_score = _brand_search_signals(brand_name, urlparse(crawl.url).netloc)
+
+        # Knowledge Panel — observed in Google's knowledgeGraph (25 pts)
+        details["checks"]["knowledge_panel"] = has_panel
+        # Confidence is 1.0 for an observed fact, 0.0 when the lookup itself failed.
+        details["checks"]["kp_confidence"] = 0.0 if has_panel is None else 1.0
+        if has_panel:
             score += 25
-        else:
+        elif has_panel is False:
             details["findings"].append("brand_not_in_ai")
+        # has_panel is None -> lookup failed: unknown, no points, no finding.
 
-        # Third-party mentions via Gemini (25 pts)
-        mention_score, mention_confidence = _check_third_party_mentions(brand_name)
-        details["checks"]["third_party_score"] = mention_score
-        details["checks"]["mention_confidence"] = mention_confidence
-        tp_points = min(25, mention_score * 2.5)
-        score += tp_points
+        # Third-party mentions — real organic results off the brand's own domain (25 pts)
+        details["checks"]["third_party_mentions"] = mention_score
+        details["checks"]["mention_confidence"] = 0.0 if mention_score is None else 1.0
+        if mention_score is not None:
+            score += min(25, mention_score * 2.5)
 
         # Social media links (10 pts)
         social_links = []
@@ -282,8 +290,9 @@ def score_entity(crawl: CrawlResult, industry: str = "", override_brand: str = "
             details["findings"].append("brand_not_in_title")
 
     else:
-        # FALLBACK: Score using only static signals (no Gemini)
-        # Redistribute points to static checks so score isn't artificially 0
+        # FALLBACK: no search backend configured -- score from static, observable signals
+        # only. Redistribute points so the score isn't artificially 0 (we simply cannot
+        # measure off-site authority without a search API).
         details["checks"]["scoring_mode"] = "static_fallback"
 
         static_score, static_details = _static_entity_signals(soup, crawl.url)
@@ -315,10 +324,11 @@ def score_entity(crawl: CrawlResult, industry: str = "", override_brand: str = "
 
     # Entity collision confidence — reduce score if brand name collides with known entity
     from .utils import check_entity_collision
+
     collision, known = check_entity_collision(brand_name)
     if collision:
         # Apply confidence multiplier: 0.3 for ambiguous, 0.0 for confirmed collision
-        # LLM-dependent scores (wiki, knowledge panel, third-party) are most affected
+        # Off-site scores (wiki, knowledge panel, third-party) are most affected
         confidence = 0.3  # Assume ambiguous unless we can confirm
         raw_score = score
         score = score * confidence
@@ -326,8 +336,14 @@ def score_entity(crawl: CrawlResult, industry: str = "", override_brand: str = "
         details["checks"]["collision_entity"] = known["entity"]
         details["checks"]["collision_confidence"] = confidence
         details["checks"]["raw_entity_score"] = raw_score
-        logger.info("Entity collision: '%s' vs '%s' — score %.1f → %.1f (confidence=%.1f)",
-                     brand_name, known["entity"], raw_score, score, confidence)
+        logger.info(
+            "Entity collision: '%s' vs '%s' — score %.1f → %.1f (confidence=%.1f)",
+            brand_name,
+            known["entity"],
+            raw_score,
+            score,
+            confidence,
+        )
 
     score = safe_score(score)
     details["score"] = score

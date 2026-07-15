@@ -199,6 +199,17 @@ def is_available() -> bool:
 # ── Main API ──────────────────────────────────────────────────────────────
 
 
+def _cache_model_key(preferred_provider, tier, temperature, max_tokens) -> str:
+    """Scope key for the response cache: different routing/params never share an entry."""
+    return f"{tier or preferred_provider or 'default'}:t{temperature}:m{max_tokens}"
+
+
+def _cache_prompt_key(prompt: str, system: str | None) -> str:
+    """The cached prompt includes the system prompt, so a different brand card (or any
+    other system instruction) is a different cache entry."""
+    return f"{system or ''}\n\n{prompt}"
+
+
 def ask_llm(
     prompt: str,
     preferred_provider: str | None = None,
@@ -209,6 +220,8 @@ def ask_llm(
     system: str | None = None,
     tier: str | None = None,
     response_format: dict | None = None,
+    cache: bool = False,
+    cache_org=None,
 ) -> str:
     """
     Send a prompt to an LLM via OpenRouter, or direct Gemini as fallback.
@@ -219,7 +232,21 @@ def ask_llm(
       tier:            "cheap" | "medium" | "strong" model routing (see TIERS).
       response_format: OpenAI-style dict, e.g. {"type": "json_object"} (best-effort;
                        only forwarded to models that support it).
+      cache:           opt in to the semantic response cache (Epic 7). Off by default so
+                       no hot path silently replays a cached answer.
+      cache_org:       Organization the prompt belongs to -- scopes the cache so two
+                       brands can never share an entry. Pass it whenever it is known.
     """
+    cache_prompt = _cache_prompt_key(prompt, system)
+    model_key = _cache_model_key(preferred_provider, tier, temperature, max_tokens)
+
+    if cache:
+        from .response_cache import lookup
+
+        hit = lookup(cache_prompt, purpose=purpose, model_key=model_key, org=cache_org)
+        if hit is not None:
+            return hit
+
     text, _ = ask_llm_with_citations(
         prompt,
         preferred_provider=preferred_provider,
@@ -230,6 +257,11 @@ def ask_llm(
         tier=tier,
         response_format=response_format,
     )
+
+    if cache and text:
+        from .response_cache import store
+
+        store(cache_prompt, text, purpose=purpose, model_key=model_key, org=cache_org)
     return text
 
 

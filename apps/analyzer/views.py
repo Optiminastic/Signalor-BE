@@ -5038,8 +5038,6 @@ class PromptWikipediaDraftView(APIView):
         return Response({**existing.payload, "cached": True})
 
     def post(self, request, slug, track_id):
-        import json
-        import re
 
         from django.shortcuts import get_object_or_404
 
@@ -5132,29 +5130,19 @@ Return ONLY valid JSON. No markdown fences. Schema:
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        # Strip code fences and parse. Try progressively looser extraction.
-        cleaned = raw.strip()
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned.strip())
+        # Epic 8: shared extractor -- it already handles fences and prose around the JSON.
+        from .pipeline.structured import extract_json
 
-        payload = None
-        try:
-            payload = json.loads(cleaned)
-        except json.JSONDecodeError:
-            # LLM may have added prose before/after the JSON object — extract first {...}
-            m = re.search(r"\{.*\}", cleaned, re.DOTALL)
-            if m:
-                try:
-                    payload = json.loads(m.group())
-                except json.JSONDecodeError:
-                    pass
+        payload = extract_json(raw, expect=dict)
+        if not isinstance(payload, dict):
+            payload = None
 
         if payload is None:
             logger.warning(
                 "Wikipedia draft JSON parse failed for slug=%s track=%s. Raw: %s",
                 slug,
                 track_id,
-                cleaned[:300],
+                (raw or "")[:300],
             )
             return Response(
                 {

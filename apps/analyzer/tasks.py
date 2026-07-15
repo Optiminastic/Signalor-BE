@@ -213,6 +213,7 @@ def _save_probes_and_tracks(
                 country=country,
                 count=gen_count,
                 brand_card=build_context(run),
+                cache_org=run.organization,
             )
         except Exception as exc:
             logger.warning("AI prompt generation failed for run %d: %s", run.id, exc)

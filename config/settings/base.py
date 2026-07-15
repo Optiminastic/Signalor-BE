@@ -299,6 +299,14 @@ CORPUS_CHUNK_MIN_CHARS = int(os.getenv("CORPUS_CHUNK_MIN_CHARS", 40))
 CORPUS_MAX_PAGES = int(os.getenv("CORPUS_MAX_PAGES", 25))
 CORPUS_MAX_CHUNKS_PER_RUN = int(os.getenv("CORPUS_MAX_CHUNKS_PER_RUN", 300))
 
+# Semantic response cache (Epic 7). Opt-in per call site via ask_llm(cache=True); this
+# flag is the kill-switch. The similarity floor is deliberately conservative -- only
+# near-identical prompts may reuse a response, and only within the same
+# (purpose, model, organization) scope.
+SIGNALOR_ENABLE_SEMANTIC_CACHE = os.getenv("SIGNALOR_ENABLE_SEMANTIC_CACHE", "true").lower() != "false"
+SEMANTIC_CACHE_SIMILARITY = float(os.getenv("SEMANTIC_CACHE_SIMILARITY", 0.97))
+SEMANTIC_CACHE_TTL_SECONDS = int(os.getenv("SEMANTIC_CACHE_TTL_SECONDS", 7 * 24 * 3600))
+
 DATAFORSEO_LOGIN = os.getenv("DATAFORSEO_LOGIN", "")
 DATAFORSEO_PASSWORD = os.getenv("DATAFORSEO_PASSWORD", "")
 
