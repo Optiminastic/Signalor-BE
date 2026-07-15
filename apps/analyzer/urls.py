@@ -4,16 +4,6 @@ from .views import (
     AchievementsView,
     ActionStatsView,
     ActionTemplatesView,
-    BlogAutoPublishAllView,
-    BlogGenerateView,
-    BlogPostDetailView,
-    BlogPublishNetworkView,
-    BlogSourcesView,
-    BlogTitleIdeasView,
-    BacklinkScheduleView,
-    OurBacklinksView,
-    PublicBlogDetailView,
-    PublicBlogListView,
     # Sitemap audit
     AgentLogView,
     AiChatView,
@@ -23,6 +13,7 @@ from .views import (
     AnalysisRunListView,
     AnalysisRunStatusView,
     ApplyGeoFixesAndReanalyzeView,
+    AssignActionView,
     AutoFixApproveView,
     AutoFixPreviewView,
     AutoFixVerifyView,
@@ -32,11 +23,23 @@ from .views import (
     BacklinkOrderConfirmPaymentView,
     BacklinkOrderDetailView,
     BacklinkOrderListCreateView,
+    BacklinkScheduleView,
     BlogAutomationCalendarView,
     BlogAutomationConfigView,
     BlogAutomationGenerateView,
     BlogAutomationProcessDueView,
     BlogAutomationPublishView,
+    BlogAutoPublishAllView,
+    BlogComposerGenerateView,
+    BlogComposerPostsView,
+    BlogComposerPublishView,
+    BlogComposerTopicsView,
+    BlogComposerUploadImageView,
+    BlogGenerateView,
+    BlogPostDetailView,
+    BlogPublishNetworkView,
+    BlogSourcesView,
+    BlogTitleIdeasView,
     BulkCreateUserActionView,
     CitationSourcesView,
     CitationTrendView,
@@ -62,6 +65,8 @@ from .views import (
     GeoImprovementsView,
     HealthCheckView,
     OnboardingStartView,
+    OurBacklinksView,
+    OverviewInsightsView,
     PromptBacklinksView,
     PromptDeleteView,
     PromptListCreateView,
@@ -71,12 +76,15 @@ from .views import (
     PromptResultDetailView,
     PromptSchemaView,
     PromptWikipediaDraftView,
+    PublicBlogDetailView,
+    PublicBlogListView,
     QuickActionView,
     # Schema watchtower
     RankAuditDetailView,
     RankAuditRefreshQueryView,
     # Rank tracker
     RankAuditStartView,
+    RankingsView,
     RecheckAllPromptsView,
     RecheckPromptView,
     RunBacklinkFreeView,
@@ -86,15 +94,19 @@ from .views import (
     SchemaWatchStartView,
     # New features
     ScoreHistoryView,
+    ShareOfVoiceCompetitorsView,
     ShareOfVoiceView,
     SitemapAuditDetailView,
     # Sitemap audit
     SitemapAuditStartView,
     StartAnalysisView,
+    SyncActionsView,
+    TopSourcesView,
     UpdateUserActionView,
     UserActionListView,
     # Gamification views
     UserGamificationView,
+    VisibilitySeriesView,
     WeeklyTestEmailView,
 )
 
@@ -144,6 +156,19 @@ urlpatterns = [
     path("runs/s/<str:slug>/prompts/<int:track_id>/", PromptDeleteView.as_view(), name="prompt-delete"),
     path("runs/s/<str:slug>/recheck-all/", RecheckAllPromptsView.as_view(), name="prompt-recheck-all"),
     path("runs/s/<str:slug>/share-of-voice/", ShareOfVoiceView.as_view(), name="share-of-voice"),
+    # Dashboard v2 aggregates
+    path(
+        "runs/s/<str:slug>/visibility-series/",
+        VisibilitySeriesView.as_view(),
+        name="visibility-series",
+    ),
+    path("runs/s/<str:slug>/rankings/", RankingsView.as_view(), name="rankings"),
+    path(
+        "runs/s/<str:slug>/share-of-voice-competitors/",
+        ShareOfVoiceCompetitorsView.as_view(),
+        name="share-of-voice-competitors",
+    ),
+    path("runs/s/<str:slug>/top-sources/", TopSourcesView.as_view(), name="top-sources"),
     path("runs/s/<str:slug>/citation-trend/", CitationTrendView.as_view(), name="citation-trend"),
     path("runs/s/<str:slug>/citations/", CitationSourcesView.as_view(), name="citation-sources"),
     path(
@@ -171,9 +196,38 @@ urlpatterns = [
         DomainAnalyticsView.as_view(),
         name="domain-analytics",
     ),
-    # NOTE: BlogComposer routes removed — their view classes were dropped in a
-    # cross-branch merge (feature lives on main; this branch uses the S3 blog
-    # network below). Re-add the views + routes together if reintroducing it.
+    path(
+        "runs/s/<str:slug>/overview-insights/",
+        OverviewInsightsView.as_view(),
+        name="overview-insights",
+    ),
+    # Blog composer (dashboard "Blog Agent" page)
+    path("runs/s/<str:slug>/blog/posts/", BlogComposerPostsView.as_view(), name="blog-composer-posts"),
+    path(
+        "runs/s/<str:slug>/blog/posts/<int:post_id>/",
+        BlogComposerPostsView.as_view(),
+        name="blog-composer-post-delete",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/generate/",
+        BlogComposerGenerateView.as_view(),
+        name="blog-composer-generate",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/topics/",
+        BlogComposerTopicsView.as_view(),
+        name="blog-composer-topics",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/publish/",
+        BlogComposerPublishView.as_view(),
+        name="blog-composer-publish",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/upload-image/",
+        BlogComposerUploadImageView.as_view(),
+        name="blog-composer-upload-image",
+    ),
     # Sitemap audit + AI agent log stub
     path("runs/s/<str:slug>/sitemap/", SitemapAuditDetailView.as_view(), name="sitemap-audit-detail"),
     path("runs/s/<str:slug>/sitemap/start/", SitemapAuditStartView.as_view(), name="sitemap-audit-start"),
@@ -300,6 +354,8 @@ urlpatterns = [
     # Action endpoints
     path("actions/", UserActionListView.as_view(), name="action-list"),
     path("actions/create/", CreateUserActionView.as_view(), name="action-create"),
+    path("actions/sync/", SyncActionsView.as_view(), name="action-sync"),
+    path("actions/<int:action_id>/assign/", AssignActionView.as_view(), name="action-assign"),
     path("actions/<int:action_id>/", UpdateUserActionView.as_view(), name="action-update"),
     path("actions/crawl-essentials/", CrawlEssentialsStatusView.as_view(), name="crawl-essentials"),
     path(

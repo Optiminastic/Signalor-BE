@@ -89,6 +89,12 @@ class GithubFixJob(models.Model):
     # Finding codes (from analyzer recommendations) this PR addresses.
     finding_codes = models.JSONField(default=list, blank=True)
 
+    # Content-edit payload for Content-Optimisation PRs (empty for finding-based
+    # fixes). Each entry: {"kind": "text"|"metadata", "url", "field", "original",
+    # "new"} — the agent locates the exact source of `original` and replaces it
+    # with `new` (user-supplied verbatim text → no fabrication).
+    content_edits = models.JSONField(default=list, blank=True)
+
     branch_name = models.CharField(max_length=255, blank=True, default="")
     pr_number = models.IntegerField(null=True, blank=True)
     pr_url = models.URLField(max_length=1024, blank=True, default="")

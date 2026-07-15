@@ -1,0 +1,13 @@
+{
+  "id": "brand_prompts_local",
+  "prompt": "brand_prompts",
+  "version": "v1",
+  "vars": {
+    "count": 5,
+    "context": "Brand/Entity Name: Riverside Dental\nWebsite: https://riversidedental.co.uk\nIndustry detected: local dental clinic\nLocation/Region: Manchester, United Kingdom",
+    "brand_name": "Riverside Dental"
+  },
+  "format_spec": "A JSON array of exactly 5 natural-language user query strings for a local dental clinic. At least 2 must include the location (Manchester or UK). Must NOT mention the brand name 'Riverside Dental'. No markdown.",
+  "known_good": "[\"Who are the best-rated dentists in Manchester?\", \"How much does a dental checkup cost in the UK?\", \"Where can I find an emergency dentist near me in Manchester?\", \"What should I look for when choosing a family dentist?\", \"Are private dental clinics worth it compared to NHS dentists?\"]",
+  "thresholds": {"faithfulness": 0.7, "relevance": 0.7, "format_score": 0.8}
+}

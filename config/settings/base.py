@@ -27,7 +27,9 @@ if SENTRY_DSN:
         dsn=SENTRY_DSN,
         integrations=[DjangoIntegration()],
         traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0")),
-        send_default_pii=False,
+        # Attach request headers and user IP to events. See
+        # https://docs.sentry.io/platforms/python/data-management/data-collected/
+        send_default_pii=True,
         environment=os.getenv("SENTRY_ENVIRONMENT", "production"),
     )
 
@@ -231,7 +233,12 @@ LOGGING = {
         "console": {"level": "INFO", "class": "logging.StreamHandler", "formatter": "simple"},
         "file": {
             "level": "INFO",
-            "class": "logging.handlers.RotatingFileHandler",
+            # ConcurrentRotatingFileHandler (not stdlib RotatingFileHandler) so
+            # rotation is multiprocess-safe. On Windows the stdlib handler's
+            # os.rename() during rollover fails with WinError 32 whenever a second
+            # process (dev-server autoreloader) or the analyzer thread-pool still
+            # holds django.log open, which then errors on every log emit.
+            "class": "concurrent_log_handler.ConcurrentRotatingFileHandler",
             "filename": LOGS_DIR / "django.log",
             "maxBytes": 1024 * 1024 * 15,  # 15MB
             "backupCount": 10,
@@ -280,6 +287,25 @@ GITHUB_APP_ID = os.getenv("GITHUB_APP_ID", "")
 GITHUB_APP_SLUG = os.getenv("GITHUB_APP_SLUG", "")
 GITHUB_APP_PRIVATE_KEY = os.getenv("GITHUB_APP_PRIVATE_KEY", "")
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+
+# Knowledge base ingestion (Epic 3). Each analysis run chunks + embeds the pages
+# it already crawled into BrandCorpusChunk rows (org-scoped, fail-soft). Bounds
+# keep per-run embedding cost predictable; skip-unchanged keeps steady state cheap.
+SIGNALOR_ENABLE_INGESTION = os.getenv("SIGNALOR_ENABLE_INGESTION", "true").lower() != "false"
+CORPUS_EMBED_MODEL = os.getenv("CORPUS_EMBED_MODEL", "models/text-embedding-004")
+CORPUS_CHUNK_MAX_CHARS = int(os.getenv("CORPUS_CHUNK_MAX_CHARS", 2800))
+CORPUS_CHUNK_OVERLAP_CHARS = int(os.getenv("CORPUS_CHUNK_OVERLAP_CHARS", 200))
+CORPUS_CHUNK_MIN_CHARS = int(os.getenv("CORPUS_CHUNK_MIN_CHARS", 40))
+CORPUS_MAX_PAGES = int(os.getenv("CORPUS_MAX_PAGES", 25))
+CORPUS_MAX_CHUNKS_PER_RUN = int(os.getenv("CORPUS_MAX_CHUNKS_PER_RUN", 300))
+
+# Semantic response cache (Epic 7). Opt-in per call site via ask_llm(cache=True); this
+# flag is the kill-switch. The similarity floor is deliberately conservative -- only
+# near-identical prompts may reuse a response, and only within the same
+# (purpose, model, organization) scope.
+SIGNALOR_ENABLE_SEMANTIC_CACHE = os.getenv("SIGNALOR_ENABLE_SEMANTIC_CACHE", "true").lower() != "false"
+SEMANTIC_CACHE_SIMILARITY = float(os.getenv("SEMANTIC_CACHE_SIMILARITY", 0.97))
+SEMANTIC_CACHE_TTL_SECONDS = int(os.getenv("SEMANTIC_CACHE_TTL_SECONDS", 7 * 24 * 3600))
 
 DATAFORSEO_LOGIN = os.getenv("DATAFORSEO_LOGIN", "")
 DATAFORSEO_PASSWORD = os.getenv("DATAFORSEO_PASSWORD", "")

@@ -3,15 +3,16 @@ Management command to run due scheduled analyses and send email digests.
 Usage: python manage.py run_scheduled_analyses
 Trigger via cron: */30 * * * * cd /path/to/project && python manage.py run_scheduled_analyses
 """
+
 import logging
 from datetime import timedelta
 
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
+from apps.analyzer.email_utils import send_digest_email
 from apps.analyzer.models import AnalysisRun, ScheduledAnalysis
 from apps.analyzer.tasks import _kickoff_sitemap_audit, run_single_page_analysis
-from apps.analyzer.email_utils import send_digest_email
 
 logger = logging.getLogger("apps")
 

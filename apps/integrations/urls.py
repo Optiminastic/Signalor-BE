@@ -128,14 +128,14 @@ urlpatterns = [
         name="gsc-inspect",
     ),
     path(
-        "google-search-console/sitemaps/",
-        GSCSitemapsView.as_view(),
-        name="gsc-sitemaps",
-    ),
-    path(
         "google-search-console/coverage/",
         GSCCoverageView.as_view(),
         name="gsc-coverage",
+    ),
+    path(
+        "google-search-console/sitemaps/",
+        GSCSitemapsView.as_view(),
+        name="gsc-sitemaps",
     ),
     # Shopify
     path(

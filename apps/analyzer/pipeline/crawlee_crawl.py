@@ -91,10 +91,8 @@ async def _crawl_async(url: str, limit: int, timeout: int) -> list[dict]:
 
     try:
         await asyncio.wait_for(crawler.run([url]), timeout=timeout)
-    except asyncio.TimeoutError:
-        logger.warning(
-            "Crawlee crawl timed out after %ss for %s (%d pages so far)", timeout, url, len(pages)
-        )
+    except TimeoutError:
+        logger.warning("Crawlee crawl timed out after %ss for %s (%d pages so far)", timeout, url, len(pages))
 
     logger.info("Crawlee crawl finished for %s: %d pages", url, len(pages))
     return pages

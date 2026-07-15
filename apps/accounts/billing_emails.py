@@ -39,8 +39,8 @@ FRONTEND_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000").rstrip("/
 # Plan slug → human label shown in subject lines and email bodies. Matches
 # the Dodo product names so the receipt and the Dodo dashboard agree.
 _PLAN_LABELS = {
-    "starter": "Signalor Starter",
-    "pro": "Signalor Pro",
+    "starter": "Signalor Self-Serve Brand",
+    "pro": "Signalor Managed Growth Brand",
     "business": "Signalor Max",
 }
 

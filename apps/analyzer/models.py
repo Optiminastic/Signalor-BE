@@ -2,6 +2,13 @@ import secrets
 from datetime import time
 
 from django.db import models
+from pgvector.django import VectorField
+
+# Single source of truth for the embedding width (see organizations.models). Importing
+# it keeps the response-cache vector column in lockstep with BrandCorpusChunk.
+# analyzer -> organizations is the allowed dependency direction (organizations refers to
+# analyzer only via string FKs), so this import cannot cycle.
+from apps.organizations.models import EMBEDDING_DIMENSIONS
 
 
 def _generate_slug():
@@ -33,12 +40,8 @@ class AnalysisRun(models.Model):
     brand_name = models.CharField(max_length=255, blank=True, default="")
     country = models.CharField(max_length=100, blank=True, default="")
     email = models.EmailField(blank=True, default="")
-    run_type = models.CharField(
-        max_length=20, choices=RunType.choices, default=RunType.SINGLE_PAGE
-    )
-    status = models.CharField(
-        max_length=20, choices=Status.choices, default=Status.PENDING
-    )
+    run_type = models.CharField(max_length=20, choices=RunType.choices, default=RunType.SINGLE_PAGE)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     progress = models.IntegerField(default=0)
     composite_score = models.FloatField(null=True, blank=True)
     content_hash = models.CharField(max_length=64, blank=True, default="")
@@ -57,6 +60,9 @@ class AnalysisRun(models.Model):
             models.Index(fields=["status"]),
             models.Index(fields=["slug"]),
             models.Index(fields=["email", "status"]),
+            # Dashboard run-list: filter(organization_id=...).order_by("-created_at").
+            # The FK index alone can't satisfy the sort; this composite does.
+            models.Index(fields=["organization", "-created_at"]),
         ]
 
     def save(self, *args, **kwargs):
@@ -73,9 +79,7 @@ class AnalysisRun(models.Model):
 
 
 class PageScore(models.Model):
-    analysis_run = models.ForeignKey(
-        AnalysisRun, on_delete=models.CASCADE, related_name="page_scores"
-    )
+    analysis_run = models.ForeignKey(AnalysisRun, on_delete=models.CASCADE, related_name="page_scores")
     url = models.URLField(max_length=2048)
     content_score = models.FloatField(default=0)
     content_details = models.JSONField(default=dict)
@@ -101,9 +105,7 @@ class PageScore(models.Model):
 
 
 class Competitor(models.Model):
-    analysis_run = models.ForeignKey(
-        AnalysisRun, on_delete=models.CASCADE, related_name="competitors"
-    )
+    analysis_run = models.ForeignKey(AnalysisRun, on_delete=models.CASCADE, related_name="competitors")
     name = models.CharField(max_length=255)
     url = models.URLField(max_length=2048)
     industry = models.CharField(max_length=255, blank=True, default="")
@@ -125,9 +127,7 @@ class Competitor(models.Model):
 
 
 class AIVisibilityProbe(models.Model):
-    analysis_run = models.ForeignKey(
-        AnalysisRun, on_delete=models.CASCADE, related_name="ai_probes"
-    )
+    analysis_run = models.ForeignKey(AnalysisRun, on_delete=models.CASCADE, related_name="ai_probes")
     prompt_used = models.TextField()
     llm_response = models.TextField(blank=True, default="")
     brand_mentioned = models.BooleanField(default=False)
@@ -145,9 +145,11 @@ class Recommendation(models.Model):
         MEDIUM = "medium"
         LOW = "low"
 
-    analysis_run = models.ForeignKey(
-        AnalysisRun, on_delete=models.CASCADE, related_name="recommendations"
-    )
+    class Source(models.TextChoices):
+        ANALYZER = "analyzer", "Analyzer"
+        AI_INSIGHT = "ai_insight", "AI Insight"
+
+    analysis_run = models.ForeignKey(AnalysisRun, on_delete=models.CASCADE, related_name="recommendations")
     pillar = models.CharField(max_length=30)
     priority = models.CharField(max_length=10, choices=Priority.choices)
     title = models.CharField(max_length=255)
@@ -165,6 +167,8 @@ class Recommendation(models.Model):
     estimated_minutes = models.IntegerField(default=0)
     # The finding key that triggered this recommendation (e.g. "no_h1", "no_citations")
     finding_key = models.CharField(max_length=80, blank=True, default="")
+    # Where this rec came from — "analyzer" (pipeline) or "ai_insight" (GA/GSC AI insights).
+    source = models.CharField(max_length=20, choices=Source.choices, default=Source.ANALYZER, db_index=True)
 
     # ── Daily re-check / re-prioritize state ──────────────────────────────────
     # Last time the daily job re-verified this fix against the live site.
@@ -173,9 +177,6 @@ class Recommendation(models.Model):
     daily_priority_rank = models.IntegerField(default=0)
     # The single "priority fix of the day" surfaced at the top of Tasks.
     is_top_fix = models.BooleanField(default=False)
-    # Where the recommendation came from (pipeline "analyzer" vs "ai_insight").
-    # Column already exists on the shared DB; default keeps inserts NOT-NULL safe.
-    source = models.CharField(max_length=20, default="analyzer")
 
     class Meta:
         ordering = ["priority", "pillar"]
@@ -213,41 +214,42 @@ class BrandVisibility(models.Model):
 
 # ============ Gamification Models ============
 
+
 class UserAction(models.Model):
     """Tracks user actions taken to improve their GEO score"""
-    
+
     class ActionType(models.TextChoices):
         # Content actions
         ADD_FAQ = "add_faq", "Add FAQ Section"
         ADD_STRUCTURE = "add_structure", "Improve Content Structure"
         ADD_CITATIONS = "add_citations", "Add Citations & References"
         IMPROVE_READABILITY = "improve_readability", "Improve Readability"
-        
+
         # Schema actions
         ADD_SCHEMA = "add_schema", "Add Schema Markup"
         ADD_ARTICLE_SCHEMA = "add_article_schema", "Add Article Schema"
         ADD_FAQ_SCHEMA = "add_faq_schema", "Add FAQ Schema"
-        
+
         # Technical actions
         ADD_ROBOTS = "add_robots", "Create robots.txt"
         ADD_SITEMAP = "add_sitemap", "Create sitemap.xml"
         ADD_LLMS_TXT = "add_llms_txt", "Create llms.txt"
         ENABLE_HTTPS = "enable_https", "Enable HTTPS"
-        
+
         # E-E-A-T actions
         ADD_AUTHOR = "add_author", "Add Author Information"
         ADD_ABOUT = "add_about", "Add About Page"
         ADD_CONTACT = "add_contact", "Add Contact Page"
         ADD_PRIVACY = "add_privacy", "Add Privacy Policy"
-        
+
         # Entity actions
         CREATE_WIKIPEDIA = "create_wikipedia", "Create Wikipedia Page"
         ADD_SOCIAL = "add_social", "Add Social Profiles"
-        
+
         # Brand actions
         POST_REDDIT = "post_reddit", "Post on Reddit"
         BUILD_BACKLINKS = "build_backlinks", "Build Backlinks"
-    
+
     class ActionStatus(models.TextChoices):
         PENDING = "pending", "Pending"
         IN_PROGRESS = "in_progress", "In Progress"
@@ -255,35 +257,36 @@ class UserAction(models.Model):
         VERIFIED = "verified", "Verified (Score Improved)"
 
     user_email = models.EmailField(db_index=True)
+    # Agency teammate this task is assigned to (blank = unassigned). Distinct from
+    # user_email (the owner/creator — the agency admin for materialized tasks).
+    assignee_email = models.EmailField(db_index=True, blank=True, default="")
     analysis_run = models.ForeignKey(
         AnalysisRun, on_delete=models.CASCADE, related_name="user_actions", null=True, blank=True
     )
     recommendation = models.ForeignKey(
         Recommendation, on_delete=models.SET_NULL, null=True, blank=True, related_name="user_actions"
     )
-    
+
     action_type = models.CharField(max_length=30, choices=ActionType.choices)
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True, default="")
     points_value = models.IntegerField(default=10)
-    
-    status = models.CharField(
-        max_length=20, choices=ActionStatus.choices, default=ActionStatus.PENDING
-    )
-    
+
+    status = models.CharField(max_length=20, choices=ActionStatus.choices, default=ActionStatus.PENDING)
+
     # Tracking
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     verified_at = models.DateTimeField(null=True, blank=True)
-    
+
     # Score tracking
     score_before = models.FloatField(null=True, blank=True)
     score_after = models.FloatField(null=True, blank=True)
     score_improvement = models.FloatField(null=True, blank=True)
-    
+
     # Notes from user
     notes = models.TextField(blank=True, default="")
-    
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -301,6 +304,7 @@ class UserAction(models.Model):
     def complete(self):
         """Mark action as completed"""
         from django.utils import timezone
+
         self.status = self.ActionStatus.COMPLETED
         self.completed_at = timezone.now()
         self.save()
@@ -308,6 +312,7 @@ class UserAction(models.Model):
     def verify(self, new_score: float):
         """Verify action and calculate improvement"""
         from django.utils import timezone
+
         self.status = self.ActionStatus.VERIFIED
         self.verified_at = timezone.now()
         self.score_after = new_score
@@ -318,10 +323,10 @@ class UserAction(models.Model):
 
 class UserGamification(models.Model):
     """User gamification profile - points, levels, achievements"""
-    
+
     class Level(models.IntegerChoices):
         BEGINNER = 1, "Beginner"
-        LEARNER = 2, "Learner" 
+        LEARNER = 2, "Learner"
         IMPLEMENTER = 3, "Implementer"
         OPTIMIZER = 4, "Optimizer"
         EXPERT = 5, "Expert"
@@ -329,30 +334,30 @@ class UserGamification(models.Model):
         LEGEND = 7, "Legend"
 
     user_email = models.EmailField(unique=True, db_index=True)
-    
+
     # Points system
     total_points = models.IntegerField(default=0)
     points_this_week = models.IntegerField(default=0)
     points_this_month = models.IntegerField(default=0)
-    
+
     # Level system
     level = models.IntegerField(choices=Level.choices, default=Level.BEGINNER)
     current_level_points = models.IntegerField(default=0)  # Points in current level
     points_to_next_level = models.IntegerField(default=100)
-    
+
     # Streaks
     current_streak = models.IntegerField(default=0)  # Days in a row
     longest_streak = models.IntegerField(default=0)
     last_action_date = models.DateField(null=True, blank=True)
-    
+
     # Stats
     total_actions_completed = models.IntegerField(default=0)
     total_actions_verified = models.IntegerField(default=0)
     total_score_improvement = models.FloatField(default=0)
-    
+
     # Achievements (stored as list of achievement codes)
     achievements = models.JSONField(default=list)
-    
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -382,16 +387,16 @@ class UserGamification(models.Model):
         Add points to user and handle level ups
         Returns (new_level, did_level_up)
         """
-        from django.utils import timezone
         from django.db import transaction
-        
+        from django.utils import timezone
+
         with transaction.atomic():
             self.total_points += points
             self.current_level_points += points
             self.points_this_week += points
             self.points_this_month += points
             self.total_actions_completed += 1
-            
+
             # Update streak
             today = timezone.now().date()
             if self.last_action_date:
@@ -402,31 +407,30 @@ class UserGamification(models.Model):
                     self.current_streak = 1
             else:
                 self.current_streak = 1
-            
+
             if self.current_streak > self.longest_streak:
                 self.longest_streak = self.current_streak
-            
+
             self.last_action_date = today
-            
+
             # Check for level up
-            old_level = self.level
             did_level_up = False
-            
+
             while self.current_level_points >= self._points_for_level(self.level):
                 self.current_level_points -= self._points_for_level(self.level)
                 if self.level < self.Level.LEGEND:
                     self.level += 1
                     self.points_to_next_level = self._points_for_level(self.level)
                     did_level_up = True
-            
+
             self.save()
-            
+
             return self.level, did_level_up
 
     def check_achievements(self) -> list[str]:
         """Check and award new achievements"""
         new_achievements = []
-        
+
         achievement_conditions = {
             "first_action": self.total_actions_completed >= 1,
             "ten_actions": self.total_actions_completed >= 10,
@@ -449,15 +453,15 @@ class UserGamification(models.Model):
             "improvement_10": self.total_score_improvement >= 10,
             "improvement_20": self.total_score_improvement >= 20,
         }
-        
+
         for code, condition in achievement_conditions.items():
             if condition and code not in self.achievements:
                 self.achievements.append(code)
                 new_achievements.append(code)
-        
+
         if new_achievements:
             self.save()
-        
+
         return new_achievements
 
 
@@ -641,9 +645,7 @@ class PromptTrack(models.Model):
         BRANDED = "branded", "Brand"
         COMPETITIVE = "competitive", "Competition"
 
-    analysis_run = models.ForeignKey(
-        AnalysisRun, on_delete=models.CASCADE, related_name="prompt_tracks"
-    )
+    analysis_run = models.ForeignKey(AnalysisRun, on_delete=models.CASCADE, related_name="prompt_tracks")
     prompt_text = models.TextField()
     is_custom = models.BooleanField(default=False)
     intent = models.CharField(
@@ -659,11 +661,11 @@ class PromptTrack(models.Model):
     score = models.FloatField(default=0.0)
 
     # 5-Factor AI Visibility Ranking Scores (all 0.0–1.0)
-    authority_score = models.FloatField(default=0.0)        # Factor 1 — 40% weight
+    authority_score = models.FloatField(default=0.0)  # Factor 1 — 40% weight
     content_quality_score = models.FloatField(default=0.0)  # Factor 2 — 35% weight
-    structural_score = models.FloatField(default=0.0)       # Factor 3 — 25% weight
-    semantic_score = models.FloatField(default=0.0)         # Factor 4 — supplementary
-    third_party_score = models.FloatField(default=0.0)      # Factor 5 — supplementary
+    structural_score = models.FloatField(default=0.0)  # Factor 3 — 25% weight
+    semantic_score = models.FloatField(default=0.0)  # Factor 4 — supplementary
+    third_party_score = models.FloatField(default=0.0)  # Factor 5 — supplementary
 
     created_at = models.DateTimeField(auto_now_add=True)
     # Soft-delete so that deleting a prompt does NOT free a plan-limit slot.
@@ -694,15 +696,11 @@ class PromptResult(models.Model):
         NEUTRAL = "neutral", "Neutral"
         NEGATIVE = "negative", "Negative"
 
-    prompt_track = models.ForeignKey(
-        PromptTrack, on_delete=models.CASCADE, related_name="results"
-    )
+    prompt_track = models.ForeignKey(PromptTrack, on_delete=models.CASCADE, related_name="results")
     engine = models.CharField(max_length=20, choices=Engine.choices)
     response_text = models.TextField(blank=True)
     brand_mentioned = models.BooleanField(default=False)
-    sentiment = models.CharField(
-        max_length=10, choices=Sentiment.choices, default=Sentiment.NEUTRAL
-    )
+    sentiment = models.CharField(max_length=10, choices=Sentiment.choices, default=Sentiment.NEUTRAL)
     confidence = models.FloatField(default=0.0)
     rank_position = models.IntegerField(default=0)
     checked_at = models.DateTimeField(auto_now_add=True)
@@ -724,9 +722,8 @@ class PromptCitation(models.Model):
     Captures source attribution so "pages AI loves" roll-ups and competitor gap analysis
     can be derived per-run without re-parsing response text.
     """
-    prompt_result = models.ForeignKey(
-        PromptResult, on_delete=models.CASCADE, related_name="citations"
-    )
+
+    prompt_result = models.ForeignKey(PromptResult, on_delete=models.CASCADE, related_name="citations")
     url = models.URLField(max_length=2048)
     domain = models.CharField(max_length=255, blank=True, default="", db_index=True)
     title = models.CharField(max_length=512, blank=True, default="")
@@ -754,6 +751,7 @@ class BacklinkSnapshot(models.Model):
     Reused across runs/prompts; refreshed when older than 7 days. Keyed by
     bare domain (no scheme, no path, no www. prefix) lowercased.
     """
+
     domain = models.CharField(max_length=255, unique=True, db_index=True)
     referring_domains = models.IntegerField(default=0)
     backlinks = models.IntegerField(default=0)
@@ -776,6 +774,7 @@ class BacklinkOpportunity(models.Model):
     something the user can act on (submit a listing, request a review, post in
     a community, claim a profile).
     """
+
     class Category(models.TextChoices):
         DIRECTORY = "directory", "Directory"
         REVIEW = "review", "Review Site"
@@ -1103,15 +1102,14 @@ class AutoFixJob(models.Model):
         META_DESCRIPTION = "meta_description"
         FAQ_SECTION = "faq_section"
 
-    analysis_run = models.ForeignKey(
-        AnalysisRun, on_delete=models.CASCADE, related_name="auto_fix_jobs"
-    )
-    recommendation = models.ForeignKey(
-        Recommendation, on_delete=models.CASCADE, related_name="auto_fix_jobs"
-    )
+    analysis_run = models.ForeignKey(AnalysisRun, on_delete=models.CASCADE, related_name="auto_fix_jobs")
+    recommendation = models.ForeignKey(Recommendation, on_delete=models.CASCADE, related_name="auto_fix_jobs")
     integration = models.ForeignKey(
-        "integrations.Integration", on_delete=models.CASCADE, related_name="auto_fix_jobs",
-        null=True, blank=True,
+        "integrations.Integration",
+        on_delete=models.CASCADE,
+        related_name="auto_fix_jobs",
+        null=True,
+        blank=True,
     )
     fix_type = models.CharField(max_length=30)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
@@ -1134,12 +1132,8 @@ class SitemapAudit(models.Model):
         COMPLETE = "complete"
         FAILED = "failed"
 
-    analysis_run = models.ForeignKey(
-        AnalysisRun, on_delete=models.CASCADE, related_name="sitemap_audits"
-    )
-    status = models.CharField(
-        max_length=20, choices=Status.choices, default=Status.QUEUED, db_index=True
-    )
+    analysis_run = models.ForeignKey(AnalysisRun, on_delete=models.CASCADE, related_name="sitemap_audits")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.QUEUED, db_index=True)
     progress = models.IntegerField(default=0)
     sitemap_url = models.URLField(max_length=2048, blank=True, default="")
     crawl_limit = models.IntegerField(default=200)
@@ -1182,16 +1176,12 @@ class SitemapAuditPage(models.Model):
         WARN = "warn"
         FAIL = "fail"
 
-    audit = models.ForeignKey(
-        SitemapAudit, on_delete=models.CASCADE, related_name="pages"
-    )
+    audit = models.ForeignKey(SitemapAudit, on_delete=models.CASCADE, related_name="pages")
     url = models.URLField(max_length=2048)
     path = models.CharField(max_length=2048, blank=True, default="")
     final_url = models.URLField(max_length=2048, blank=True, default="")
 
-    state = models.CharField(
-        max_length=12, choices=State.choices, default=State.QUEUED, db_index=True
-    )
+    state = models.CharField(max_length=12, choices=State.choices, default=State.QUEUED, db_index=True)
     status_code = models.IntegerField(default=0, db_index=True)
     redirect_count = models.IntegerField(default=0)
 
@@ -1225,9 +1215,7 @@ class SitemapAuditPage(models.Model):
     robots_allows_perplexitybot = models.BooleanField(default=True)
 
     ai_score = models.IntegerField(default=0)
-    severity = models.CharField(
-        max_length=8, choices=Severity.choices, default=Severity.OK, db_index=True
-    )
+    severity = models.CharField(max_length=8, choices=Severity.choices, default=Severity.OK, db_index=True)
     findings = models.JSONField(default=list, blank=True)
 
     error_message = models.CharField(max_length=512, blank=True, default="")
@@ -1254,16 +1242,12 @@ class AgentLogEntry(models.Model):
         VERCEL = "vercel"
         MANUAL = "manual"
 
-    analysis_run = models.ForeignKey(
-        AnalysisRun, on_delete=models.CASCADE, related_name="agent_log_entries"
-    )
+    analysis_run = models.ForeignKey(AnalysisRun, on_delete=models.CASCADE, related_name="agent_log_entries")
     bot_name = models.CharField(max_length=64, db_index=True)
     path = models.CharField(max_length=2048)
     status_code = models.IntegerField(default=0)
     ts = models.DateTimeField(db_index=True)
-    source = models.CharField(
-        max_length=16, choices=Source.choices, default=Source.MANUAL
-    )
+    source = models.CharField(max_length=16, choices=Source.choices, default=Source.MANUAL)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -1285,12 +1269,8 @@ class SchemaWatch(models.Model):
         COMPLETE = "complete"
         FAILED = "failed"
 
-    analysis_run = models.ForeignKey(
-        AnalysisRun, on_delete=models.CASCADE, related_name="schema_watches"
-    )
-    status = models.CharField(
-        max_length=20, choices=Status.choices, default=Status.QUEUED, db_index=True
-    )
+    analysis_run = models.ForeignKey(AnalysisRun, on_delete=models.CASCADE, related_name="schema_watches")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.QUEUED, db_index=True)
     progress = models.IntegerField(default=0)
 
     total_urls = models.IntegerField(default=0)
@@ -1320,9 +1300,7 @@ class SchemaWatchPage(models.Model):
         WARN = "warn"
         FAIL = "fail"
 
-    watch = models.ForeignKey(
-        SchemaWatch, on_delete=models.CASCADE, related_name="pages"
-    )
+    watch = models.ForeignKey(SchemaWatch, on_delete=models.CASCADE, related_name="pages")
     url = models.URLField(max_length=2048)
     path = models.CharField(max_length=2048, blank=True, default="")
     page_kind = models.CharField(max_length=32, blank=True, default="")
@@ -1332,9 +1310,7 @@ class SchemaWatchPage(models.Model):
     jsonld_count = models.IntegerField(default=0)
     raw_jsonld = models.JSONField(default=list, blank=True)
 
-    severity = models.CharField(
-        max_length=8, choices=Severity.choices, default=Severity.OK, db_index=True
-    )
+    severity = models.CharField(max_length=8, choices=Severity.choices, default=Severity.OK, db_index=True)
     issues = models.JSONField(default=list, blank=True)
     fix_targets = models.JSONField(default=list, blank=True)
 
@@ -1358,12 +1334,8 @@ class RankAudit(models.Model):
         COMPLETE = "complete"
         FAILED = "failed"
 
-    analysis_run = models.ForeignKey(
-        AnalysisRun, on_delete=models.CASCADE, related_name="rank_audits"
-    )
-    status = models.CharField(
-        max_length=20, choices=Status.choices, default=Status.QUEUED, db_index=True
-    )
+    analysis_run = models.ForeignKey(AnalysisRun, on_delete=models.CASCADE, related_name="rank_audits")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.QUEUED, db_index=True)
     progress = models.IntegerField(default=0)
     total_queries = models.IntegerField(default=0)
     queries_done = models.IntegerField(default=0)
@@ -1389,15 +1361,11 @@ class RankQuery(models.Model):
         DONE = "done"
         FAILED = "failed"
 
-    audit = models.ForeignKey(
-        RankAudit, on_delete=models.CASCADE, related_name="queries"
-    )
+    audit = models.ForeignKey(RankAudit, on_delete=models.CASCADE, related_name="queries")
     prompt_text = models.TextField()
     rank = models.IntegerField(default=0)
     brand_mention_count = models.IntegerField(default=0)
-    status = models.CharField(
-        max_length=20, choices=Status.choices, default=Status.QUEUED, db_index=True
-    )
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.QUEUED, db_index=True)
     error_message = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -1415,12 +1383,8 @@ class RankResult(models.Model):
         QUORA = "quora"
         AI = "ai"
 
-    query = models.ForeignKey(
-        RankQuery, on_delete=models.CASCADE, related_name="results"
-    )
-    surface = models.CharField(
-        max_length=16, choices=Surface.choices, db_index=True
-    )
+    query = models.ForeignKey(RankQuery, on_delete=models.CASCADE, related_name="results")
+    surface = models.CharField(max_length=16, choices=Surface.choices, db_index=True)
     position = models.IntegerField()
     url = models.URLField(max_length=2048, blank=True, default="")
     domain = models.CharField(max_length=255, blank=True, default="")
@@ -1436,9 +1400,7 @@ class RankResult(models.Model):
         NEUTRAL = "neutral"
         NEGATIVE = "negative"
 
-    sentiment = models.CharField(
-        max_length=10, choices=Sentiment.choices, default=Sentiment.NEUTRAL
-    )
+    sentiment = models.CharField(max_length=10, choices=Sentiment.choices, default=Sentiment.NEUTRAL)
 
     is_brand_mentioned = models.BooleanField(default=False)
     competitors_mentioned = models.JSONField(default=list, blank=True)
@@ -1505,11 +1467,9 @@ class BacklinkProduct(models.Model):
     sku = models.CharField(max_length=120, db_index=True)
     domain = models.CharField(max_length=255, db_index=True)
     title = models.CharField(max_length=300, blank=True, default="")
-    link_type = models.CharField(
-        max_length=20, choices=LinkType.choices, default=LinkType.GUEST_POST
-    )
+    link_type = models.CharField(max_length=20, choices=LinkType.choices, default=LinkType.GUEST_POST)
     domain_authority = models.IntegerField(null=True, blank=True)  # 0–100 scale
-    domain_rank = models.IntegerField(null=True, blank=True)        # 0–1000 scale
+    domain_rank = models.IntegerField(null=True, blank=True)  # 0–1000 scale
     monthly_traffic = models.IntegerField(null=True, blank=True)
     niche_tags = models.JSONField(default=list, blank=True)
     language = models.CharField(max_length=8, default="en")
@@ -1529,9 +1489,7 @@ class BacklinkProduct(models.Model):
     class Meta:
         ordering = ["-domain_authority", "domain"]
         constraints = [
-            models.UniqueConstraint(
-                fields=["provider", "sku"], name="uniq_provider_sku"
-            ),
+            models.UniqueConstraint(fields=["provider", "sku"], name="uniq_provider_sku"),
         ]
         indexes = [
             models.Index(fields=["provider", "domain"]),
@@ -1555,12 +1513,8 @@ class BacklinkOrder(models.Model):
         REFUNDED = "refunded", "Refunded"
         CANCELLED = "cancelled", "Cancelled"
 
-    provider = models.ForeignKey(
-        BacklinkProvider, on_delete=models.PROTECT, related_name="orders"
-    )
-    product = models.ForeignKey(
-        BacklinkProduct, on_delete=models.PROTECT, related_name="orders"
-    )
+    provider = models.ForeignKey(BacklinkProvider, on_delete=models.PROTECT, related_name="orders")
+    product = models.ForeignKey(BacklinkProduct, on_delete=models.PROTECT, related_name="orders")
     user_email = models.EmailField()
     analysis_run = models.ForeignKey(
         AnalysisRun,
@@ -1579,9 +1533,7 @@ class BacklinkOrder(models.Model):
 
     target_url = models.URLField(max_length=2048)
     anchor_text = models.CharField(max_length=300)
-    status = models.CharField(
-        max_length=24, choices=Status.choices, default=Status.DRAFT, db_index=True
-    )
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.DRAFT, db_index=True)
 
     price_cents = models.IntegerField(default=0)
     currency = models.CharField(max_length=3, default="USD")
@@ -1610,9 +1562,8 @@ class BacklinkOrder(models.Model):
 
 class BrandKit(models.Model):
     """Per-run cached brand submission kit (LLM-generated)."""
-    analysis_run = models.OneToOneField(
-        AnalysisRun, on_delete=models.CASCADE, related_name="brand_kit"
-    )
+
+    analysis_run = models.OneToOneField(AnalysisRun, on_delete=models.CASCADE, related_name="brand_kit")
     payload = models.JSONField(default=dict)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1621,11 +1572,30 @@ class BrandKit(models.Model):
         return f"BrandKit<run={self.analysis_run_id}>"
 
 
+class OverviewInsightReport(models.Model):
+    """Per-run cached AI insight report blending analyzer + GA4 + GSC signals.
+
+    ``payload`` holds {summary, insights[], tasks[], has_ga, has_gsc}. The tasks
+    are also persisted as tagged Recommendation rows (source="ai_insight").
+    """
+
+    analysis_run = models.OneToOneField(
+        AnalysisRun, on_delete=models.CASCADE, related_name="overview_insights"
+    )
+    payload = models.JSONField(default=dict)
+    has_ga = models.BooleanField(default=False)
+    has_gsc = models.BooleanField(default=False)
+    generated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"OverviewInsightReport<run={self.analysis_run_id}>"
+
+
 class PromptWikipediaDraft(models.Model):
     """Per-prompt cached Wikipedia draft kit (LLM-generated)."""
-    prompt_track = models.OneToOneField(
-        PromptTrack, on_delete=models.CASCADE, related_name="wikipedia_draft"
-    )
+
+    prompt_track = models.OneToOneField(PromptTrack, on_delete=models.CASCADE, related_name="wikipedia_draft")
     payload = models.JSONField(default=dict)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1641,9 +1611,7 @@ class ChatMessage(models.Model):
         USER = "user", "User"
         ASSISTANT = "assistant", "Assistant"
 
-    analysis_run = models.ForeignKey(
-        AnalysisRun, on_delete=models.CASCADE, related_name="chat_messages"
-    )
+    analysis_run = models.ForeignKey(AnalysisRun, on_delete=models.CASCADE, related_name="chat_messages")
     role = models.CharField(max_length=12, choices=Role.choices)
     content = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1666,9 +1634,7 @@ class PromptSchemaArtifact(models.Model):
         ORGANIZATION = "organization", "Organization"
         ANSWER = "answer", "Direct answer"
 
-    prompt_track = models.ForeignKey(
-        PromptTrack, on_delete=models.CASCADE, related_name="schema_artifacts"
-    )
+    prompt_track = models.ForeignKey(PromptTrack, on_delete=models.CASCADE, related_name="schema_artifacts")
     schema_type = models.CharField(max_length=24, choices=SchemaType.choices)
     output = models.TextField()
     explanation = models.TextField(blank=True, default="")
@@ -1689,6 +1655,7 @@ class DomainAnalyticsSnapshot(models.Model):
     traffic, top keywords, top pages, and per-country geographic breakdown.
     Refreshed on demand; default TTL is 7 days.
     """
+
     analysis_run = models.OneToOneField(
         AnalysisRun, on_delete=models.CASCADE, related_name="domain_analytics"
     )
@@ -1806,3 +1773,101 @@ class BlogPost(models.Model):
 
     def __str__(self):
         return f"BlogPost<{self.site}/{self.slug}>"
+
+
+class PromptEvalLog(models.Model):
+    """A single prompt-evaluation result (Epic 6).
+
+    One row per golden case (or live generation) judged by the LLM-as-judge. Persisting
+    prompt name + version alongside the faithfulness/relevance/format scores and token
+    usage is what makes prompt changes measurable over time and lets an eval run gate CI.
+    """
+
+    class Mode(models.TextChoices):
+        RECORDED = "recorded", "Recorded known-good"
+        LIVE = "live", "Live generation"
+
+    prompt_name = models.CharField(max_length=64, db_index=True)
+    prompt_version = models.CharField(max_length=16)
+    case_id = models.CharField(max_length=128, blank=True, default="")
+    mode = models.CharField(max_length=12, choices=Mode.choices, default=Mode.RECORDED)
+
+    faithfulness = models.FloatField(default=0.0)
+    relevance = models.FloatField(default=0.0)
+    format_score = models.FloatField(default=0.0)
+    passed = models.BooleanField(default=False, db_index=True)
+    rationale = models.TextField(blank=True, default="")
+
+    prompt_tokens = models.PositiveIntegerField(default=0)
+    completion_tokens = models.PositiveIntegerField(default=0)
+    total_tokens = models.PositiveIntegerField(default=0)
+    # [{"source_url": ..., "score": ...}] when the evaluated prompt used retrieval.
+    retrieved_chunks = models.JSONField(default=list, blank=True)
+
+    # Provenance only; a deleted run must not delete its eval history.
+    source_run = models.ForeignKey(
+        "analyzer.AnalysisRun",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="prompt_eval_logs",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["prompt_name", "prompt_version"]),
+            models.Index(fields=["prompt_name", "passed"]),
+        ]
+
+    def __str__(self):
+        return f"PromptEvalLog<{self.prompt_name}/{self.prompt_version}:{'pass' if self.passed else 'fail'}>"
+
+
+class LLMResponseCache(models.Model):
+    """Cached LLM responses for repeat prompts (Epic 7).
+
+    Two-tier lookup: an exact ``prompt_hash`` match (free, zero-risk) and, failing that,
+    a pgvector cosine search over ``prompt_embedding`` with a conservative similarity
+    floor. Both are constrained to the same SCOPE -- (purpose, model_key, organization) --
+    which is the safety property: two brands can never share a cache entry.
+
+    Opt-in per call site (``ask_llm(cache=True)``); entries expire via ``expires_at``.
+    """
+
+    # Scope. A lookup must match all three, so a hit can never cross brands/purposes.
+    purpose = models.CharField(max_length=128, db_index=True)
+    model_key = models.CharField(max_length=64)
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="llm_response_cache",
+    )
+
+    # sha256 of the normalized prompt; the exact-match fast path.
+    prompt_hash = models.CharField(max_length=64, db_index=True)
+    prompt_text = models.TextField(blank=True, default="")  # truncated, for debugging
+    prompt_embedding = VectorField(dimensions=EMBEDDING_DIMENSIONS, null=True, blank=True)
+    response_text = models.TextField()
+
+    hit_count = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["purpose", "model_key", "organization", "prompt_hash"],
+                name="uniq_llm_cache_scope_hash",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["purpose", "model_key", "organization"]),
+            models.Index(fields=["expires_at"]),
+        ]
+
+    def __str__(self):
+        return f"LLMResponseCache<{self.purpose}:{self.prompt_hash[:8]}>"

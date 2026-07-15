@@ -11,6 +11,36 @@ constraint`. The competitor-mention surface now lives in PromptCitation
 from django.db import migrations
 
 
+def _existing_columns(schema_editor, table):
+    return {
+        col.name
+        for col in schema_editor.connection.introspection.get_table_description(
+            schema_editor.connection.cursor(), table
+        )
+    }
+
+
+def drop_mentioned_competitors(apps, schema_editor):
+    table = "analyzer_prompttrack"
+    if "mentioned_competitors" not in _existing_columns(schema_editor, table):
+        return
+    with schema_editor.connection.cursor() as cursor:
+        cursor.execute(f'ALTER TABLE "{table}" DROP COLUMN "mentioned_competitors";')
+
+
+def add_mentioned_competitors(apps, schema_editor):
+    table = "analyzer_prompttrack"
+    if "mentioned_competitors" in _existing_columns(schema_editor, table):
+        return
+    column_type = "jsonb" if schema_editor.connection.vendor == "postgresql" else "text"
+    default = "'[]'::jsonb" if schema_editor.connection.vendor == "postgresql" else "'[]'"
+    with schema_editor.connection.cursor() as cursor:
+        cursor.execute(
+            f'ALTER TABLE "{table}" ADD COLUMN "mentioned_competitors" {column_type} '
+            f"NOT NULL DEFAULT {default};"
+        )
+
+
 class Migration(migrations.Migration):
 
     # Re-pinned onto the current leaf: this migration came over from tushar-05
@@ -22,16 +52,8 @@ class Migration(migrations.Migration):
         ("analyzer", "0045_merge_20260514_1425"),
     ]
 
+    # Uses RunPython (not RunSQL with `IF EXISTS`) so this also works on
+    # SQLite (dev), which doesn't support that clause.
     operations = [
-        migrations.RunSQL(
-            sql=(
-                "ALTER TABLE analyzer_prompttrack "
-                "DROP COLUMN IF EXISTS mentioned_competitors;"
-            ),
-            reverse_sql=(
-                "ALTER TABLE analyzer_prompttrack "
-                "ADD COLUMN IF NOT EXISTS mentioned_competitors jsonb "
-                "NOT NULL DEFAULT '[]'::jsonb;"
-            ),
-        ),
+        migrations.RunPython(drop_mentioned_competitors, reverse_code=add_mentioned_competitors),
     ]

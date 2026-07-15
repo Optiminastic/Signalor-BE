@@ -1,13 +1,46 @@
 from rest_framework import serializers
 
-from .models import Organization
+from .models import BrandProfile, Organization
 
 
 class OrganizationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Organization
-        fields = ["id", "name", "url", "owner_email", "created_at"]
-        read_only_fields = ["id", "created_at"]
+        fields = ["id", "name", "slug", "url", "owner_email", "created_at"]
+        read_only_fields = ["id", "slug", "created_at"]
+
+
+class BrandProfileSerializer(serializers.ModelSerializer):
+    """The 7 content sections are editable (a reviewer can correct copy or facts);
+    workflow fields (status/confidence/last_verified_at/source_run/sources) are
+    read-only over the API -- status changes only via the review endpoint."""
+
+    class Meta:
+        model = BrandProfile
+        fields = [
+            "status",
+            "confidence",
+            "last_verified_at",
+            "source_run",
+            "identity",
+            "positioning",
+            "audience",
+            "voice",
+            "canonical_facts",
+            "competitors",
+            "sources",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "status",
+            "confidence",
+            "last_verified_at",
+            "source_run",
+            "sources",
+            "created_at",
+            "updated_at",
+        ]
 
 
 class OnboardSerializer(serializers.Serializer):

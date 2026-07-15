@@ -192,16 +192,28 @@ def _save_probes_and_tracks(
         brand_prompts = stored[:gen_count]
     else:
         try:
+            from apps.organizations.services.brand_context import build_context
+            from apps.organizations.services.retrieval import build_knowledge_block
+
+            # Epic 4 (RAG): reason over retrieved, relevant knowledge instead of a raw
+            # crawl-text slice. The knowledge base is populated late in a run, so the
+            # brand's first analysis has an empty KB and cleanly falls back to crawl_text;
+            # later runs retrieve real content. The brand card stays the system= prompt.
+            kb_query = " ".join(filter(None, [brand_name, industry, "products, services, pricing, audience"]))
+            page_content = build_knowledge_block(run, kb_query) or crawl_text
+
             brand_prompts = generate_brand_prompts(
                 brand_name=brand_name,
                 brand_url=brand_url,
                 industry=industry,
-                page_content=crawl_text,
+                page_content=page_content,
                 meta_description=meta_description,
                 products=site_pages,
                 location="",
                 country=country,
                 count=gen_count,
+                brand_card=build_context(run),
+                cache_org=run.organization,
             )
         except Exception as exc:
             logger.warning("AI prompt generation failed for run %d: %s", run.id, exc)
@@ -590,11 +602,22 @@ def run_single_page_analysis(run_id: int):
         industry = detect_industry(crawl.soup, crawl.text)
         logger.info("Run %d: detected industry = %s", run_id, industry)
 
+        # Optional SiteOne technical/SEO enrichment (gated by SIGNALOR_USE_SITEONE;
+        # best-effort — a failure never blocks the analysis).
+        from .pipeline import siteone_crawl
+
+        siteone_report = None
+        if siteone_crawl.is_configured():
+            try:
+                siteone_report = siteone_crawl.run_report(run.url, max_urls=12)
+            except siteone_crawl.SiteOneError as exc:
+                logger.warning("SiteOne report skipped for %s: %s", run.url, exc)
+
         # Phase 2: Run static pillars across ALL crawled pages
         # Score homepage first
-        content_score, content_details = score_content(crawl)
+        content_score, content_details = score_content(crawl, siteone=siteone_report)
         schema_score_val, schema_details = score_schema(crawl)
-        technical_score_val, technical_details = score_technical(crawl)
+        technical_score_val, technical_details = score_technical(crawl, siteone=siteone_report)
 
         # Score additional pages and aggregate
         all_content_scores = [content_score]
@@ -915,6 +938,31 @@ def run_single_page_analysis(run_id: int):
         except Exception as exc:
             logger.warning("Competitor citation reclassify failed for run %d: %s", run_id, exc)
 
+        # Epic 2: bootstrap a PENDING BrandProfile from this run's signals (BrandKit +
+        # competitors + run fields) so it can be reviewed/approved. Fail-soft — the
+        # bootstrap never raises, and an org-less run simply produces nothing.
+        try:
+            from apps.organizations.services.brand_profile import bootstrap_from_run
+
+            bootstrap_from_run(run, market_profile={})
+        except Exception as exc:
+            logger.warning("Brand profile bootstrap failed for run %d: %s", run_id, exc)
+
+        # Epic 3: ingest every page we already crawled (homepage + extras) into the
+        # org knowledge base. Fail-soft and org-scoped — anonymous runs are skipped
+        # inside the service, and ingestion never gates the run's completion.
+        from django.conf import settings as _settings
+
+        if getattr(_settings, "SIGNALOR_ENABLE_INGESTION", True):
+            try:
+                from apps.organizations.services.corpus_ingest import ingest_run_pages
+
+                pages = [{"url": crawl.url, "html": crawl.html, "text": crawl.text}]
+                pages += [{"url": c.url, "html": c.html, "text": c.text} for c in additional_crawls if c.ok]
+                ingest_run_pages(run, pages)
+            except Exception as exc:
+                logger.warning("Corpus ingestion failed for run %d: %s", run_id, exc)
+
         # Finalize
         run.composite_score = composite
         run.status = AnalysisRun.Status.COMPLETE
@@ -1049,11 +1097,14 @@ def _generate_and_fire_competitive_prompts(run: AnalysisRun) -> None:
         brand = (run.brand_name or "").strip() or _domain_label(run.url)
         url = (run.url or "").strip()
 
+        from apps.organizations.services.brand_context import build_context
+
         prompts = generate_brand_prompts(
             brand_name=brand,
             brand_url=url,
             country=(run.country or "").strip(),
             count=10,
+            brand_card=build_context(run),
         )
         if not prompts:
             logger.info("Auto-gen returned no competitive prompts for run %d.", run.id)

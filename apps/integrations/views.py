@@ -1142,78 +1142,182 @@ class GSCUrlInspectView(APIView):
             )
 
 
-def _active_gsc_integration_or_response(email: str):
-    """Resolve the live GSC integration for ``email`` -> (integration, error_response)."""
-    if not email:
-        return None, Response(
-            {"error": "An 'email' parameter is required."},
-            status=status.HTTP_400_BAD_REQUEST,
+class GSCCoverageView(APIView):
+    """
+    GET /api/integrations/google-search-console/coverage/?email=
+
+    Returns the authoritative Indexed / Not-indexed split from a cached per-URL
+    URL-Inspection pass (Search Console's "Page indexing" data has no bulk API).
+    Triggers a background refresh when the cache is missing or stale (>24h), and
+    enriches indexed pages with live Search metrics.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        email = request.query_params.get("email", "").lower().strip()
+        if not email:
+            return Response(
+                {"error": "Email parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        org, err = _get_org_or_400(email)
+        if err:
+            return err
+
+        try:
+            integration = Integration.objects.get(
+                organization=org,
+                provider=Integration.Provider.GOOGLE_SEARCH_CONSOLE,
+                is_active=True,
+            )
+        except Integration.DoesNotExist:
+            return Response(
+                {"error": "Search Console not connected."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        from .tasks import start_gsc_index_sync
+
+        # A "syncing" snapshot older than this is treated as dead (e.g. the worker
+        # thread was killed by a server restart) and no longer blocks a refresh.
+        sync_timeout = timezone.now() - timedelta(minutes=10)
+        integration.gsc_index_snapshots.filter(sync_status="syncing", created_at__lt=sync_timeout).update(
+            sync_status="failed", error_message="Sync timed out or interrupted."
         )
-    org, err = _get_org_or_400(email)
-    if err:
-        return None, err
-    try:
-        integration = Integration.objects.get(
-            organization=org,
-            provider=Integration.Provider.GOOGLE_SEARCH_CONSOLE,
-            is_active=True,
+
+        snapshot = integration.gsc_index_snapshots.filter(sync_status="complete").first()
+        syncing = integration.gsc_index_snapshots.filter(sync_status="syncing").exists()
+
+        # Refresh when missing or stale, unless a pass is already running.
+        stale = snapshot is None or snapshot.created_at < timezone.now() - timedelta(hours=24)
+        if stale and not syncing:
+            start_gsc_index_sync(integration.id)
+            syncing = True
+
+        site_url = integration.metadata.get("site_url", "")
+
+        from .services.gsc import _coverage_key as _ckey
+
+        # Live Search metrics to enrich indexed pages (best-effort).
+        metrics: dict = {}
+        date_start = date_end = ""
+        try:
+            from .services.gsc import fetch_served_pages
+
+            served = fetch_served_pages(integration)
+            date_start, date_end = served["date_start"], served["date_end"]
+            metrics = {_ckey(p["url"]): p for p in served["pages"]}
+        except Exception as exc:  # noqa: BLE001 — metrics are optional enrichment
+            logger.warning("GSC coverage: served metrics unavailable: %s", exc)
+
+        if snapshot is None:
+            # First load — inspection pass is running; show a verifying state.
+            return Response(
+                {
+                    "property": site_url,
+                    "sync_status": "syncing" if syncing else "pending",
+                    "checked_at": "",
+                    "date_start": date_start,
+                    "date_end": date_end,
+                    "indexed_count": 0,
+                    "not_indexed_count": 0,
+                    "checked_count": 0,
+                    "sitemap_total": 0,
+                    "submitted": 0,
+                    "pages": [],
+                    "not_indexed": [],
+                }
+            )
+
+        indexed_pages = []
+        not_indexed = []
+        for p in snapshot.pages:
+            if p.get("on_google"):
+                m = metrics.get(_ckey(p["url"])) if metrics else None
+                indexed_pages.append(
+                    {
+                        "url": p["url"],
+                        "clicks": m["clicks"] if m else 0,
+                        "impressions": m["impressions"] if m else 0,
+                        "ctr": m["ctr"] if m else 0.0,
+                        "position": m["position"] if m else 0.0,
+                        "coverage_state": p.get("coverage_state", ""),
+                    }
+                )
+            else:
+                not_indexed.append(
+                    {
+                        "url": p["url"],
+                        "reason": p.get("coverage_state", "") or "Not indexed",
+                    }
+                )
+        indexed_pages.sort(key=lambda p: p["impressions"], reverse=True)
+
+        return Response(
+            {
+                "property": site_url,
+                "sync_status": "syncing" if syncing else snapshot.sync_status,
+                "checked_at": snapshot.created_at.isoformat(),
+                "date_start": date_start,
+                "date_end": date_end,
+                "indexed_count": snapshot.indexed_count,
+                "not_indexed_count": snapshot.not_indexed_count,
+                "checked_count": snapshot.checked_count,
+                "sitemap_total": snapshot.sitemap_total,
+                "submitted": snapshot.submitted,
+                "pages": indexed_pages,
+                "not_indexed": not_indexed,
+            }
         )
-    except Integration.DoesNotExist:
-        return None, Response(
-            {"error": "Search Console not connected."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
-    return integration, None
 
 
 class GSCSitemapsView(APIView):
-    """GET /api/integrations/google-search-console/sitemaps/?email= — live sitemap list."""
+    """GET /api/integrations/google-search-console/sitemaps/?email="""
 
     permission_classes = [AllowAny]
     throttle_classes = [PollingThrottle]
 
     def get(self, request):
         email = request.query_params.get("email", "").lower().strip()
-        integration, err = _active_gsc_integration_or_response(email)
+        if not email:
+            return Response(
+                {"error": "Email parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        org, err = _get_org_or_400(email)
         if err:
             return err
 
         try:
-            from .services.gsc import list_gsc_sitemaps
+            integration = Integration.objects.get(
+                organization=org,
+                provider=Integration.Provider.GOOGLE_SEARCH_CONSOLE,
+                is_active=True,
+            )
+        except Integration.DoesNotExist:
+            return Response(
+                {"error": "Search Console not connected."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
-            return Response(list_gsc_sitemaps(integration))
+        try:
+            from .services.gsc import fetch_gsc_sitemaps
+
+            return Response(fetch_gsc_sitemaps(integration))
         except ValueError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
             logger.error("GSC sitemaps error: %s", exc)
             return Response(
                 {"error": "Failed to load sitemaps."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-
-class GSCCoverageView(APIView):
-    """GET /api/integrations/google-search-console/coverage/?email= — live index coverage."""
-
-    permission_classes = [AllowAny]
-    throttle_classes = [PollingThrottle]
-
-    def get(self, request):
-        email = request.query_params.get("email", "").lower().strip()
-        integration, err = _active_gsc_integration_or_response(email)
-        if err:
-            return err
-
-        try:
-            from .services.gsc import fetch_gsc_coverage
-
-            return Response(fetch_gsc_coverage(integration))
-        except ValueError as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as exc:
-            logger.error("GSC coverage error: %s", exc)
-            return Response(
-                {"error": "Failed to load index coverage."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 

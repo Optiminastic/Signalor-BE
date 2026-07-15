@@ -11,8 +11,10 @@ Property identifiers (``site_url``) are either URL-prefix properties
 """
 
 import logging
+import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 
 import requests
 
@@ -23,9 +25,84 @@ logger = logging.getLogger("apps")
 
 _SITES_URL = "https://www.googleapis.com/webmasters/v3/sites"
 _SEARCH_ANALYTICS_URL = "https://www.googleapis.com/webmasters/v3/sites/{site}/searchAnalytics/query"
+_SITEMAPS_URL = "https://www.googleapis.com/webmasters/v3/sites/{site}/sitemaps"
 _INSPECT_URL = "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect"
 
 _TIMEOUT = 30
+
+# Cap how many sitemap URLs we inventory so a huge site can't blow up the request.
+_SITEMAP_URL_CAP = 2000
+
+
+def _coverage_key(url: str) -> str:
+    """
+    Normalize a URL for indexed-vs-submitted comparison: ignore scheme (http vs
+    https), lowercase the host, drop the fragment and any trailing slash. Path
+    case and query string are preserved (they can be significant).
+    """
+    try:
+        s = urlsplit(url.strip())
+        netloc = s.netloc.lower()
+        path = s.path.rstrip("/")
+        return urlunsplit(("", netloc, path, s.query, "")).strip()
+    except Exception:  # noqa: BLE001 — never let a bad URL break bucketing
+        return url.strip().rstrip("/").lower()
+
+
+def _parse_sitemap(content: bytes) -> tuple[list[str], list[str]]:
+    """Parse sitemap XML → (child_sitemap_urls, page_urls). Handles namespaces."""
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError:
+        return [], []
+    locs = [
+        el.text.strip()
+        for el in root.iter()
+        if el.tag.lower().endswith("loc") and el.text and el.text.strip()
+    ]
+    if root.tag.lower().endswith("sitemapindex"):
+        return locs, []
+    return [], locs
+
+
+def _collect_sitemap_urls(sitemap_paths: list[str], cap: int = _SITEMAP_URL_CAP) -> list[str]:
+    """
+    Download the submitted sitemaps (following one level of sitemap-index nesting)
+    and return the inventory of page URLs they declare, de-duplicated and capped.
+    Sitemaps are public documents, so no auth header is sent.
+    """
+    pages: list[str] = []
+    seen_pages: set[str] = set()
+    seen_sitemaps: set[str] = set()
+    queue = list(sitemap_paths)
+    while queue and len(pages) < cap:
+        sm_url = queue.pop(0)
+        if sm_url in seen_sitemaps:
+            continue
+        seen_sitemaps.add(sm_url)
+        try:
+            resp = requests.get(
+                sm_url,
+                timeout=_TIMEOUT,
+                headers={"User-Agent": "Signalor-GSC/1.0"},
+            )
+            if resp.status_code != 200:
+                continue
+            children, urls = _parse_sitemap(resp.content)
+        except Exception as exc:  # noqa: BLE001 — one bad sitemap shouldn't fail all
+            logger.warning("GSC coverage: sitemap fetch failed %s: %s", sm_url, exc)
+            continue
+        for child in children:
+            if child not in seen_sitemaps:
+                queue.append(child)
+        for url in urls:
+            key = _coverage_key(url)
+            if key not in seen_pages:
+                seen_pages.add(key)
+                pages.append(url)
+                if len(pages) >= cap:
+                    break
+    return pages
 
 
 def _bearer(integration: Integration) -> str:
@@ -274,12 +351,15 @@ def fetch_gsc_page_metrics(integration: Integration, page_url: str, days: int = 
     }
 
 
-def inspect_gsc_url(integration: Integration, page_url: str) -> dict:
+def inspect_gsc_url(integration: Integration, page_url: str, token: str | None = None) -> dict:
     """
     Run the URL Inspection API for a single URL against the selected property.
 
     Returns a normalized verdict: whether the URL is on Google, coverage state,
     last crawl time, robots/indexing verdicts, and the canonical URLs.
+
+    Pass ``token`` to reuse a pre-fetched bearer across many inspections (avoids a
+    DB hit + token rebuild per call) — important when inspecting in parallel.
     """
     site_url = integration.metadata.get("site_url")
     if not site_url:
@@ -287,7 +367,7 @@ def inspect_gsc_url(integration: Integration, page_url: str) -> dict:
     if not page_url:
         raise ValueError("A URL to inspect is required.")
 
-    token = _bearer(integration)
+    token = token or _bearer(integration)
     resp = requests.post(
         _INSPECT_URL,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
@@ -317,24 +397,22 @@ def inspect_gsc_url(integration: Integration, page_url: str) -> dict:
     }
 
 
-_SITEMAPS_URL = "https://www.googleapis.com/webmasters/v3/sites/{site}/sitemaps"
-
-
-def list_gsc_sitemaps(integration: Integration) -> dict:
+def fetch_gsc_sitemaps(integration: Integration, token: str | None = None) -> dict:
     """
-    List the sitemaps Google knows about for the selected property, with the
-    submitted/indexed counts, errors, and warnings straight from Search Console.
+    List the sitemaps submitted for the selected property and their submit/index
+    counts (``sitemaps.list``). Works for both URL-prefix and domain properties.
 
-    Returns {"sitemaps": [...], "submitted": int, "indexed": int}.
+    Returns ``{"sitemaps": [...], "submitted": int, "indexed": int}``. Note: the
+    per-sitemap ``indexed`` count is deprecated by Google and frequently returns 0
+    even when pages are indexed — treat ``submitted`` as the reliable signal.
     """
     site_url = integration.metadata.get("site_url")
     if not site_url:
         raise ValueError("No Search Console property selected for this integration.")
 
-    token = _bearer(integration)
-    url = _SITEMAPS_URL.format(site=quote(site_url, safe=""))
+    token = token or _bearer(integration)
     resp = requests.get(
-        url,
+        _SITEMAPS_URL.format(site=quote(site_url, safe="")),
         headers={"Authorization": f"Bearer {token}"},
         timeout=_TIMEOUT,
     )
@@ -347,11 +425,10 @@ def list_gsc_sitemaps(integration: Integration) -> dict:
     total_submitted = 0
     total_indexed = 0
     for entry in entries:
-        submitted = 0
-        indexed = 0
-        for content in entry.get("contents", []) or []:
-            submitted += int(content.get("submitted", 0) or 0)
-            indexed += int(content.get("indexed", 0) or 0)
+        # ``contents`` is a per-content-type breakdown (web, image, video, ...).
+        contents = entry.get("contents", []) or []
+        submitted = sum(int(c.get("submitted", 0) or 0) for c in contents)
+        indexed = sum(int(c.get("indexed", 0) or 0) for c in contents)
         total_submitted += submitted
         total_indexed += indexed
         sitemaps.append(
@@ -376,16 +453,11 @@ def list_gsc_sitemaps(integration: Integration) -> dict:
     }
 
 
-def fetch_gsc_coverage(integration: Integration, days: int = 90) -> dict:
+def fetch_served_pages(integration: Integration, days: int = 90) -> dict:
     """
-    Build a live index-coverage view from Search Console.
-
-    Google exposes no full "coverage report" API, so we combine two real signals:
-    - sitemap submitted/indexed totals (from the Sitemaps API), and
-    - the pages Google actually served in Search over the window (Search Analytics
-      ``page`` dimension) — every such page is crawled and indexed.
-
-    Returns {"submitted", "indexed", "served_count", "pages": [...], date range}.
+    Pages Google served in Search (received impressions) over the window, with
+    their clicks/impressions/ctr/position. Used to enrich the indexed-page list
+    with real Search metrics. GSC data lags ~2-3 days.
     """
     site_url = integration.metadata.get("site_url")
     if not site_url:
@@ -394,6 +466,8 @@ def fetch_gsc_coverage(integration: Integration, days: int = 90) -> dict:
     token = _bearer(integration)
     end_date = date.today() - timedelta(days=3)
     start_date = end_date - timedelta(days=days)
+    start_iso = start_date.isoformat()
+    end_iso = end_date.isoformat()
 
     pages = [
         {
@@ -407,33 +481,84 @@ def fetch_gsc_coverage(integration: Integration, days: int = 90) -> dict:
             token,
             site_url,
             {
-                "startDate": start_date.isoformat(),
-                "endDate": end_date.isoformat(),
+                "startDate": start_iso,
+                "endDate": end_iso,
                 "dimensions": ["page"],
                 "rowLimit": 1000,
             },
         )
     ]
     pages.sort(key=lambda p: p["impressions"], reverse=True)
+    return {"date_start": start_iso, "date_end": end_iso, "pages": pages}
 
-    # Sitemap submitted/indexed totals are a best-effort enrichment — never fail
-    # coverage just because the property has no submitted sitemap.
-    submitted = 0
-    indexed = 0
-    try:
-        sm = list_gsc_sitemaps(integration)
-        submitted = sm["submitted"]
-        indexed = sm["indexed"]
-    except ValueError:
-        pass
 
+# Bound how many URLs we inspect per sync so a large site can't blow the daily
+# URL-Inspection quota (2,000/day per property).
+_INSPECT_CAP = 300
+# Parallelism for the inspection pass — the API is ~8s/call but allows 600/min,
+# so concurrency is the only way to keep the whole pass under a minute.
+_INSPECT_CONCURRENCY = 8
+
+
+def inspect_sitemap_index_status(integration: Integration, cap: int = _INSPECT_CAP) -> dict:
+    """
+    Authoritative index status for the property: inventory the submitted sitemap
+    URLs, then run the URL Inspection API on each to get Google's real verdict
+    (``on_google``) and coverage reason. This is the same data the Search Console
+    "Page indexing" report shows — there is no bulk API for that report, so we
+    derive it per-URL. Slow + rate-limited; intended to run in a background sync.
+
+    Returns counts + a per-page list: each ``{url, on_google, coverage_state,
+    verdict, last_crawl_time, robots_txt_state, indexing_state}``.
+    """
+    site_url = integration.metadata.get("site_url")
+    if not site_url:
+        raise ValueError("No Search Console property selected for this integration.")
+
+    sm = fetch_gsc_sitemaps(integration)
+    sitemap_urls = _collect_sitemap_urls([s["path"] for s in sm["sitemaps"]])[:cap]
+
+    # The URL Inspection API is ~8s per call, so inspect in parallel. A shared,
+    # pre-fetched token avoids a DB hit + token rebuild in each worker thread.
+    token = _bearer(integration)
+
+    def _inspect_one(url: str) -> dict:
+        try:
+            r = inspect_gsc_url(integration, url, token=token)
+            return {
+                "url": url,
+                "on_google": bool(r["on_google"]),
+                "coverage_state": r["coverage_state"],
+                "verdict": r["verdict"],
+                "last_crawl_time": r["last_crawl_time"],
+                "robots_txt_state": r["robots_txt_state"],
+                "indexing_state": r["indexing_state"],
+            }
+        except Exception as exc:  # noqa: BLE001 — one failed URL shouldn't kill the pass
+            logger.warning("GSC index sync: inspection failed for %s: %s", url, exc)
+            return {
+                "url": url,
+                "on_google": False,
+                "coverage_state": "Could not verify",
+                "verdict": "",
+                "last_crawl_time": "",
+                "robots_txt_state": "",
+                "indexing_state": "",
+            }
+
+    results: list[dict] = []
+    if sitemap_urls:
+        with ThreadPoolExecutor(max_workers=_INSPECT_CONCURRENCY) as pool:
+            results = list(pool.map(_inspect_one, sitemap_urls))
+
+    indexed_count = sum(1 for r in results if r["on_google"])
     return {
-        "date_start": start_date.isoformat(),
-        "date_end": end_date.isoformat(),
-        "submitted": submitted,
-        "indexed": indexed,
-        "served_count": len(pages),
-        "pages": pages,
+        "checked_count": len(results),
+        "indexed_count": indexed_count,
+        "not_indexed_count": len(results) - indexed_count,
+        "sitemap_total": len(sitemap_urls),
+        "submitted": sm["submitted"],
+        "pages": results,
     }
 
 

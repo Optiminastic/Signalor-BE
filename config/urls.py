@@ -26,7 +26,7 @@ urlpatterns = [
     # filesystem fallback when B2 is not configured). Prod uses B2 and never
     # hits this route.
     re_path(
-        r"^%s(?P<path>.*)$" % settings.MEDIA_URL.lstrip("/"),
+        rf"^{settings.MEDIA_URL.lstrip('/')}(?P<path>.*)$",
         serve,
         {"document_root": settings.MEDIA_ROOT},
     ),

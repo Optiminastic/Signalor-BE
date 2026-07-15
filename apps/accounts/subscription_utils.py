@@ -12,10 +12,11 @@ Subscription checks for paid features (e.g. GEO analysis).
 from __future__ import annotations
 
 import os
+from datetime import timedelta
 
 from django.conf import settings
 
-from .models import Subscription, PLAN_LIMITS
+from .models import AGENCY_MAX_PROJECTS, PLAN_LIMITS, AccountProfile, Subscription
 
 # ── Internal / Free Emails ────────────────────────────────────────────────
 INTERNAL_DOMAINS = {"optiminastic.com"}
@@ -41,6 +42,54 @@ def is_internal_email(email: str | None) -> bool:
         return True
     domain = raw.split("@", 1)[1]
     return domain in INTERNAL_DOMAINS
+
+
+# Free / personal email providers that are NOT allowed for Agency accounts.
+# Keep in sync with the frontend list in `src/lib/work-email.ts`.
+FREE_EMAIL_DOMAINS = {
+    "gmail.com",
+    "googlemail.com",
+    "outlook.com",
+    "outlook.co.uk",
+    "hotmail.com",
+    "hotmail.co.uk",
+    "live.com",
+    "live.co.uk",
+    "msn.com",
+    "yahoo.com",
+    "yahoo.co.uk",
+    "yahoo.in",
+    "ymail.com",
+    "rocketmail.com",
+    "icloud.com",
+    "me.com",
+    "mac.com",
+    "proton.me",
+    "protonmail.com",
+    "pm.me",
+    "aol.com",
+    "gmx.com",
+    "gmx.net",
+    "mail.com",
+    "zoho.com",
+    "yandex.com",
+    "yandex.ru",
+    "tutanota.com",
+    "tuta.io",
+    "hey.com",
+    "fastmail.com",
+    "hushmail.com",
+    "inbox.com",
+}
+
+
+def is_free_email(email: str | None) -> bool:
+    """True if the email is from a known free/personal provider (not a work
+    address). Used to gate Agency accounts, which require a company email."""
+    raw = (email or "").strip().lower()
+    if not raw or "@" not in raw:
+        return False
+    return raw.rsplit("@", 1)[1] in FREE_EMAIL_DOMAINS
 
 
 def _integration_subscription_required() -> bool:
@@ -92,10 +141,10 @@ def is_plan_limits_enforcement_enabled() -> bool:
 def _upgrade_hint_for_plan(plan_key: str) -> str:
     """Next-step upgrade copy for projects, prompts, and engine limits."""
     if plan_key == "starter":
-        return " Upgrade to Pro for a higher limit."
+        return " Upgrade to Managed Growth for more prompts and hands-on support."
     if plan_key == "pro":
-        return " Upgrade to Max for a higher limit."
-    return " You are on the highest plan; contact support if you need more capacity."
+        return " Contact sales for an Enterprise plan with higher limits."
+    return " You are on the highest plan; contact sales if you need more capacity."
 
 
 def plan_limit_error_response_dict(message: str) -> dict:
@@ -171,6 +220,7 @@ def analysis_allowed_for_email(email: str | None) -> tuple[bool, str]:
 
 # ── Plan Limit Helpers ────────────────────────────────────────────────────
 
+
 def _get_sub(email: str | None) -> Subscription | None:
     raw = (email or "").strip().lower()
     if not raw:
@@ -201,27 +251,104 @@ def get_plan_limits(email: str | None) -> dict:
     return PLAN_LIMITS["starter"]
 
 
+# ── Account Type (Individual / Brand vs Agency) ───────────────────────────
+
+
+def get_account_type(email: str | None) -> str:
+    """Server-derived account type. Absent row → 'individual'.
+
+    Account type is ALWAYS resolved here from the AccountProfile row, never
+    from a client-supplied request field — enforcement must not trust the
+    caller's claim (see CLAUDE.md §5.3).
+    """
+    raw = (email or "").strip().lower()
+    if not raw:
+        return "individual"
+    row = AccountProfile.objects.filter(email=raw).only("account_type").first()
+    return row.account_type if row else "individual"
+
+
+def is_agency(email: str | None) -> bool:
+    return get_account_type(email) == "agency"
+
+
+def effective_max_projects(email: str | None) -> int:
+    """max_projects after applying account type.
+
+    A brand IS a project, and Individual accounts are single-brand by design —
+    so they are always capped at exactly one, regardless of plan or internal
+    status. Agencies are the multi-brand tier: this is the single seam that
+    unlocks multiple projects for them (and where a later per-brand-billing
+    phase will swap the constant for a count of active per-brand subscriptions).
+    """
+    if not is_agency(email):
+        return 1
+    # Agency: internal accounts get the full ceiling; paid agencies get the
+    # interim AGENCY_MAX_PROJECTS ceiling (never below their plan's base).
+    if is_internal_email(email):
+        return AGENCY_MAX_PROJECTS
+    return max(get_plan_limits(email)["max_projects"], AGENCY_MAX_PROJECTS)
+
+
+def _tracked_prompt_count(email: str) -> int:
+    """Number of tracked prompts that consume this email's plan quota.
+
+    Two deliberate scoping rules so a low-prompt plan (e.g. 10) isn't a
+    one-run-ever trap:
+      - Exclude soft-deleted prompts (``deleted_at`` set) — deleting a prompt
+        frees its slot.
+      - Scope to the current billing period when known (``current_period_end``),
+        so re-analysis in a new cycle doesn't permanently consume the cap. This
+        matches the billing UI's "counts reset on your next billing date" copy.
+        Users without an active subscription (no period) fall back to an
+        all-time count of their non-deleted prompts.
+    """
+    from apps.analyzer.models import PromptTrack
+
+    qs = PromptTrack.objects.filter(analysis_run__email=email, deleted_at__isnull=True)
+    sub = _get_sub(email)
+    if sub and sub.current_period_end:
+        # Monthly cycles: the current period began ~1 month before its end.
+        # 31 days is intentionally generous at month boundaries.
+        period_start = sub.current_period_end - timedelta(days=31)
+        qs = qs.filter(created_at__gte=period_start)
+    return qs.count()
+
+
 def project_limit_reached(email: str | None) -> tuple[bool, str]:
     """Check if user has reached their project (organization) limit."""
+    em = (email or "").strip().lower()
+    if not em:
+        return True, "Email is required."
+
+    from apps.organizations.models import Organization
+
+    count = Organization.objects.filter(owner_email=em).count()
+
+    # Individual accounts are single-brand by design (a brand IS a project).
+    # This is a product invariant, so it is enforced even for internal emails
+    # and even when the plan-limit toggle is off — unlike the billing caps below.
+    if not is_agency(email):
+        if count >= 1:
+            return True, (
+                "Individual accounts include a single brand. Switch to an Agency "
+                "account to manage multiple brands."
+            )
+        return False, ""
+
+    # Agencies: honour the internal bypass and the plan-limit enforcement toggle,
+    # then compare against the effective (multi-brand) cap.
     if is_internal_email(email):
         return False, ""
     if not is_plan_limits_enforcement_enabled():
         return False, ""
 
-    em = (email or "").strip().lower()
-    if not em:
-        return True, "Email is required."
-
     limits = get_plan_limits(email)
-    from apps.organizations.models import Organization
-
-    count = Organization.objects.filter(owner_email=em).count()
-    max_projects = limits["max_projects"]
+    max_projects = effective_max_projects(email)
     if count >= max_projects:
         pk = _effective_plan_key(email)
         return True, (
-            f"Your {limits['label']} plan allows {max_projects} project(s)."
-            f"{_upgrade_hint_for_plan(pk)}"
+            f"Your {limits['label']} plan allows {max_projects} project(s).{_upgrade_hint_for_plan(pk)}"
         )
     return False, ""
 
@@ -238,15 +365,12 @@ def prompt_limit_reached(email: str | None, run_id: int | None = None) -> tuple[
         return True, "Email is required."
 
     limits = get_plan_limits(email)
-    from apps.analyzer.models import PromptTrack
-
-    count = PromptTrack.objects.filter(analysis_run__email=em).count()
+    count = _tracked_prompt_count(em)
     max_prompts = limits["max_prompts"]
     if count >= max_prompts:
         pk = _effective_plan_key(email)
         return True, (
-            f"Your {limits['label']} plan allows {max_prompts} tracked prompts."
-            f"{_upgrade_hint_for_plan(pk)}"
+            f"Your {limits['label']} plan allows {max_prompts} tracked prompts.{_upgrade_hint_for_plan(pk)}"
         )
     return False, ""
 
@@ -263,9 +387,7 @@ def prompt_batch_would_exceed(email: str | None, additional: int) -> tuple[bool,
         return True, "Email is required."
 
     limits = get_plan_limits(email)
-    from apps.analyzer.models import PromptTrack
-
-    count = PromptTrack.objects.filter(analysis_run__email=em).count()
+    count = _tracked_prompt_count(em)
     max_prompts = limits["max_prompts"]
     if count + additional > max_prompts:
         pk = _effective_plan_key(email)
@@ -293,7 +415,6 @@ def engine_allowed(email: str | None, engine: str) -> tuple[bool, str]:
     if eng not in allowed:
         pk = _effective_plan_key(email)
         return False, (
-            f"The {eng} engine is not included on your {limits['label']} plan."
-            f"{_upgrade_hint_for_plan(pk)}"
+            f"The {eng} engine is not included on your {limits['label']} plan.{_upgrade_hint_for_plan(pk)}"
         )
     return True, ""

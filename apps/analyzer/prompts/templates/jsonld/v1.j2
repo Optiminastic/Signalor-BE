@@ -1,0 +1,18 @@
+Generate comprehensive JSON-LD structured data for this website.
+
+BRAND: {{ brand }}
+URL: {{ url }}
+{% if context %}
+PAGE CONTEXT: {{ context }}
+{% endif %}
+
+Generate valid JSON-LD wrapped in <script type="application/ld+json"> tags. Include:
+1. Organization schema (name, url, logo if mentioned)
+2. WebSite schema with SearchAction
+3. If product page: Product schema
+4. If article/blog: Article schema
+5. BreadcrumbList if applicable
+
+Use only facts present above. Do not invent addresses, ratings, prices, or social profiles.
+
+Return ONLY the <script> tag(s). No markdown, no explanations.

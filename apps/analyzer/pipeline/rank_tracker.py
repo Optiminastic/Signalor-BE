@@ -23,7 +23,6 @@ import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
 from urllib.parse import urlparse
 
 import requests
@@ -40,30 +39,66 @@ AUDIT_CONCURRENCY = 8
 
 # TLD → (country name, Google gl/hl code). Only entries with a real country.
 _TLD_COUNTRY: dict[str, tuple[str, str]] = {
-    "in": ("India", "in"), "uk": ("United Kingdom", "gb"),
-    "au": ("Australia", "au"), "ca": ("Canada", "ca"),
-    "de": ("Germany", "de"), "fr": ("France", "fr"),
-    "jp": ("Japan", "jp"), "br": ("Brazil", "br"),
-    "sg": ("Singapore", "sg"), "ae": ("UAE", "ae"),
-    "za": ("South Africa", "za"), "ng": ("Nigeria", "ng"),
-    "mx": ("Mexico", "mx"), "es": ("Spain", "es"),
-    "it": ("Italy", "it"), "nl": ("Netherlands", "nl"),
-    "ru": ("Russia", "ru"), "pl": ("Poland", "pl"),
-    "ie": ("Ireland", "ie"), "nz": ("New Zealand", "nz"),
-    "ph": ("Philippines", "ph"), "id": ("Indonesia", "id"),
-    "my": ("Malaysia", "my"), "th": ("Thailand", "th"),
-    "kr": ("South Korea", "kr"), "sa": ("Saudi Arabia", "sa"),
+    "in": ("India", "in"),
+    "uk": ("United Kingdom", "gb"),
+    "au": ("Australia", "au"),
+    "ca": ("Canada", "ca"),
+    "de": ("Germany", "de"),
+    "fr": ("France", "fr"),
+    "jp": ("Japan", "jp"),
+    "br": ("Brazil", "br"),
+    "sg": ("Singapore", "sg"),
+    "ae": ("UAE", "ae"),
+    "za": ("South Africa", "za"),
+    "ng": ("Nigeria", "ng"),
+    "mx": ("Mexico", "mx"),
+    "es": ("Spain", "es"),
+    "it": ("Italy", "it"),
+    "nl": ("Netherlands", "nl"),
+    "ru": ("Russia", "ru"),
+    "pl": ("Poland", "pl"),
+    "ie": ("Ireland", "ie"),
+    "nz": ("New Zealand", "nz"),
+    "ph": ("Philippines", "ph"),
+    "id": ("Indonesia", "id"),
+    "my": ("Malaysia", "my"),
+    "th": ("Thailand", "th"),
+    "kr": ("South Korea", "kr"),
+    "sa": ("Saudi Arabia", "sa"),
 }
 _COUNTRY_NAME_TO_CODE: dict[str, str] = {
-    "india": "in", "united states": "us", "usa": "us", "us": "us",
-    "united kingdom": "gb", "uk": "gb", "britain": "gb", "england": "gb",
-    "australia": "au", "canada": "ca", "germany": "de", "france": "fr",
-    "japan": "jp", "brazil": "br", "singapore": "sg", "uae": "ae",
-    "south africa": "za", "nigeria": "ng", "mexico": "mx", "spain": "es",
-    "italy": "it", "netherlands": "nl", "russia": "ru", "poland": "pl",
-    "ireland": "ie", "new zealand": "nz", "philippines": "ph",
-    "indonesia": "id", "malaysia": "my", "thailand": "th",
-    "south korea": "kr", "saudi arabia": "sa",
+    "india": "in",
+    "united states": "us",
+    "usa": "us",
+    "us": "us",
+    "united kingdom": "gb",
+    "uk": "gb",
+    "britain": "gb",
+    "england": "gb",
+    "australia": "au",
+    "canada": "ca",
+    "germany": "de",
+    "france": "fr",
+    "japan": "jp",
+    "brazil": "br",
+    "singapore": "sg",
+    "uae": "ae",
+    "south africa": "za",
+    "nigeria": "ng",
+    "mexico": "mx",
+    "spain": "es",
+    "italy": "it",
+    "netherlands": "nl",
+    "russia": "ru",
+    "poland": "pl",
+    "ireland": "ie",
+    "new zealand": "nz",
+    "philippines": "ph",
+    "indonesia": "id",
+    "malaysia": "my",
+    "thailand": "th",
+    "south korea": "kr",
+    "saudi arabia": "sa",
 }
 # Region / city tokens that strongly imply a country (extend as needed).
 _REGION_HINTS: list[tuple[str, str, str]] = [
@@ -178,15 +213,12 @@ def build_queries_for_run(run) -> list[str]:
 
 def _generate_comparison_prompts(run, count: int = PROMPT_COUNT) -> list[str]:
     """Ask the LLM for `count` comparison/reasoning-style prompts."""
-    import json as _json
     from apps.analyzer.pipeline.llm import ask_llm
 
     brand = (run.brand_name or "").strip() or urlparse(run.url or "").netloc
     brand_url = run.url or ""
     try:
-        competitors = [
-            c for c in run.competitors.values_list("name", flat=True) if c
-        ][:8]
+        competitors = [c for c in run.competitors.values_list("name", flat=True) if c][:8]
     except Exception:
         competitors = []
 
@@ -210,8 +242,8 @@ def _generate_comparison_prompts(run, count: int = PROMPT_COUNT) -> list[str]:
     )
     context = f"""Brand/Entity: {brand}
 Website: {brand_url}
-Industry: {industry or '(unknown)'}
-Country: {country or '(unknown)'}
+Industry: {industry or "(unknown)"}
+Country: {country or "(unknown)"}
 Region / city: {region or "(unspecified — use the brand's country scope)"}
 Known competitors:
 {competitor_block}"""
@@ -260,9 +292,10 @@ Return ONLY a JSON array of {count} strings. No markdown, no explanations."""
 
     try:
         raw = ask_llm(prompt, purpose="Rank Tracker — Comparison Prompts", max_tokens=1200).strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        parsed = _json.loads(raw)
+        # Epic 8: shared extractor (was a local fence-stripper + json.loads).
+        from .structured import extract_json
+
+        parsed = extract_json(raw, expect=list)
         if isinstance(parsed, list):
             out = [str(p).strip() for p in parsed if str(p).strip()][:count]
             if out:
@@ -315,6 +348,7 @@ def _post_serper(
         body["hl"] = "en"
     try:
         from apps.integrations._http import request_with_retry
+
         resp = request_with_retry(
             "POST",
             SERPER_ENDPOINT,
@@ -355,9 +389,7 @@ def _organic_to_rows(data: dict, expected_domain: str | None = None) -> list[dic
     return rows
 
 
-def fetch_serper(
-    query: str, num: int = DEFAULT_NUM_RESULTS, *, gl: str = ""
-) -> list[dict]:
+def fetch_serper(query: str, num: int = DEFAULT_NUM_RESULTS, *, gl: str = "") -> list[dict]:
     """Google organic results via Serper.dev (localized by `gl`)."""
     data = _post_serper(query, num=num, gl=gl)
     if data is None:
@@ -408,12 +440,15 @@ def fetch_ai_responses(query: str) -> list[dict]:
         return []
 
     try:
-        responses = ask_multiple_llms_with_citations(
-            query,
-            providers=AI_ENGINE_ORDER,
-            purpose="Rank Tracker — AI engine response",
-            max_tokens=420,
-        ) or {}
+        responses = (
+            ask_multiple_llms_with_citations(
+                query,
+                providers=AI_ENGINE_ORDER,
+                purpose="Rank Tracker — AI engine response",
+                max_tokens=420,
+            )
+            or {}
+        )
     except Exception as exc:
         logger.warning("ai fetch error for %r: %s", query, exc)
         return []
@@ -506,15 +541,57 @@ _COLLAPSE_RE = re.compile(r"[^a-z0-9]+")
 
 # Keyword-based sentiment scoring (cheap, deterministic, no LLM).
 _POS_WORDS = {
-    "best", "top", "leading", "recommend", "recommended", "popular", "trusted",
-    "great", "excellent", "reliable", "favorite", "favourite", "love", "impressive",
-    "premier", "respected", "prestigious", "renowned", "solid", "innovative", "award-winning",
-    "winner", "winning", "prestige", "credible", "preferred", "strong",
+    "best",
+    "top",
+    "leading",
+    "recommend",
+    "recommended",
+    "popular",
+    "trusted",
+    "great",
+    "excellent",
+    "reliable",
+    "favorite",
+    "favourite",
+    "love",
+    "impressive",
+    "premier",
+    "respected",
+    "prestigious",
+    "renowned",
+    "solid",
+    "innovative",
+    "award-winning",
+    "winner",
+    "winning",
+    "prestige",
+    "credible",
+    "preferred",
+    "strong",
 }
 _NEG_WORDS = {
-    "worst", "avoid", "poor", "bad", "scam", "issue", "problem", "disappointed",
-    "terrible", "horrible", "broken", "overrated", "overpriced", "flaws", "flawed",
-    "complaints", "controversy", "fake", "shady", "unreliable", "dismal", "declining",
+    "worst",
+    "avoid",
+    "poor",
+    "bad",
+    "scam",
+    "issue",
+    "problem",
+    "disappointed",
+    "terrible",
+    "horrible",
+    "broken",
+    "overrated",
+    "overpriced",
+    "flaws",
+    "flawed",
+    "complaints",
+    "controversy",
+    "fake",
+    "shady",
+    "unreliable",
+    "dismal",
+    "declining",
 }
 
 
@@ -635,7 +712,7 @@ def audit_query(
 
     Caller must have opened fresh DB connections (run inside executor thread).
     """
-    from apps.analyzer.models import RankResult, RankQuery
+    from apps.analyzer.models import RankQuery, RankResult
 
     try:
         fetchers = (
@@ -672,9 +749,7 @@ def audit_query(
                 )
                 if is_brand:
                     brand_hits += 1
-                sentiment = compute_sentiment(
-                    f"{row.get('title') or ''} {search_snippet}"
-                )
+                sentiment = compute_sentiment(f"{row.get('title') or ''} {search_snippet}")
                 to_create.append(
                     RankResult(
                         query=query_row,
@@ -725,6 +800,7 @@ def _top3_brand_hit(query_row) -> bool:
 def run_rank_audit(audit_id: int) -> None:
     """Orchestrator — runs in a daemon thread. Mutates RankAudit + rows."""
     from django.utils import timezone as djtz
+
     from apps.analyzer.models import RankAudit, RankQuery
 
     close_old_connections()
@@ -763,9 +839,7 @@ def run_rank_audit(audit_id: int) -> None:
         geo = _derive_geo(run)
         gl = geo.get("gl") or ""
         try:
-            competitor_names = list(
-                run.competitors.values_list("name", flat=True)
-            )
+            competitor_names = list(run.competitors.values_list("name", flat=True))
         except Exception:
             competitor_names = []
         competitor_names = [c for c in competitor_names if c]
@@ -777,18 +851,12 @@ def run_rank_audit(audit_id: int) -> None:
             audit.error_message = "Could not generate prompts for this brand"
             audit.finished_at = djtz.now()
             audit.progress = 100
-            audit.save(
-                update_fields=["status", "error_message", "finished_at", "progress"]
-            )
+            audit.save(update_fields=["status", "error_message", "finished_at", "progress"])
             return
 
         query_rows: list[RankQuery] = []
         for idx, prompt in enumerate(queries, 1):
-            query_rows.append(
-                RankQuery.objects.create(
-                    audit=audit, prompt_text=prompt.strip(), rank=idx
-                )
-            )
+            query_rows.append(RankQuery.objects.create(audit=audit, prompt_text=prompt.strip(), rank=idx))
 
         audit.total_queries = len(query_rows)
         audit.progress = 5
@@ -805,9 +873,7 @@ def run_rank_audit(audit_id: int) -> None:
                 done += 1
                 pct = 5 + int(90 * (done / max(1, len(query_rows))))
                 try:
-                    RankAudit.objects.filter(pk=audit.pk).update(
-                        queries_done=done, progress=min(95, pct)
-                    )
+                    RankAudit.objects.filter(pk=audit.pk).update(queries_done=done, progress=min(95, pct))
                 except Exception:
                     pass
 
@@ -846,8 +912,6 @@ def run_rank_audit(audit_id: int) -> None:
             audit.error_message = str(exc)[:1000]
             audit.finished_at = djtz.now()
             audit.progress = 100
-            audit.save(
-                update_fields=["status", "error_message", "finished_at", "progress"]
-            )
+            audit.save(update_fields=["status", "error_message", "finished_at", "progress"])
         except Exception:
             pass

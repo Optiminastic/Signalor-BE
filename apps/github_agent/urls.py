@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     GithubCallbackView,
+    GithubContentFixView,
     GithubDisconnectView,
     GithubFixView,
     GithubInstallURLView,
@@ -25,6 +26,7 @@ urlpatterns = [
     path("runs/s/<str:slug>/install-url/", GithubInstallURLView.as_view(), name="install-url"),
     path("runs/s/<str:slug>/status/", GithubStatusView.as_view(), name="status"),
     path("runs/s/<str:slug>/fix/", GithubFixView.as_view(), name="fix"),
+    path("runs/s/<str:slug>/content-pr/", GithubContentFixView.as_view(), name="content-pr"),
     path("runs/s/<str:slug>/jobs/", GithubJobsView.as_view(), name="jobs"),
     path("runs/s/<str:slug>/jobs/<int:job_id>/", GithubJobsView.as_view(), name="job-detail"),
     path("runs/s/<str:slug>/disconnect/", GithubDisconnectView.as_view(), name="disconnect"),

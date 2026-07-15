@@ -5,6 +5,7 @@ from .models import (
     AnalysisRun,
     Competitor,
     PageScore,
+    PromptEvalLog,
     Recommendation,
 )
 
@@ -13,8 +14,14 @@ class PageScoreInline(admin.TabularInline):
     model = PageScore
     extra = 0
     readonly_fields = [
-        "url", "content_score", "schema_score", "eeat_score",
-        "technical_score", "entity_score", "ai_visibility_score", "composite_score",
+        "url",
+        "content_score",
+        "schema_score",
+        "eeat_score",
+        "technical_score",
+        "entity_score",
+        "ai_visibility_score",
+        "composite_score",
     ]
 
 
@@ -56,3 +63,22 @@ class AIVisibilityProbeAdmin(admin.ModelAdmin):
 class RecommendationAdmin(admin.ModelAdmin):
     list_display = ["title", "pillar", "priority", "category"]
     list_filter = ["priority", "pillar"]
+
+
+@admin.register(PromptEvalLog)
+class PromptEvalLogAdmin(admin.ModelAdmin):
+    list_display = [
+        "prompt_name",
+        "prompt_version",
+        "case_id",
+        "mode",
+        "passed",
+        "faithfulness",
+        "relevance",
+        "format_score",
+        "total_tokens",
+        "created_at",
+    ]
+    list_filter = ["passed", "mode", "prompt_name", "prompt_version"]
+    search_fields = ["prompt_name", "case_id"]
+    readonly_fields = [f.name for f in PromptEvalLog._meta.fields]
