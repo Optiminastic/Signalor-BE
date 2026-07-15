@@ -1766,3 +1766,53 @@ class BlogPost(models.Model):
 
     def __str__(self):
         return f"BlogPost<{self.site}/{self.slug}>"
+
+
+class PromptEvalLog(models.Model):
+    """A single prompt-evaluation result (Epic 6).
+
+    One row per golden case (or live generation) judged by the LLM-as-judge. Persisting
+    prompt name + version alongside the faithfulness/relevance/format scores and token
+    usage is what makes prompt changes measurable over time and lets an eval run gate CI.
+    """
+
+    class Mode(models.TextChoices):
+        RECORDED = "recorded", "Recorded known-good"
+        LIVE = "live", "Live generation"
+
+    prompt_name = models.CharField(max_length=64, db_index=True)
+    prompt_version = models.CharField(max_length=16)
+    case_id = models.CharField(max_length=128, blank=True, default="")
+    mode = models.CharField(max_length=12, choices=Mode.choices, default=Mode.RECORDED)
+
+    faithfulness = models.FloatField(default=0.0)
+    relevance = models.FloatField(default=0.0)
+    format_score = models.FloatField(default=0.0)
+    passed = models.BooleanField(default=False, db_index=True)
+    rationale = models.TextField(blank=True, default="")
+
+    prompt_tokens = models.PositiveIntegerField(default=0)
+    completion_tokens = models.PositiveIntegerField(default=0)
+    total_tokens = models.PositiveIntegerField(default=0)
+    # [{"source_url": ..., "score": ...}] when the evaluated prompt used retrieval.
+    retrieved_chunks = models.JSONField(default=list, blank=True)
+
+    # Provenance only; a deleted run must not delete its eval history.
+    source_run = models.ForeignKey(
+        "analyzer.AnalysisRun",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="prompt_eval_logs",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["prompt_name", "prompt_version"]),
+            models.Index(fields=["prompt_name", "passed"]),
+        ]
+
+    def __str__(self):
+        return f"PromptEvalLog<{self.prompt_name}/{self.prompt_version}:{'pass' if self.passed else 'fail'}>"

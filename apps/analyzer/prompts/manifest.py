@@ -22,4 +22,6 @@ MANIFEST: dict[str, str] = {
     "geo_jsonld": "v1",
     "geo_product_desc": "v1",
     "geo_llms_txt": "v1",
+    # Evaluation (Epic 6): the LLM-as-judge prompt
+    "judge_eval": "v1",
 }

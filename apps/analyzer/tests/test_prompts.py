@@ -28,6 +28,7 @@ SAMPLES = {
     "geo_meta": dict(brand_name="Acme", site_url="u", current_title="(not set)", current_desc="(not set)"),
     "geo_jsonld": dict(brand_name="Acme", site_url="u", description="A business website"),
     "geo_product_desc": dict(product_title="P", brand_name="Acme"),
+    "judge_eval": dict(task="T", output="O", context="", reference="", format_spec=""),
     "geo_llms_txt": dict(brand_name="Acme", site_url="u"),
 }
 

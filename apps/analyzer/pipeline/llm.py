@@ -110,8 +110,20 @@ def _log_preview(text: str, limit: int = 200) -> str:
     return compact.encode("ascii", errors="backslashreplace").decode("ascii")
 
 
-def _log_call(model: str, purpose: str, prompt: str, response: str, status: str, duration_ms: int):
-    """Record an LLM call to the shared log (thread-safe)."""
+def _log_call(
+    model: str,
+    purpose: str,
+    prompt: str,
+    response: str,
+    status: str,
+    duration_ms: int,
+    usage: dict | None = None,
+):
+    """Record an LLM call to the shared log (thread-safe).
+
+    ``usage`` is the provider's token-usage block ({prompt_tokens, completion_tokens,
+    total_tokens}) when available, so Epic 6 can measure token cost per generation.
+    """
     with _log_lock:
         if _collected_logs is None:
             return  # Not collecting
@@ -126,6 +138,7 @@ def _log_call(model: str, purpose: str, prompt: str, response: str, status: str,
                 "response": _sanitize(response[:3000]),
                 "status": status,
                 "duration_ms": duration_ms,
+                "usage": usage or {},
             }
         )
 
@@ -407,6 +420,19 @@ def ask_llm_with_tools(
     }
 
 
+def _extract_usage(data: dict) -> dict:
+    """Pull the token-usage block from an OpenRouter/OpenAI-style response (Epic 6).
+
+    Returns ``{prompt_tokens, completion_tokens, total_tokens}`` (zeros if absent).
+    """
+    usage = data.get("usage") or {}
+    return {
+        "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
+        "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
+        "total_tokens": int(usage.get("total_tokens", 0) or 0),
+    }
+
+
 def _extract_citations_from_openrouter(data: dict) -> list[dict]:
     """
     Pull structured citations from an OpenRouter JSON response.
@@ -543,6 +569,7 @@ def _call_openrouter(
             data = resp.json()
             content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
             citations = _extract_citations_from_openrouter(data)
+            usage = _extract_usage(data)
             response_preview = _log_preview(content, 200)
             logger.info(
                 '[LLM RESPONSE] << %s | %dms | %d chars | %d citations | "%s..."',
@@ -552,7 +579,7 @@ def _call_openrouter(
                 len(citations),
                 response_preview,
             )
-            _log_call(model, purpose, prompt, content.strip(), "success", duration_ms)
+            _log_call(model, purpose, prompt, content.strip(), "success", duration_ms, usage=usage)
             return (content.strip(), citations)
 
         logger.warning("[LLM FAILED] << %s | HTTP %d: %s", model, resp.status_code, resp.text[:200])

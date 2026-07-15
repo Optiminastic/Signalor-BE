@@ -1,0 +1,13 @@
+{
+  "id": "brand_prompts_saas",
+  "prompt": "brand_prompts",
+  "version": "v1",
+  "vars": {
+    "count": 5,
+    "context": "Brand/Entity Name: Acme Analytics\nWebsite: https://acmeanalytics.io\nIndustry detected: product analytics SaaS\nMeta description: Self-serve product analytics for B2B SaaS teams.",
+    "brand_name": "Acme Analytics"
+  },
+  "format_spec": "A JSON array of exactly 5 natural-language user query strings. Each must be a realistic prompt a buyer would type into an AI assistant. It must NOT mention the brand name 'Acme Analytics'. No markdown, no explanations.",
+  "known_good": "[\"What are the best product analytics tools for B2B SaaS teams?\", \"How do I compare self-serve analytics platforms for a small startup?\", \"Which product analytics tool is easiest to set up without a data team?\", \"What should I look for when choosing a product analytics platform?\", \"Is self-serve product analytics worth it for an early-stage SaaS?\"]",
+  "thresholds": {"faithfulness": 0.7, "relevance": 0.7, "format_score": 0.8}
+}
