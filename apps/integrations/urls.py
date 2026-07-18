@@ -1,5 +1,10 @@
 from django.urls import path
 
+from .shopify_compliance import (
+    ShopifyCustomerDataRequestWebhookView,
+    ShopifyCustomerRedactWebhookView,
+    ShopifyShopRedactWebhookView,
+)
 from .views import (
     GAAuthURLView,
     GACallbackView,
@@ -157,6 +162,23 @@ urlpatterns = [
         "shopify/billing-update/",
         ShopifyBillingUpdateView.as_view(),
         name="shopify-billing-update",
+    ),
+    # Mandatory GDPR compliance webhooks (required for Custom/unlisted + Public
+    # distribution). Configure these URLs in the Dev Dashboard app settings.
+    path(
+        "shopify/webhooks/customers-data-request/",
+        ShopifyCustomerDataRequestWebhookView.as_view(),
+        name="shopify-customers-data-request",
+    ),
+    path(
+        "shopify/webhooks/customers-redact/",
+        ShopifyCustomerRedactWebhookView.as_view(),
+        name="shopify-customers-redact",
+    ),
+    path(
+        "shopify/webhooks/shop-redact/",
+        ShopifyShopRedactWebhookView.as_view(),
+        name="shopify-shop-redact",
     ),
     path(
         "shopify/connect/",

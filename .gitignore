@@ -53,3 +53,4 @@ deploy/certs/
 origin.cert
 # concurrent-log-handler runtime lock files
 logs/*.lock
+deploy/stack.local.env

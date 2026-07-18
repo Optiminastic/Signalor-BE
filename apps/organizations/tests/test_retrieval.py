@@ -91,6 +91,17 @@ class RetrieveTests(TestCase):
         with patch(_EMBED_Q, return_value=[1.0, 0.0, 0.0]), patch(_SEARCH, side_effect=RuntimeError):
             self.assertEqual(retrieval.retrieve(self.run, "pricing"), [])
 
+    def test_falls_back_to_exact_when_ann_returns_nothing(self):
+        # A small tenant whose chunks fall outside the global ANN candidate set gets an
+        # empty _vector_search; retrieve() must fall back to the index-free exact scan.
+        rows = [(_chunk(self.org, self.run, text="pricing", embedding=(1, 0, 0)), 0.05)]
+        with patch(_EMBED_Q, return_value=[1.0, 0.0, 0.0]), patch(_SEARCH, return_value=[]), patch(
+            "apps.organizations.services.retrieval._exact_search", return_value=rows
+        ) as mex:
+            out = retrieval.retrieve(self.run, "pricing")
+        mex.assert_called_once()
+        self.assertEqual([c.text for c in out], ["pricing"])
+
 
 class KnowledgeBlockTests(TestCase):
     def setUp(self):

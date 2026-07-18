@@ -36,6 +36,12 @@ SONNET_MODEL = os.getenv("OPENROUTER_SONNET_MODEL", "anthropic/claude-sonnet-4.5
 # found"); ``claude-haiku-4.5`` is the current, available id. Override via
 # OPENROUTER_HAIKU_MODEL.
 HAIKU_MODEL = os.getenv("OPENROUTER_HAIKU_MODEL", "").strip() or "anthropic/claude-haiku-4.5"
+# Answer-engine additions for prompt tracking — all served through the same
+# OpenRouter key. Ids are env-overridable like the Claude/Gemini ones above.
+DEEPSEEK_MODEL = os.getenv("OPENROUTER_DEEPSEEK_MODEL", "deepseek/deepseek-chat")
+GROK_MODEL = os.getenv("OPENROUTER_GROK_MODEL", "x-ai/grok-3-mini")
+LLAMA_MODEL = os.getenv("OPENROUTER_LLAMA_MODEL", "meta-llama/llama-3.3-70b-instruct")
+
 MODELS = {
     "gpt": "openai/gpt-4o-mini",
     "claude": HAIKU_MODEL,
@@ -43,6 +49,9 @@ MODELS = {
     "gemini": GEMINI_MODEL,
     "perplexity": "perplexity/sonar",
     "sonnet": SONNET_MODEL,
+    "deepseek": DEEPSEEK_MODEL,
+    "grok": GROK_MODEL,
+    "llama": LLAMA_MODEL,
 }
 
 MODEL_LABELS = {
@@ -53,6 +62,9 @@ MODEL_LABELS = {
     "perplexity/sonar": "Perplexity Sonar",
     SONNET_MODEL: "Claude Sonnet 4.5",
     "gemini-direct": "Gemini (Direct)",
+    DEEPSEEK_MODEL: "DeepSeek",
+    GROK_MODEL: "Grok",
+    LLAMA_MODEL: "Meta Llama",
 }
 
 # Default rotation order

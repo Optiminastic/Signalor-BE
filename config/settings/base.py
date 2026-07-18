@@ -162,7 +162,9 @@ REST_FRAMEWORK = {
         "rest_framework.parsers.JSONParser",
     ],
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        # 'apps.auth.authentication.JWTAuthentication',
+        # Verifies a better-auth JWT (JWKS) and sets request.user when the FE sends one.
+        # Dormant until BETTER_AUTH_JWKS_URL is set; never raises, so this is non-breaking.
+        "apps.accounts.authentication.BetterAuthJWTAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
@@ -207,6 +209,21 @@ REST_FRAMEWORK = {
     },
     "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
 }
+
+# ── better-auth JWT verification (FE identity → verified request.user) ─────
+# The FE runs better-auth; with its JWT plugin enabled it sends
+# `Authorization: Bearer <jwt>`. The backend verifies that token against
+# better-auth's published public keys (JWKS). All optional: with JWKS_URL unset the
+# auth class is a no-op and the app behaves exactly as before. Flip
+# REQUIRE_VERIFIED_IDENTITY=true only AFTER the FE reliably sends tokens.
+BETTER_AUTH_JWKS_URL = os.getenv("BETTER_AUTH_JWKS_URL", "").strip()
+BETTER_AUTH_ISSUER = os.getenv("BETTER_AUTH_ISSUER", "").strip()
+BETTER_AUTH_AUDIENCE = os.getenv("BETTER_AUTH_AUDIENCE", "").strip()
+BETTER_AUTH_EMAIL_CLAIM = os.getenv("BETTER_AUTH_EMAIL_CLAIM", "email").strip()
+BETTER_AUTH_JWT_ALGORITHMS = [
+    a.strip() for a in os.getenv("BETTER_AUTH_JWT_ALGORITHMS", "EdDSA").split(",") if a.strip()
+]
+REQUIRE_VERIFIED_IDENTITY = os.getenv("REQUIRE_VERIFIED_IDENTITY", "false").strip().lower() == "true"
 
 LOGGING = {
     "version": 1,

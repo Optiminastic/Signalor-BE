@@ -1348,11 +1348,14 @@ class DeleteAccountView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        email = request.data.get("email", "").lower().strip()
-        confirm = request.data.get("confirm", "").lower().strip()
+        # Delete the *verified* caller's account (JWT); legacy ?email= until enforcement
+        # is on. Without this, anyone could delete any account by naming its email.
+        from .identity import resolve_request_email
 
-        if not email:
-            return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
+        email, err = resolve_request_email(request)
+        if err:
+            return err
+        confirm = request.data.get("confirm", "").lower().strip()
 
         if confirm != "delete my account":
             return Response(

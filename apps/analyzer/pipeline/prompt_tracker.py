@@ -22,6 +22,9 @@ _ENGINE_MAP = {
     "claude": "claude",
     "gemini": "gemini",
     "perplexity": "perplexity",
+    "deepseek": "deepseek",
+    "grok": "grok",
+    "llama": "llama",
 }
 
 DEFAULT_RUNS = 3  # Fire each prompt N times to handle AI randomness
@@ -244,7 +247,7 @@ def _providers_and_search_from_plan_engines(
     If allowed_engines is None, use full stack.
     """
     if allowed_engines is None:
-        return (["gpt", "claude", "gemini", "perplexity"], True, True)
+        return (["gpt", "claude", "gemini", "perplexity", "deepseek", "grok", "llama"], True, True)
     s = {e.strip().lower() for e in allowed_engines if e}
     provs: list[str] = []
     if "chatgpt" in s:
@@ -255,6 +258,12 @@ def _providers_and_search_from_plan_engines(
         provs.append("claude")
     if "perplexity" in s:
         provs.append("perplexity")
+    if "deepseek" in s:
+        provs.append("deepseek")
+    if "grok" in s:
+        provs.append("grok")
+    if "llama" in s:
+        provs.append("llama")
     include_google = "google" in s
     include_bing = "bing" in s
     if not provs and not include_google and not include_bing:

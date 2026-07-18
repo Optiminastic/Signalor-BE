@@ -12,7 +12,7 @@ from django.db import models
 # is handled by the Contact Sales form and never gets a plan key / Dodo checkout.
 # Both Individual plans get the full engine set — prompts + human support are the
 # differentiators, not engine access.
-_ALL_ENGINES = ["chatgpt", "gemini", "perplexity", "claude", "google", "bing"]
+_ALL_ENGINES = ["chatgpt", "gemini", "perplexity", "claude", "deepseek", "grok", "llama", "google", "bing"]
 
 # Interim project cap for Agency accounts — effectively "unlimited" until
 # per-brand Dodo billing lands (each added client brand becomes a paid line

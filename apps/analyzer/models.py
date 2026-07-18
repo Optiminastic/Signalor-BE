@@ -126,6 +126,58 @@ class Competitor(models.Model):
         return f"{self.name} ({self.url})"
 
 
+class CrawlerHit(models.Model):
+    """One AI-crawler request against the brand's site, reported by the site's
+    edge/log integration through the crawler ingest endpoint. Only requests
+    whose user agent matches a known AI crawler are ever stored."""
+
+    organization = models.ForeignKey(
+        "organizations.Organization", on_delete=models.CASCADE, related_name="crawler_hits"
+    )
+    bot = models.CharField(max_length=40)
+    path = models.CharField(max_length=512, blank=True, default="/")
+    user_agent = models.CharField(max_length=300, blank=True, default="")
+    hit_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["organization", "hit_at"])]
+
+    def __str__(self):
+        return f"{self.bot} {self.path} @ {self.hit_at:%Y-%m-%d %H:%M}"
+
+
+class ShopifyProduct(models.Model):
+    """AI-shopping readiness snapshot of one store product, refreshed by the
+    shopping sync endpoint from the connected Shopify integration."""
+
+    organization = models.ForeignKey(
+        "organizations.Organization", on_delete=models.CASCADE, related_name="shopify_products"
+    )
+    product_id = models.CharField(max_length=40)
+    handle = models.CharField(max_length=255, blank=True, default="")
+    title = models.CharField(max_length=512, blank=True, default="")
+    status = models.CharField(max_length=20, blank=True, default="")
+    price = models.CharField(max_length=40, blank=True, default="")
+    description_chars = models.IntegerField(default=0)
+    images_total = models.IntegerField(default=0)
+    images_missing_alt = models.IntegerField(default=0)
+    readiness = models.IntegerField(default=0)
+    issues = models.JSONField(default=list)
+    synced_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "product_id"], name="uniq_org_shopify_product"
+            )
+        ]
+        indexes = [models.Index(fields=["organization", "readiness"])]
+
+    def __str__(self):
+        return f"{self.title} ({self.readiness}/100)"
+
+
 class AIVisibilityProbe(models.Model):
     analysis_run = models.ForeignKey(AnalysisRun, on_delete=models.CASCADE, related_name="ai_probes")
     prompt_used = models.TextField()
@@ -296,6 +348,9 @@ class UserAction(models.Model):
             models.Index(fields=["user_email", "status"]),
             models.Index(fields=["user_email", "-created_at"]),
             models.Index(fields=["analysis_run_id"]),
+            # Agency-member task list filters on assignee_email then status
+            # (UserActionListView); mirror the owner (user_email, status) index.
+            models.Index(fields=["assignee_email", "status"]),
         ]
 
     def __str__(self):
@@ -690,6 +745,9 @@ class PromptResult(models.Model):
         PERPLEXITY = "perplexity", "Perplexity"
         GOOGLE = "google", "Google"
         BING = "bing", "Bing"
+        DEEPSEEK = "deepseek", "DeepSeek"
+        GROK = "grok", "Grok"
+        LLAMA = "llama", "Meta Llama"
 
     class Sentiment(models.TextChoices):
         POSITIVE = "positive", "Positive"

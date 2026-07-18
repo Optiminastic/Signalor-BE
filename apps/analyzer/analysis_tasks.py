@@ -19,6 +19,31 @@ from config.celery_rabbit import analysis_app
 logger = logging.getLogger("apps")
 
 
+@analysis_app.task(name="analyzer.run_scheduled_analysis", bind=True)
+def run_scheduled_analysis_task(self, schedule_id: int) -> None:
+    """Run one due ScheduledAnalysis on a worker.
+
+    The whole job moves here, not just the analysis call: ``run_analysis_task``
+    below is deliberately fire-and-forget with no completion hook, so enqueueing
+    only the analysis would leave the task sync + digest running against a run
+    that hasn't started. Keeping the sequence intact on the worker needs no hook.
+
+    Like its sibling, this never re-raises — the analysis pipeline is not
+    idempotent, and a Celery retry would re-spend LLM / DataForSEO credits. The
+    schedule is already rescheduled by the claim, so a failure costs one cycle
+    rather than wedging the brand.
+    """
+    from django.db import close_old_connections
+
+    from .scheduled_runs import execute_scheduled_analysis
+
+    close_old_connections()
+    try:
+        execute_scheduled_analysis(schedule_id)
+    except Exception as exc:
+        logger.exception("scheduled analysis %d failed on worker: %s", schedule_id, exc)
+
+
 @analysis_app.task(name="analyzer.run_analysis", bind=True)
 def run_analysis_task(self, run_id: int) -> None:
     """Run the single-page analysis pipeline for ``run_id`` on a worker."""

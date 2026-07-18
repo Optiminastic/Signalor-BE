@@ -1,10 +1,12 @@
 """
 Dashboard-facing endpoints for managing API keys.
 
-These are cookie-authed (AllowAny + email/org_id query — same convention as
-``apps.integrations`` and other dashboard endpoints). They live separately
-from ``views.py`` (which is Bearer-auth) so the auth posture is obvious
-from the URL path: ``/api/keys/`` = dashboard, ``/api/v1/public/`` = API.
+Identity comes from ``accounts.identity.resolve_request_email`` — a verified better-auth
+JWT when the FE sends one, else the legacy ``?email=`` until enforcement is switched on
+(``REQUIRE_VERIFIED_IDENTITY``). (Previously this module claimed to be "cookie-authed";
+it never was — the email was trusted unverified, which let anyone mint a key for any org.)
+They live separately from ``views.py`` (Bearer-auth) so the posture is obvious from the
+URL path: ``/api/keys/`` = dashboard, ``/api/v1/public/`` = API.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.accounts.identity import resolve_request_email
 from apps.organizations.models import Organization
 
 from .dashboard_serializers import (
@@ -67,7 +70,10 @@ class ApiKeyListCreateView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        email = request.query_params.get("email", "")
+        # Verified identity (JWT) when present; legacy ?email= until enforcement is on.
+        email, err = resolve_request_email(request)
+        if err:
+            return err
         org_id = _parse_org_id(request.query_params.get("org_id"))
         org, err = _resolve_org(email, org_id)
         if err:
@@ -80,7 +86,12 @@ class ApiKeyListCreateView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        org, err = _resolve_org(data["email"], data.get("org_id"))
+        # Ownership must be checked against the *verified* caller, not a body field —
+        # otherwise the check compares attacker input to attacker input.
+        email, err = resolve_request_email(request)
+        if err:
+            return err
+        org, err = _resolve_org(email, data.get("org_id"))
         if err:
             return err
 
@@ -88,7 +99,7 @@ class ApiKeyListCreateView(APIView):
             organization=org,
             name=data["name"],
             environment=data["environment"],
-            created_by_email=data["email"],
+            created_by_email=email,
         )
         payload = ApiKeyListSerializer(key).data
         # Plaintext returned ONLY here — never persisted, never returned again.

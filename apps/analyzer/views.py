@@ -38,6 +38,8 @@ from .models import (
     ACHIEVEMENTS_INFO,
     ACTION_TEMPLATES,
     AnalysisRun,
+    CrawlerHit,
+    ShopifyProduct,
     BlogAutomationConfig,
     BlogAutomationJob,
     Competitor,
@@ -861,37 +863,36 @@ class StartAnalysisView(APIView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-        # Block duplicate submissions: same URL still pending/running for the same org (or user)
+        # One analysis at a time per brand: if this org already has a run in
+        # flight (on ANY url), return it instead of starting a second. Falls back
+        # to the per-(email, url) check for anonymous / no-org submissions.
+        from .run_guard import IN_FLIGHT_STATUSES, active_run_for
+
         submitted_url = data["url"]
-        in_flight_statuses = [
-            AnalysisRun.Status.PENDING,
-            AnalysisRun.Status.CRAWLING,
-            AnalysisRun.Status.ANALYZING,
-            AnalysisRun.Status.SCORING,
-        ]
         if org_id:
-            existing = AnalysisRun.objects.filter(
-                organization_id=org_id,
-                url=submitted_url,
-                status__in=in_flight_statuses,
-            ).first()
+            existing = active_run_for(Organization.objects.filter(pk=org_id).first())
         elif email:
             existing = AnalysisRun.objects.filter(
                 email=email,
                 url=submitted_url,
-                status__in=in_flight_statuses,
+                status__in=IN_FLIGHT_STATUSES,
             ).first()
         else:
             existing = None
 
         if existing:
+            same_url = existing.url == submitted_url
             return Response(
                 {
                     "id": existing.id,
                     "slug": existing.slug,
                     "url": existing.url,
                     "status": existing.status,
-                    "message": "Analysis already in progress for this URL",
+                    "message": (
+                        "Analysis already in progress for this URL"
+                        if same_url
+                        else "An analysis is already running for this brand. Only one runs at a time."
+                    ),
                 },
                 status=status.HTTP_200_OK,
             )
@@ -1010,7 +1011,10 @@ class AnalysisRunListView(APIView):
         # Heavy JSONFields (llm_logs, onboarding_prompts) aren't in the list
         # serializer — defer them so we don't ship hundreds of KB per row.
         runs = runs.defer("llm_logs", "onboarding_prompts").order_by("-created_at")
-        serializer = AnalysisRunListSerializer(runs, many=True)
+        # Backstop against unbounded response growth (see apps.analyzer.pagination).
+        from .pagination import bounded_slice
+
+        serializer = AnalysisRunListSerializer(bounded_slice(request, runs), many=True)
         return Response(serializer.data)
 
 
@@ -1254,7 +1258,11 @@ class UserActionListView(APIView):
         if status_filter:
             actions = actions.filter(status=status_filter)
 
-        serializer = UserActionSerializer(actions.distinct(), many=True)
+        # Backstop against unbounded response growth — the agency-admin branch spans
+        # every brand in the agency (see apps.analyzer.pagination).
+        from .pagination import bounded_slice
+
+        serializer = UserActionSerializer(bounded_slice(request, actions.distinct()), many=True)
         return Response(serializer.data)
 
 
@@ -1366,8 +1374,8 @@ class UpdateUserActionView(APIView):
                     action.score_after = data["score_after"]
                     if action.score_before:
                         action.score_improvement = data["score_after"] - action.score_before
-                        gamification.total_score_improvement += action
-                        gamification.score_improvement.total_actions_verified += 1
+                        gamification.total_score_improvement += action.score_improvement
+                        gamification.total_actions_verified += 1
                         gamification.save()
                 # Award bonus points for verification
                 gamification.add_points(action.points_value // 2)
@@ -1388,18 +1396,6 @@ class UpdateUserActionView(APIView):
                 "new_achievements": new_achievements,
             }
         )
-
-
-# Pillar → a representative ActionType for auto-materialized tasks (the exact
-# type is cosmetic here; the task carries the recommendation's own title/desc).
-_PILLAR_ACTION_TYPE = {
-    "content": UserAction.ActionType.ADD_STRUCTURE,
-    "schema": UserAction.ActionType.ADD_SCHEMA,
-    "technical": UserAction.ActionType.ADD_SITEMAP,
-    "eeat": UserAction.ActionType.ADD_ABOUT,
-    "entity": UserAction.ActionType.ADD_SOCIAL,
-    "ai_visibility": UserAction.ActionType.BUILD_BACKLINKS,
-}
 
 
 class SyncActionsView(APIView):
@@ -1440,30 +1436,10 @@ class SyncActionsView(APIView):
         if run is None:
             return Response({"created": 0, "total": 0})
 
-        existing_rec_ids = set(
-            UserAction.objects.filter(analysis_run=run)
-            .exclude(recommendation__isnull=True)
-            .values_list("recommendation_id", flat=True)
-        )
-        to_create = [
-            UserAction(
-                user_email=owner_email,
-                analysis_run=run,
-                recommendation=rec,
-                action_type=_PILLAR_ACTION_TYPE.get(rec.pillar, UserAction.ActionType.ADD_STRUCTURE),
-                title=rec.title[:255],
-                description=rec.description,
-                points_value=rec.xp_reward or 10,
-                status=UserAction.ActionStatus.PENDING,
-            )
-            for rec in run.recommendations.all()
-            if rec.id not in existing_rec_ids
-        ]
-        if to_create:
-            UserAction.objects.bulk_create(to_create)
+        from .action_sync import materialize_run_actions
 
-        total = UserAction.objects.filter(analysis_run=run).count()
-        return Response({"created": len(to_create), "total": total})
+        created, total = materialize_run_actions(run, owner_email)
+        return Response({"created": created, "total": total})
 
 
 class AssignActionView(APIView):
@@ -1548,12 +1524,22 @@ class ActionStatsView(APIView):
             if code in ACHIEVEMENTS_INFO
         ]
 
+        # One aggregate for the five status totals — was 5 round trips.
+        from django.db.models import Count, Q
+
+        _c = actions.aggregate(
+            total=Count("id"),
+            pending=Count("id", filter=Q(status=UserAction.ActionStatus.PENDING)),
+            in_progress=Count("id", filter=Q(status=UserAction.ActionStatus.IN_PROGRESS)),
+            completed=Count("id", filter=Q(status=UserAction.ActionStatus.COMPLETED)),
+            verified=Count("id", filter=Q(status=UserAction.ActionStatus.VERIFIED)),
+        )
         stats = {
-            "total_actions": actions.count(),
-            "pending_actions": actions.filter(status=UserAction.ActionStatus.PENDING).count(),
-            "in_progress_actions": actions.filter(status=UserAction.ActionStatus.IN_PROGRESS).count(),
-            "completed_actions": actions.filter(status=UserAction.ActionStatus.COMPLETED).count(),
-            "verified_actions": actions.filter(status=UserAction.ActionStatus.VERIFIED).count(),
+            "total_actions": _c["total"],
+            "pending_actions": _c["pending"],
+            "in_progress_actions": _c["in_progress"],
+            "completed_actions": _c["completed"],
+            "verified_actions": _c["verified"],
             "total_points": gamification.total_points,
             "points_this_week": gamification.points_this_week,
             "current_streak": gamification.current_streak,
@@ -1760,12 +1746,22 @@ class BlogAutomationCalendarView(APIView):
             jobs = jobs.filter(scheduled_for__date__gte=start, scheduled_for__date__lte=end)
 
         serializer = BlogAutomationJobSerializer(jobs, many=True)
+        # One aggregate for the five status totals — was 5 round trips.
+        from django.db.models import Count, Q
+
+        _s = jobs.aggregate(
+            scheduled=Count("id", filter=Q(status=BlogAutomationJob.Status.SCHEDULED)),
+            draft=Count("id", filter=Q(status=BlogAutomationJob.Status.DRAFT)),
+            needs_review=Count("id", filter=Q(status=BlogAutomationJob.Status.NEEDS_REVIEW)),
+            published=Count("id", filter=Q(status=BlogAutomationJob.Status.PUBLISHED)),
+            failed=Count("id", filter=Q(status=BlogAutomationJob.Status.FAILED)),
+        )
         summary = {
-            "scheduled": jobs.filter(status=BlogAutomationJob.Status.SCHEDULED).count(),
-            "draft": jobs.filter(status=BlogAutomationJob.Status.DRAFT).count(),
-            "needs_review": jobs.filter(status=BlogAutomationJob.Status.NEEDS_REVIEW).count(),
-            "published": jobs.filter(status=BlogAutomationJob.Status.PUBLISHED).count(),
-            "failed": jobs.filter(status=BlogAutomationJob.Status.FAILED).count(),
+            "scheduled": _s["scheduled"],
+            "draft": _s["draft"],
+            "needs_review": _s["needs_review"],
+            "published": _s["published"],
+            "failed": _s["failed"],
         }
         return Response({"summary": summary, "jobs": serializer.data})
 
@@ -3219,9 +3215,16 @@ class ScoreHistoryView(APIView):
 
         # Order by when the run finished updating (score finalized); expose that as `date`
         # so the chart shows distinct points per analysis, not just calendar day.
-        data = list(
-            qs.order_by("updated_at").values("id", "created_at", "updated_at", "composite_score", "slug")
+        # Cap to the most recent N points (backstop) but keep ascending order so the
+        # delta computation below is correct.
+        from .pagination import MAX_LIST_LIMIT
+
+        recent = list(
+            qs.order_by("-updated_at").values(
+                "id", "created_at", "updated_at", "composite_score", "slug"
+            )[:MAX_LIST_LIMIT]
         )
+        data = list(reversed(recent))
         result = []
         prev_score = None
         for row in data:
@@ -3251,9 +3254,26 @@ class ScoreHistoryView(APIView):
 
 
 class ScheduledAnalysisView(APIView):
-    """GET/POST /api/analyzer/schedule/"""
+    """GET/POST /api/analyzer/schedule/
+
+    Both halves resolve the caller's agency and require that the caller actually
+    owns ``org_id``. Without that check ``org_id`` is a sequential integer and
+    ``email`` is unauthenticated, so anyone could (a) read a brand's
+    ``last_run_slug`` — which unlocks the whole ``runs/s/<slug>/`` family — and
+    (b) enroll any brand into a recurring analysis whose digest emails land in
+    their own inbox.
+    """
 
     permission_classes = [AllowAny]
+
+    @staticmethod
+    def _owned_org(email: str, org_id) -> Organization | None:
+        """The org ``email`` may act on, or None. Agency members act as their agency."""
+        from apps.accounts.agency_utils import get_agency_context
+
+        ctx = get_agency_context(email)
+        owner_email = ctx.agency_email if ctx else email
+        return Organization.objects.filter(id=org_id, owner_email=owner_email).first()
 
     def get(self, request):
         email = request.query_params.get("email", "").lower().strip()
@@ -3261,15 +3281,21 @@ class ScheduledAnalysisView(APIView):
         if not email or not org_id:
             return Response({"error": "email and org_id required."}, status=status.HTTP_400_BAD_REQUEST)
 
+        if self._owned_org(email, org_id) is None:
+            return Response(
+                {"detail": "Brand not found for this account.", "code": "not_found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
         from .models import ScheduledAnalysis
 
-        try:
-            schedule = ScheduledAnalysis.objects.get(organization_id=org_id, email=email)
-            from .serializers import ScheduledAnalysisSerializer
-
-            return Response(ScheduledAnalysisSerializer(schedule).data)
-        except ScheduledAnalysis.DoesNotExist:
+        schedule = ScheduledAnalysis.objects.filter(organization_id=org_id, email=email).first()
+        if schedule is None:
             return Response(None, status=status.HTTP_200_OK)
+
+        from .serializers import ScheduledAnalysisSerializer
+
+        return Response(ScheduledAnalysisSerializer(schedule).data)
 
     def post(self, request):
         email = request.data.get("email", "").lower().strip()
@@ -3288,10 +3314,12 @@ class ScheduledAnalysisView(APIView):
                 {"error": "frequency must be once/weekly/monthly."}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        try:
-            org = Organization.objects.get(pk=org_id)
-        except Organization.DoesNotExist:
-            return Response({"error": "Organization not found."}, status=status.HTTP_404_NOT_FOUND)
+        org = self._owned_org(email, org_id)
+        if org is None:
+            return Response(
+                {"detail": "Brand not found for this account.", "code": "not_found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         # Parse explicit run_at when provided, else derive from frequency
         next_run_at = None
@@ -3921,17 +3949,25 @@ class ApplyGeoFixesAndReanalyzeView(APIView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-            new_run = AnalysisRun.objects.create(
-                organization=run.organization,
-                url=run.url,
-                brand_name=run.brand_name or "",
-                country=run.country or "",
-                email=run.email or "",
-                run_type=run.run_type,
-                status=AnalysisRun.Status.PENDING,
-            )
-            start_analysis_task(new_run.id)
-            next_run_payload = {"id": new_run.id, "slug": new_run.slug}
+            # One analysis at a time per brand — reuse the in-flight run instead
+            # of stacking a second re-analysis on the same org.
+            from .run_guard import active_run_for
+
+            in_flight = active_run_for(run.organization)
+            if in_flight is not None:
+                next_run_payload = {"id": in_flight.id, "slug": in_flight.slug}
+            else:
+                new_run = AnalysisRun.objects.create(
+                    organization=run.organization,
+                    url=run.url,
+                    brand_name=run.brand_name or "",
+                    country=run.country or "",
+                    email=run.email or "",
+                    run_type=run.run_type,
+                    status=AnalysisRun.Status.PENDING,
+                )
+                start_analysis_task(new_run.id)
+                next_run_payload = {"id": new_run.id, "slug": new_run.slug}
 
         return Response(
             {
@@ -6673,6 +6709,440 @@ class ShareOfVoiceCompetitorsView(APIView):
                 "delta_pct": 0.0,
                 "direction": "up",
                 "competitors": competitors,
+            }
+        )
+
+
+def _crawler_ingest_signer():
+    from django.core import signing
+
+    return signing.Signer(salt="crawler-ingest")
+
+
+def crawler_ingest_token(org_id: int) -> str:
+    """Org-scoped token the site's log integration uses to report crawler hits."""
+    return _crawler_ingest_signer().sign(str(org_id))
+
+
+class CrawlerIngestView(APIView):
+    """POST /api/analyzer/crawler/ingest/ — receive AI-crawler hits from a site.
+
+    Authenticated by the org-scoped signed token shown on the Crawler Logs
+    page. The bot identity is always re-derived server-side from the user
+    agent; requests that don't match a known AI crawler are ignored, so the
+    endpoint never stores anything about human visitors.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    _MAX_BATCH = 500
+
+    @staticmethod
+    def _rows(org_id: int, hits: list) -> tuple[list, int]:
+        from django.utils import timezone
+        from django.utils.dateparse import parse_datetime
+
+        from .crawler_bots import detect_bot
+
+        now = timezone.now()
+        rows: list[CrawlerHit] = []
+        ignored = 0
+        for h in hits:
+            ua = str(h.get("user_agent") or "")[:300] if isinstance(h, dict) else ""
+            bot = detect_bot(ua)
+            if not bot:
+                ignored += 1
+                continue
+            ts = parse_datetime(str(h.get("ts"))) if h.get("ts") else None
+            if ts is not None and ts.tzinfo is None:
+                ts = None  # naive client clocks are not trusted; stamp server time
+            rows.append(
+                CrawlerHit(
+                    organization_id=org_id,
+                    bot=bot,
+                    path=str(h.get("path") or "/")[:512],
+                    user_agent=ua,
+                    hit_at=ts or now,
+                )
+            )
+        return rows, ignored
+
+    def post(self, request):
+        from django.core import signing
+
+        token = str(request.data.get("token") or "")
+        try:
+            org_id = int(_crawler_ingest_signer().unsign(token))
+        except (signing.BadSignature, ValueError):
+            return Response({"detail": "Invalid ingest token."}, status=status.HTTP_403_FORBIDDEN)
+        if not Organization.objects.filter(id=org_id).exists():
+            return Response({"detail": "Unknown organization."}, status=status.HTTP_403_FORBIDDEN)
+
+        hits = request.data.get("hits")
+        if not isinstance(hits, list) or not hits:
+            return Response(
+                {"detail": "hits must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        rows, ignored = self._rows(org_id, hits[: self._MAX_BATCH])
+        CrawlerHit.objects.bulk_create(rows)
+        return Response({"stored": len(rows), "ignored": ignored})
+
+
+class CrawlerLogsView(APIView):
+    """GET /runs/s/<slug>/crawler-logs/ — AI crawler activity for the brand:
+    daily per-bot counts (last 30 days), top crawlers, top pages, and the
+    ingest credentials for wiring the site up."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request, slug):
+        from collections import defaultdict
+        from datetime import timedelta
+
+        from django.db.models import Count
+        from django.db.models.functions import TruncDate
+        from django.shortcuts import get_object_or_404
+        from django.utils import timezone
+
+        from .crawler_bots import BOT_LABELS
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        org = run.organization
+        if org is None:
+            return Response(
+                {"detail": "Run has no organization."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        since = timezone.now() - timedelta(days=30)
+        qs = CrawlerHit.objects.filter(organization=org, hit_at__gte=since)
+
+        by_day: dict[str, dict[str, int]] = defaultdict(dict)
+        daily = qs.annotate(day=TruncDate("hit_at")).values("day", "bot").annotate(n=Count("id"))
+        for row in daily:
+            by_day[row["day"].isoformat()][row["bot"]] = row["n"]
+
+        bots = [
+            {"bot": r["bot"], "label": BOT_LABELS.get(r["bot"], r["bot"]), "hits": r["n"]}
+            for r in qs.values("bot").annotate(n=Count("id")).order_by("-n")
+        ]
+        pages = [
+            {"path": r["path"], "hits": r["n"]}
+            for r in qs.values("path").annotate(n=Count("id")).order_by("-n")[:10]
+        ]
+        return Response(
+            {
+                "ingest_token": crawler_ingest_token(org.id),
+                "total_hits": qs.count(),
+                "days": [{"date": d, "bots": b} for d, b in sorted(by_day.items())],
+                "bots": bots,
+                "pages": pages,
+            }
+        )
+
+
+class AnswerGapFaqView(APIView):
+    """POST /runs/s/<slug>/answer-gap-faq/
+
+    Turns the run's weakest tracked prompts (real questions where AI engines
+    under-represent the brand) into publishable FAQ content: question/answer
+    pairs written for the brand, plus FAQPage JSON-LD built server-side so the
+    schema is always valid regardless of LLM output.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    _MAX_PROMPTS = 6
+
+    @staticmethod
+    def _generation_prompt(run, tracks) -> str:
+        brand = run.brand_name or run.url
+        questions = "\n".join(f"- {t.prompt_text}" for t in tracks)
+        return (
+            f"You write FAQ content for {brand} ({run.url}).\n"
+            "These are real questions people ask AI assistants, where the brand is "
+            "currently under-represented in the answers:\n"
+            f"{questions}\n\n"
+            "Write an FAQ section the brand can publish on its own site. For each "
+            "input question produce one entry: rephrase the question naturally from "
+            "a customer's perspective, then answer in 2-4 factual, direct sentences "
+            "that lead with the answer and mention the brand naturally exactly once. "
+            "No marketing fluff and no superlatives you cannot verify.\n"
+            'Return STRICT JSON only: [{"question": "...", "answer": "..."}]'
+        )
+
+    def post(self, request, slug):
+        import json
+
+        from django.shortcuts import get_object_or_404
+
+        from .pipeline.llm import ask_llm
+        from .pipeline.structured import extract_json
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        tracks = list(
+            run.prompt_tracks.filter(deleted_at__isnull=True).order_by("score", "-created_at")[
+                : self._MAX_PROMPTS
+            ]
+        )
+        if not tracks:
+            return Response(
+                {"detail": "No tracked prompts yet."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        text = ask_llm(
+            self._generation_prompt(run, tracks),
+            max_tokens=1600,
+            purpose=f"Answer-gap FAQ ({slug})",
+            tier="medium",
+        )
+        raw_items = extract_json(text or "", expect=list) or []
+        items = [
+            {
+                "question": str(i.get("question", "")).strip(),
+                "answer": str(i.get("answer", "")).strip(),
+            }
+            for i in raw_items
+            if isinstance(i, dict) and i.get("question") and i.get("answer")
+        ]
+        if not items:
+            return Response(
+                {"detail": "Generation failed. Please try again."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        jsonld = json.dumps(
+            {
+                "@context": "https://schema.org",
+                "@type": "FAQPage",
+                "mainEntity": [
+                    {
+                        "@type": "Question",
+                        "name": i["question"],
+                        "acceptedAnswer": {"@type": "Answer", "text": i["answer"]},
+                    }
+                    for i in items
+                ],
+            },
+            indent=2,
+        )
+        return Response({"items": items, "jsonld": jsonld})
+
+
+class CompetitorVisibilityMatrixView(APIView):
+    """GET /runs/s/<slug>/competitor-visibility-matrix/
+
+    Heatmap data: brand + competitors as rows, AI engines as columns. The brand
+    cell is its per-engine mention rate; a competitor cell is the share of that
+    engine's responses citing the competitor's domain — the same mention-rate
+    basis, so cells are directly comparable across rows.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    @staticmethod
+    def _engine_stats(run):
+        """Per-engine response totals, brand hits, and result-id → engine map."""
+        from collections import defaultdict
+
+        totals: dict[str, int] = defaultdict(int)
+        brand_hits: dict[str, int] = defaultdict(int)
+        engine_of: dict[int, str] = {}
+        rows = PromptResult.objects.filter(
+            prompt_track__analysis_run=run,
+            prompt_track__deleted_at__isnull=True,
+        ).values("id", "engine", "brand_mentioned")
+        for r in rows:
+            eng = (r["engine"] or "").strip().lower()
+            if not eng:
+                continue
+            totals[eng] += 1
+            engine_of[r["id"]] = eng
+            if r["brand_mentioned"]:
+                brand_hits[eng] += 1
+        return totals, brand_hits, engine_of
+
+    @staticmethod
+    def _citing_results(run, engine_of):
+        """domain → engine → set of citing result ids."""
+        from collections import defaultdict
+
+        by_domain: dict[str, dict[str, set]] = defaultdict(lambda: defaultdict(set))
+        cite_rows = (
+            PromptCitation.objects.filter(
+                prompt_result__prompt_track__analysis_run=run,
+                prompt_result__prompt_track__deleted_at__isnull=True,
+            )
+            .exclude(domain="")
+            .values("domain", "prompt_result_id")
+        )
+        for r in cite_rows:
+            eng = engine_of.get(r["prompt_result_id"])
+            if eng:
+                by_domain[_norm_domain(r["domain"])][eng].add(r["prompt_result_id"])
+        return by_domain
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        from .pipeline.utils import extract_domain
+
+        run = get_object_or_404(AnalysisRun.objects.prefetch_related("competitors"), slug=slug)
+        totals, brand_hits, engine_of = self._engine_stats(run)
+        citing = self._citing_results(run, engine_of)
+        engines = sorted(totals.keys())
+
+        def pct(hits: int, eng: str) -> float:
+            total = totals.get(eng) or 0
+            return round(hits / total * 100, 1) if total else 0.0
+
+        rows = [
+            {
+                "name": run.brand_name or run.url,
+                "domain": _norm_domain(extract_domain(run.url or "")),
+                "is_brand": True,
+                "cells": {eng: pct(brand_hits.get(eng, 0), eng) for eng in engines},
+            }
+        ]
+        for c in run.competitors.all():
+            cdom = _norm_domain(extract_domain(c.url or ""))
+            by_eng = citing.get(cdom, {})
+            rows.append(
+                {
+                    "name": c.name or cdom or "Competitor",
+                    "domain": cdom,
+                    "is_brand": False,
+                    "cells": {eng: pct(len(by_eng.get(eng, ())), eng) for eng in engines},
+                }
+            )
+
+        return Response({"engines": engines, "rows": rows})
+
+
+def _shopify_integration_for(org):
+    """The org's active Shopify integration, or None."""
+    if org is None:
+        return None
+    return Integration.objects.filter(
+        organization=org, provider=Integration.Provider.SHOPIFY, is_active=True
+    ).first()
+
+
+class ShoppingSyncView(APIView):
+    """POST /runs/s/<slug>/shopping/sync/
+
+    Pulls the connected store's product catalog through the Admin API and
+    refreshes per-product AI-shopping readiness rows. Interim pull path until
+    the Remix app's catalog-sync webhook lands (P1 of the Shopify app plan).
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        from apps.integrations.services.shopify import fetch_shopify_products
+
+        from .shopping import analyze_product
+
+        run = get_object_or_404(AnalysisRun.objects.select_related("organization"), slug=slug)
+        integration = _shopify_integration_for(run.organization)
+        if integration is None:
+            return Response(
+                {"detail": "Connect your Shopify store first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        products = fetch_shopify_products(integration)
+        seen_ids = []
+        for product in products:
+            metrics = analyze_product(product)
+            product_id = str(product.get("id") or "")
+            if not product_id:
+                continue
+            seen_ids.append(product_id)
+            variants = product.get("variants") or []
+            ShopifyProduct.objects.update_or_create(
+                organization=run.organization,
+                product_id=product_id,
+                defaults={
+                    "handle": str(product.get("handle") or "")[:255],
+                    "title": str(product.get("title") or "")[:512],
+                    "status": str(product.get("status") or "")[:20],
+                    "price": str(variants[0].get("price") if variants else "")[:40],
+                    **metrics,
+                },
+            )
+        # A partial fetch (capped pages) must not delete rows we didn't see.
+        if len(products) < 1000:
+            ShopifyProduct.objects.filter(organization=run.organization).exclude(
+                product_id__in=seen_ids
+            ).delete()
+        return Response({"synced": len(seen_ids)})
+
+
+class ShoppingReadinessView(APIView):
+    """GET /runs/s/<slug>/shopping/
+
+    AI-shopping readiness rollup: average score, issue counts, and the worst
+    products first — plus connection state so the page can prompt setup.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request, slug):
+        from collections import Counter
+
+        from django.shortcuts import get_object_or_404
+
+        from .shopping import ISSUE_LABELS
+
+        run = get_object_or_404(AnalysisRun.objects.select_related("organization"), slug=slug)
+        integration = _shopify_integration_for(run.organization)
+        shop_domain = integration.metadata.get("shop_domain", "") if integration else ""
+
+        rows = list(
+            ShopifyProduct.objects.filter(organization=run.organization).order_by(
+                "readiness", "title"
+            )
+        )
+        issue_counts: Counter = Counter()
+        for row in rows:
+            issue_counts.update(row.issues or [])
+
+        avg = round(sum(r.readiness for r in rows) / len(rows)) if rows else 0
+        return Response(
+            {
+                "connected": integration is not None,
+                "shop_domain": shop_domain,
+                "product_count": len(rows),
+                "avg_readiness": avg,
+                "last_synced": max((r.synced_at for r in rows), default=None),
+                "issues": [
+                    {"code": code, "label": ISSUE_LABELS.get(code, code), "count": count}
+                    for code, count in issue_counts.most_common()
+                ],
+                "products": [
+                    {
+                        "product_id": r.product_id,
+                        "handle": r.handle,
+                        "title": r.title,
+                        "status": r.status,
+                        "price": r.price,
+                        "readiness": r.readiness,
+                        "issues": r.issues,
+                        "images_total": r.images_total,
+                        "images_missing_alt": r.images_missing_alt,
+                        "description_chars": r.description_chars,
+                    }
+                    for r in rows[:100]
+                ],
             }
         )
 

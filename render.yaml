@@ -128,6 +128,14 @@ services:
         sync: false
       - key: GOOGLE_CLIENT_SECRET
         sync: false
+      # Both redirect URIs must be set explicitly: the settings defaults point at
+      # localhost, so omitting them here silently builds consent URLs that send
+      # production users to their own machine. Each must also be registered on the
+      # OAuth client in the Google Cloud console, byte-for-byte.
+      - key: GOOGLE_ANALYTICS_REDIRECT_URI
+        value: https://signalor.ai/settings/integrations/callback/google-analytics
+      - key: GOOGLE_SEARCH_CONSOLE_REDIRECT_URI
+        value: https://api.signalor.ai/api/integrations/google-search-console/callback/
       - key: GEMINI_API_KEY
         sync: false
       - key: DATAFORSEO_LOGIN
@@ -330,6 +338,39 @@ services:
         value: 3.11.0
       - key: DJANGO_SETTINGS_MODULE
         value: config.settings.production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: signalor-db
+          property: connectionString
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: signalor-backend
+          envVarKey: SECRET_KEY
+      - key: ALLOWED_HOSTS
+        value: api.signalor.ai
+
+  # Daily re-check of open fixes. Re-verifies each brand's still-open on-page
+  # recommendations against the live site, then re-ranks them and flags one
+  # "priority fix of the day" (daily_priority_rank / is_top_fix) — which is what
+  # the Growth Agent's plan is ordered by. Cheap: the verifier caches one page
+  # fetch per run and makes no LLM calls. RECHECK_LIMIT caps brands per tick
+  # without a redeploy (0 = all).
+  - type: cron
+    name: signalor-recheck-recommendations
+    runtime: python
+    plan: starter
+    region: oregon
+    schedule: "0 3 * * *"
+    buildCommand: ./build.sh
+    startCommand: python manage.py recheck_recommendations --limit ${RECHECK_LIMIT:-0}
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: RECHECK_LIMIT
+        value: "0"
       - key: DATABASE_URL
         fromDatabase:
           name: signalor-db

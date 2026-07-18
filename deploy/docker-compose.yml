@@ -10,11 +10,17 @@
 #   rabbitmq        → broker for the analysis Celery app
 #
 # The Render cron jobs (run_scheduled_analyses, cleanup_stale_rewards,
-# run_backlink_schedules — the daily auto-backlinks publisher) and nightly
-# pg_dump backups run from the HOST crontab — see DEPLOY.md. Example entry for
-# the backlinks job (hourly):
+# run_backlink_schedules — the daily auto-backlinks publisher,
+# recheck_recommendations) and nightly pg_dump backups run from the HOST
+# crontab — see DEPLOY.md. Example entry for the backlinks job (hourly):
 #   0 * * * * cd /opt/signalor/deploy && docker compose run --rm web \
 #             python manage.py run_backlink_schedules
+#
+# The daily re-check re-verifies each brand's open fixes and ranks them, which is
+# what orders the Growth Agent's daily plan (daily_priority_rank / is_top_fix).
+# Without it those fields stay unset and the plan falls back to raw priority:
+#   0 3 * * * cd /opt/signalor/deploy && docker compose run --rm web \
+#             python manage.py recheck_recommendations
 #
 # Durable state lives on the Hetzner volume mounted at /mnt/HC_Volume_105845076
 # (Postgres data, backups, Caddy certs).

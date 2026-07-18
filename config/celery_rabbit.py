@@ -72,7 +72,10 @@ analysis_app.conf.task_queues = [
     ),
     Queue("analysis.dlq", _dlx, routing_key="analysis.dead"),  # the "problem shelf"
 ]
-analysis_app.conf.task_routes = {"analyzer.run_analysis": {"queue": "analysis"}}
+analysis_app.conf.task_routes = {
+    "analyzer.run_analysis": {"queue": "analysis"},
+    "analyzer.run_scheduled_analysis": {"queue": "analysis"},
+}
 
 # Look for `analysis_tasks` modules (NOT `celery_tasks`) so only the analysis
 # task registers on this RabbitMQ app.

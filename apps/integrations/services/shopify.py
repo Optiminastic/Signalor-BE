@@ -343,6 +343,43 @@ def _fetch_all_orders(
     return all_orders
 
 
+def fetch_shopify_products(integration, max_pages: int = 4) -> list:
+    """Fetch the store's products for GEO/shopping analysis (paginated).
+
+    Caps at ``max_pages`` * 250 products so a huge catalog can't stall the
+    request path; the caller treats a partial fetch as such.
+    """
+    shop_domain = integration.metadata.get("shop_domain", "")
+    access_token = integration.get_access_token()
+    headers = {"X-Shopify-Access-Token": access_token}
+    params = {
+        "limit": 250,
+        "fields": "id,title,handle,status,body_html,images,variants,tags,product_type,vendor",
+    }
+    url = f"https://{shop_domain}/admin/api/{API_VERSION}/products.json"
+    products: list = []
+    pages = 0
+
+    while url and pages < max_pages:
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
+        if resp.status_code != 200:
+            logger.error("Shopify products fetch failed: HTTP %s", resp.status_code)
+            break
+        products.extend(resp.json().get("products", []))
+        pages += 1
+
+        url = None
+        params = None  # params only for first request
+        link_header = resp.headers.get("Link", "")
+        if 'rel="next"' in link_header:
+            for part in link_header.split(","):
+                if 'rel="next"' in part:
+                    url = part.split("<")[1].split(">")[0]
+                    break
+
+    return products
+
+
 def _compute_top_products(orders: list, limit: int = 10) -> list:
     """Aggregate line_items by product, return top N by revenue."""
     product_map: dict[str, dict] = {}

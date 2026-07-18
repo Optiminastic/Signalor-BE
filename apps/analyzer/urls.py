@@ -1,9 +1,11 @@
 from django.urls import path
 
+from .agent_views import AgentPlanRefreshView, AgentPlanView
 from .views import (
     AchievementsView,
     ActionStatsView,
     ActionTemplatesView,
+    AnswerGapFaqView,
     # Sitemap audit
     AgentLogView,
     AiChatView,
@@ -46,6 +48,11 @@ from .views import (
     CompetitorDetailView,
     CompetitorListCreateView,
     CompetitorPromptListView,
+    CompetitorVisibilityMatrixView,
+    CrawlerIngestView,
+    CrawlerLogsView,
+    ShoppingReadinessView,
+    ShoppingSyncView,
     ContentApplyElementView,
     ContentPageFieldsView,
     # Content optimisation (Cursor-style edit + save)
@@ -168,6 +175,20 @@ urlpatterns = [
         ShareOfVoiceCompetitorsView.as_view(),
         name="share-of-voice-competitors",
     ),
+    path(
+        "runs/s/<str:slug>/competitor-visibility-matrix/",
+        CompetitorVisibilityMatrixView.as_view(),
+        name="competitor-visibility-matrix",
+    ),
+    path(
+        "runs/s/<str:slug>/answer-gap-faq/",
+        AnswerGapFaqView.as_view(),
+        name="answer-gap-faq",
+    ),
+    path("crawler/ingest/", CrawlerIngestView.as_view(), name="crawler-ingest"),
+    path("runs/s/<str:slug>/crawler-logs/", CrawlerLogsView.as_view(), name="crawler-logs"),
+    path("runs/s/<str:slug>/shopping/", ShoppingReadinessView.as_view(), name="shopping-readiness"),
+    path("runs/s/<str:slug>/shopping/sync/", ShoppingSyncView.as_view(), name="shopping-sync"),
     path("runs/s/<str:slug>/top-sources/", TopSourcesView.as_view(), name="top-sources"),
     path("runs/s/<str:slug>/citation-trend/", CitationTrendView.as_view(), name="citation-trend"),
     path("runs/s/<str:slug>/citations/", CitationSourcesView.as_view(), name="citation-sources"),
@@ -232,6 +253,13 @@ urlpatterns = [
     path("runs/s/<str:slug>/sitemap/", SitemapAuditDetailView.as_view(), name="sitemap-audit-detail"),
     path("runs/s/<str:slug>/sitemap/start/", SitemapAuditStartView.as_view(), name="sitemap-audit-start"),
     path("runs/s/<str:slug>/agent-log/", AgentLogView.as_view(), name="agent-log"),
+    # Growth Agent — today's ranked task plan (ownership-checked, not AllowAny)
+    path("runs/s/<str:slug>/agent/plan/", AgentPlanView.as_view(), name="agent-plan"),
+    path(
+        "runs/s/<str:slug>/agent/plan/refresh/",
+        AgentPlanRefreshView.as_view(),
+        name="agent-plan-refresh",
+    ),
     # Schema watchtower
     path("runs/s/<str:slug>/schema-watch/", SchemaWatchDetailView.as_view(), name="schema-watch-detail"),
     path("runs/s/<str:slug>/schema-watch/start/", SchemaWatchStartView.as_view(), name="schema-watch-start"),

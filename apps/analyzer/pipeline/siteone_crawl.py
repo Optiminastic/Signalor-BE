@@ -360,6 +360,112 @@ def to_check_payload(report: SiteOneReport) -> dict:
     }
 
 
+# ── Findings → recommendations (feed the task queue) ───────────────────────
+# The SiteOne report is otherwise display-only. This adapter turns its scored
+# deductions into the analyzer's recommendation dicts so they flow into the same
+# Recommendation -> UserAction task pipeline as every other pillar.
+
+_SEV_PRIORITY = {"CRITICAL": "critical", "WARNING": "high"}
+_REC_XP = {"critical": 30, "high": 20, "medium": 10, "low": 5}
+_REC_DIFFICULTY = {"critical": "hard", "high": "medium", "medium": "easy", "low": "easy"}
+_REC_MINUTES = {"critical": 30, "high": 20, "medium": 10, "low": 10}
+_REC_PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+def _sig_tokens(text: str) -> set[str]:
+    """Lowercased alphanumeric words of length >= 4 (fuzzy deduction<->finding match)."""
+    out: set[str] = set()
+    word: list[str] = []
+    for ch in (text or "").lower():
+        if ch.isalnum():
+            word.append(ch)
+        else:
+            if len(word) >= 4:
+                out.add("".join(word))
+            word = []
+    if len(word) >= 4:
+        out.add("".join(word))
+    return out
+
+
+def _slug(text: str) -> str:
+    s = "".join(ch if ch.isalnum() else "-" for ch in (text or "").lower())
+    while "--" in s:
+        s = s.replace("--", "-")
+    return s.strip("-")[:50]
+
+
+def _deduction_priority(reason: str, points: float, category_code: str, findings: list[Finding]) -> str:
+    """Priority for a deduction: honor SiteOne's own CRITICAL/WARNING severity when a
+    summary finding matches (by word overlap), else fall back to category + points."""
+    d_tokens = _sig_tokens(reason)
+    best_status, best_overlap = "", 0
+    for f in findings:
+        if f.status not in _SEV_PRIORITY:
+            continue
+        overlap = len(d_tokens & _sig_tokens(f.text))
+        if overlap > best_overlap:
+            best_overlap, best_status = overlap, f.status
+    if best_overlap >= 2 and best_status in _SEV_PRIORITY:
+        return _SEV_PRIORITY[best_status]
+    if category_code == "security" and points >= 1.0:
+        return "high"
+    if points >= 1.5:
+        return "high"
+    if points >= 0.5:
+        return "medium"
+    return "low"
+
+
+def to_recommendations(report: SiteOneReport, *, max_recs: int = 8) -> list[dict]:
+    """Map SiteOne's scored deductions into Recommendation dicts (technical pillar).
+
+    Each deduction has a concrete ``fix`` (-> action) and ``reason`` (-> title/description);
+    priority comes from the matching CRITICAL/WARNING summary finding when available. Keys
+    are exactly Recommendation model fields, ready for ``Recommendation(analysis_run=run,
+    **rec)`` (parallel to generate_recommendations). Deductions with no fix are skipped so
+    the task queue stays actionable. Capped at ``max_recs``, critical-first. Never raises.
+    """
+    recs: list[dict] = []
+    seen: set[str] = set()
+    try:
+        for cat in report.categories:
+            for d in cat.deductions:
+                fix = (d.fix or "").strip()
+                reason = (d.reason or "").strip()
+                if not fix or not reason:
+                    continue  # display-only / non-actionable
+                code = f"siteone_{cat.code}_{_slug(reason)}"[:80]
+                if code in seen:
+                    continue
+                seen.add(code)
+                priority = _deduction_priority(reason, float(d.points or 0), cat.code, report.findings)
+                recs.append(
+                    {
+                        "pillar": "technical",
+                        "category": "technical",
+                        "priority": priority,
+                        "title": (reason[:1].upper() + reason[1:])[:255],
+                        "description": reason,
+                        "action": fix,
+                        "impact_estimate": (
+                            f"Could recover ~{d.points:g} pts of technical quality" if d.points else ""
+                        ),
+                        "finding_code": code,
+                        "why": f"Flagged by the SiteOne technical crawl ({cat.name}).",
+                        "steps": [],
+                        "xp_reward": _REC_XP[priority],
+                        "difficulty": _REC_DIFFICULTY[priority],
+                        "estimated_minutes": _REC_MINUTES[priority],
+                    }
+                )
+        recs.sort(key=lambda r: _REC_PRIORITY_ORDER.get(r["priority"], 9))
+    except Exception:  # never break analysis over enrichment
+        logger.warning("SiteOne to_recommendations failed", exc_info=True)
+        return []
+    return recs[:max_recs]
+
+
 def _num(value: object) -> float:
     try:
         return float(value)  # type: ignore[arg-type]

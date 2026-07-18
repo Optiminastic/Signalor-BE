@@ -26,6 +26,10 @@ logger = logging.getLogger("apps")
 _DEFAULT_K = 6
 _DEFAULT_CANDIDATES = 20  # over-fetch, then MMR down to k
 _MMR_LAMBDA = 0.5  # 1.0 = pure relevance, 0.0 = pure diversity
+# Upper bound for the index-free fallback scan (see _exact_search). A tenant that
+# reaches the fallback is small (its chunks fell outside the global ANN candidate
+# set), so this cap is never hit by such tenants; it just bounds the pathological case.
+_EXACT_SCAN_CAP = 2000
 _KNOWLEDGE_HEADER = (
     "RELEVANT WEBSITE KNOWLEDGE (retrieved from the brand's own site; ground answers "
     "in these and cite the source URL when relevant):"
@@ -97,6 +101,12 @@ def _retrieve(run_or_org, query, *, k, candidates) -> list[RetrievedChunk]:
         return []
 
     rows = _vector_search(org, qvec, candidates)
+    # The partial HNSW index does not include `organization`, so pgvector filters by
+    # org only AFTER traversing the global nearest ef_search candidates. A small tenant
+    # in a large corpus can thus get zero ANN hits despite having relevant chunks. When
+    # that happens, fall back to an index-free exact scan over the org's own chunks.
+    if not rows:
+        rows = _exact_search(org, qvec, candidates)
     ranked = _mmr(rows, k=k, lambda_=_MMR_LAMBDA)
     return [_to_chunk(chunk, rel) for chunk, _emb, rel in ranked]
 
@@ -125,6 +135,32 @@ def _vector_search(org, qvec: list[float], limit: int):
         .order_by("_distance")[:limit]
     )
     return [(c, float(c._distance)) for c in qs]
+
+
+def _exact_search(org, qvec: list[float], limit: int):
+    """Index-free fallback: exact cosine over the org's own chunks, ranked in Python.
+
+    Used only when the ANN search returns nothing for this org (see caller). Bounded by
+    ``_EXACT_SCAN_CAP`` and cheap in the case that actually triggers it (a small tenant).
+    Returns ``[(chunk, distance)]`` ascending, like :func:`_vector_search`.
+    """
+    from apps.organizations.models import BrandCorpusChunk
+
+    q = np.asarray(qvec, dtype=float)
+    q_norm = float(np.linalg.norm(q)) or 1.0
+    scored: list[tuple] = []
+    chunks = BrandCorpusChunk.objects.filter(
+        organization=org, is_current=True, embedding__isnull=False
+    )[:_EXACT_SCAN_CAP]
+    for c in chunks:
+        if c.embedding is None:
+            continue
+        e = np.asarray(c.embedding, dtype=float)
+        e_norm = float(np.linalg.norm(e)) or 1.0
+        similarity = float(np.dot(q, e) / (q_norm * e_norm))
+        scored.append((c, 1.0 - similarity))  # cosine distance
+    scored.sort(key=lambda r: r[1])
+    return scored[:limit]
 
 
 def _mmr(rows, *, k, lambda_):

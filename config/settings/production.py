@@ -17,6 +17,15 @@ if not SECRET_KEY:
 
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "").split(",")
 
+# Server-side query ceilings (milliseconds), set per-connection via libpq's
+# `options`. Without these a slow query keeps running on Postgres even after
+# gunicorn kills the request at --timeout, and a blocked write can wait on a lock
+# indefinitely. Individual statements on the hot paths are sub-second; these are
+# a safety net against runaway/unbounded queries, tunable per environment.
+_STATEMENT_TIMEOUT_MS = os.getenv("DB_STATEMENT_TIMEOUT_MS", "60000")
+_LOCK_TIMEOUT_MS = os.getenv("DB_LOCK_TIMEOUT_MS", "30000")
+_PG_OPTIONS = f"-c statement_timeout={_STATEMENT_TIMEOUT_MS} -c lock_timeout={_LOCK_TIMEOUT_MS}"
+
 # Prefer DATABASE_URL (Render's default for Postgres add-ons, Neon, Supabase).
 # Falls back to the 5 DB_* env vars for self-managed Postgres setups.
 _DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -28,7 +37,9 @@ if _DATABASE_URL:
             ssl_require=True,
         ),
     }
-    DATABASES["default"].setdefault("OPTIONS", {})["connect_timeout"] = 10
+    _opts = DATABASES["default"].setdefault("OPTIONS", {})
+    _opts["connect_timeout"] = 10
+    _opts["options"] = _PG_OPTIONS
 else:
     DATABASES = {
         "default": {
@@ -41,6 +52,7 @@ else:
             "CONN_MAX_AGE": 600,
             "OPTIONS": {
                 "connect_timeout": 10,
+                "options": _PG_OPTIONS,
             },
         },
     }

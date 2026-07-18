@@ -1,107 +1,79 @@
-"""
-Management command to run due scheduled analyses and send email digests.
+"""Dispatch due scheduled analyses to the analysis worker.
+
 Usage: python manage.py run_scheduled_analyses
-Trigger via cron: */30 * * * * cd /path/to/project && python manage.py run_scheduled_analyses
+Cron:  */30 * * * * cd /path/to/project && python manage.py run_scheduled_analyses
+
+This command only *dispatches*. The work itself — re-scan, task sync, digest —
+runs on the RabbitMQ analysis worker via ``analyzer.run_scheduled_analysis``
+(see apps/analyzer/scheduled_runs.py).
+
+It used to call ``run_single_page_analysis`` inline, serially, for every due
+brand, inside a cron container with a runtime cap. One slow brand starved the
+rest and a timeout killed the batch mid-way, leaving the survivors unrun. Now the
+cron finishes in milliseconds and each brand fails independently.
+
+Claiming happens inside the task, not here: this command can overlap with itself
+(a tick that outlives its 30-minute window) and the queue is at-least-once, so
+the claim has to be where the work is.
 """
 
+from __future__ import annotations
+
 import logging
-from datetime import timedelta
 
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from apps.analyzer.email_utils import send_digest_email
-from apps.analyzer.models import AnalysisRun, ScheduledAnalysis
-from apps.analyzer.tasks import _kickoff_sitemap_audit, run_single_page_analysis
+from apps.analyzer.models import ScheduledAnalysis
 
 logger = logging.getLogger("apps")
 
 
 class Command(BaseCommand):
-    help = "Run due scheduled analyses and send email digests"
+    help = "Dispatch due scheduled analyses to the analysis worker."
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="List what is due without dispatching.",
+        )
 
     def handle(self, *args, **options):
         now = timezone.now()
-        due = ScheduledAnalysis.objects.filter(is_active=True, next_run_at__lte=now)
-        count = due.count()
+        due = list(
+            ScheduledAnalysis.objects.filter(is_active=True, next_run_at__lte=now).only("id", "email", "url")
+        )
 
-        if count == 0:
+        if not due:
             self.stdout.write("No scheduled analyses due.")
             return
 
-        self.stdout.write(f"Found {count} due scheduled analyses.")
+        if options["dry_run"]:
+            for schedule in due:
+                self.stdout.write(f"  would dispatch schedule {schedule.id} ({schedule.url})")
+            self.stdout.write(self.style.SUCCESS(f"{len(due)} due. Nothing dispatched."))
+            return
 
+        dispatched = 0
         for schedule in due:
             try:
-                self._run_one(schedule)
+                self._dispatch(schedule.id)
+                dispatched += 1
             except Exception:
-                logger.exception(f"Failed scheduled analysis for {schedule.email}")
+                logger.exception("failed to dispatch scheduled analysis %s", schedule.id)
+                self.stderr.write(f"  dispatch failed for schedule {schedule.id}")
 
-        self.stdout.write(self.style.SUCCESS(f"Processed {count} scheduled analyses."))
+        self.stdout.write(self.style.SUCCESS(f"Dispatched {dispatched} of {len(due)} due analyses."))
 
-    def _run_one(self, schedule: ScheduledAnalysis):
-        # Get previous score for comparison
-        prev_run = (
-            AnalysisRun.objects.filter(
-                organization=schedule.organization,
-                status="complete",
-            )
-            .order_by("-created_at")
-            .first()
-        )
-        prev_score = prev_run.composite_score if prev_run else None
+    def _dispatch(self, schedule_id: int) -> None:
+        """Queue the run, or execute inline when there's no broker (dev / tests)."""
+        from apps.analyzer.analysis_tasks import run_scheduled_analysis_task
+        from config.celery_rabbit import analysis_app
 
-        # Create new analysis run
-        run = AnalysisRun.objects.create(
-            organization=schedule.organization,
-            url=schedule.url,
-            email=schedule.email,
-            brand_name=schedule.brand_name,
-            run_type="single_page",
-            status="pending",
-        )
+        if analysis_app.conf.task_always_eager:
+            from apps.analyzer.scheduled_runs import execute_scheduled_analysis
 
-        self.stdout.write(f"  Running analysis for {schedule.url} (run {run.id})...")
-        # Fire the sitemap audit automatically, same as the interactive
-        # start_analysis_task path. Dispatches to a Celery worker so it crawls
-        # in the background while the main analysis runs synchronously below.
-        _kickoff_sitemap_audit(run.id)
-        run_single_page_analysis(run.id)
-
-        # Refresh from DB
-        run.refresh_from_db()
-
-        # Update schedule — one-off runs deactivate; recurring reschedule.
-        schedule.last_run_at = timezone.now()
-        schedule.last_run_slug = run.slug
-        if schedule.frequency == "once":
-            schedule.is_active = False
-            schedule.save(update_fields=["last_run_at", "last_run_slug", "is_active"])
+            execute_scheduled_analysis(schedule_id)
         else:
-            delta = timedelta(days=7) if schedule.frequency == "weekly" else timedelta(days=30)
-            schedule.next_run_at = timezone.now() + delta
-            schedule.save(update_fields=["last_run_at", "last_run_slug", "next_run_at"])
-
-        # Send email digest
-        if run.status == "complete":
-            score_change = None
-            if prev_score is not None and run.composite_score is not None:
-                score_change = round(run.composite_score - prev_score, 1)
-
-            top_recs = list(
-                run.recommendations.order_by("priority")[:3].values("title", "priority", "category")
-            )
-
-            send_digest_email(
-                to_email=schedule.email,
-                context={
-                    "brand_name": schedule.brand_name or schedule.url,
-                    "url": schedule.url,
-                    "score": round(run.composite_score or 0),
-                    "score_change": score_change,
-                    "prev_score": round(prev_score) if prev_score else None,
-                    "recommendations": top_recs,
-                    "slug": run.slug,
-                },
-            )
-            self.stdout.write(f"  Digest email sent to {schedule.email}")
+            run_scheduled_analysis_task.delay(schedule_id)

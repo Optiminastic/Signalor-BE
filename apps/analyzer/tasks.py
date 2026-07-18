@@ -169,9 +169,10 @@ def _save_probes_and_tracks(
         generate_brand_prompts,
     )
 
-    # Save visibility probes
-    for probe in probes_data:
-        AIVisibilityProbe.objects.create(analysis_run=run, **probe)
+    # Save visibility probes — one INSERT, not one per probe (no custom save()/signals).
+    AIVisibilityProbe.objects.bulk_create(
+        [AIVisibilityProbe(analysis_run=run, **probe) for probe in probes_data]
+    )
 
     em = (run.email or "").strip().lower()
     limits = get_plan_limits(run.email)
@@ -473,8 +474,8 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
         technical_details["findings"].append("crawl_timeout")
 
     recs = generate_recommendations(pillar_details)
-    for rec in recs:
-        Recommendation.objects.create(analysis_run=run, **rec)
+    # one INSERT instead of one per recommendation (finding_code set upstream; no signals).
+    Recommendation.objects.bulk_create([Recommendation(analysis_run=run, **rec) for rec in recs])
 
     # Save brand visibility
     if brand_vis_result:
@@ -882,8 +883,11 @@ def run_single_page_analysis(run_id: int):
             "ai_visibility": ai_vis_score,
         }
         recs = generate_recommendations(pillar_details, pillar_scores=pillar_scores)
-        for rec in recs:
-            Recommendation.objects.create(analysis_run=run, **rec)
+        # Fold in SiteOne technical-crawl findings as tasks (otherwise display-only).
+        if siteone_report is not None:
+            recs.extend(siteone_crawl.to_recommendations(siteone_report))
+        # one INSERT instead of one per recommendation (see note above).
+        Recommendation.objects.bulk_create([Recommendation(analysis_run=run, **rec) for rec in recs])
 
         # Save brand visibility
         if brand_vis_result:

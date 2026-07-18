@@ -1,0 +1,157 @@
+# Signalor backend — LOCAL Docker Compose stack.
+#
+# Mirrors the production stack (deploy/docker-compose.yml) so local behaves like
+# prod: same image (built from ../Dockerfile), same startup commands, the same
+# Postgres + Redis + RabbitMQ backing services, and both Celery workers. The
+# only intentional differences from prod, all because there is no TLS/Caddy
+# locally and secrets shouldn't live on a dev box:
+#   - No caddy service; `web` is published directly on http://localhost:8000.
+#   - DJANGO_SETTINGS_MODULE=config.settings.local_prod (production settings with
+#     the three TLS-only flags relaxed — see config/settings/local_prod.py).
+#   - Durable data lives in local named volumes, not the Hetzner host volume.
+#   - Image is built locally instead of pulled from GHCR.
+#
+# Usage (from the be/ directory):
+#   cp deploy/stack.local.env.example deploy/stack.local.env   # then fill blanks
+#   docker compose -f deploy/docker-compose.local.yml up --build
+#
+# Tear down (keep data):        docker compose -f deploy/docker-compose.local.yml down
+# Tear down (wipe the DB too):  docker compose -f deploy/docker-compose.local.yml down -v
+
+name: signalor-local
+
+# Shared definition for the three services that run the app image.
+x-app: &app
+  build:
+    context: ..
+    dockerfile: Dockerfile
+    # Optional: bake the SiteOne Linux binary into the image. Set SITEONE_URL
+    # (+ SITEONE_SHA256) in your shell/.env before `docker compose build`. Unset
+    # = skipped. For quick local use, prefer the bind-mount on analysis-worker.
+    args:
+      SITEONE_URL: "${SITEONE_URL:-}"
+      SITEONE_SHA256: "${SITEONE_SHA256:-}"
+  image: signalor-be:local
+  env_file: stack.local.env
+  restart: unless-stopped
+  networks: [internal]
+
+services:
+  db:
+    # pgvector/pgvector:pg16 = Postgres 16 with the `vector` extension bundled.
+    # A migration runs CREATE EXTENSION "vector" (pgvector.django.VectorField);
+    # plain postgres:16-alpine lacks it and every migrate crashes. Data dir is
+    # compatible with a PG16 volume.
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    # POSTGRES_* come from stack.local.env. Published to the host so you can
+    # connect with a local psql/GUI client if you want.
+    env_file: stack.local.env
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [internal]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [internal]
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    restart: unless-stopped
+    # 5672 = AMQP broker, 15672 = management UI (http://localhost:15672,
+    # guest/guest) for inspecting the analysis queue.
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [internal]
+
+  web:
+    <<: *app
+    # Published directly to the host — hit the API at http://localhost:8000.
+    ports:
+      - "8000:8000"
+    environment:
+      PORT: "8000"
+      PYTHONPATH: /app
+      # Enqueue analysis runs to the in-stack RabbitMQ (else they'd run inline
+      # in a web thread). Must match the analysis-worker's broker.
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
+    # Same as prod: migrate, then exec gunicorn as PID 1. opentelemetry-instrument
+    # is kept for parity; OTEL_SDK_DISABLED=true in stack.local.env makes it a no-op.
+    command:
+      - sh
+      - -c
+      - >
+        python manage.py migrate --no-input &&
+        exec opentelemetry-instrument gunicorn config.wsgi:application
+        --bind 0.0.0.0:8000 --workers 2 --threads 4 --timeout 600
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; socket.create_connection(('127.0.0.1', 8000), timeout=5)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  worker:
+    <<: *app
+    # Sitemap audits etc. — Redis broker (config Celery app).
+    command: ["celery", "-A", "config", "worker", "--loglevel=info", "--concurrency=2"]
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      web: {condition: service_started}
+
+  analysis-worker:
+    <<: *app
+    # analyze / re-analyze pipeline — RabbitMQ broker. -Q analysis: consume the
+    # work queue only, not the dead-letter queue.
+    command: ["celery", "-A", "config.celery_rabbit", "worker", "-Q", "analysis", "--loglevel=info", "--concurrency=2"]
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
+    volumes:
+      # Local SiteOne crawler (Linux x64). To enable: put the linux binary somewhere,
+      # set SITEONE_BIN=/abs/host/path/siteone-crawler and SIGNALOR_USE_SITEONE=true
+      # (in stack.local.env), then `up -d`. Unset SITEONE_BIN mounts /dev/null (a no-op),
+      # so the stack runs fine with SiteOne simply disabled.
+      - ${SITEONE_BIN:-/dev/null}:/usr/local/bin/siteone-crawler:ro
+    depends_on:
+      db: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+      web: {condition: service_started}
+
+volumes:
+  pgdata:
+  redis_data:
+  rabbitmq_data:
+
+networks:
+  internal:

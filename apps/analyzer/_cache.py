@@ -78,7 +78,9 @@ def invalidate_run_aggregates(slug: str) -> None:
     """
     if not slug:
         return
-    keys = [f"sov:{slug}", f"cite:{slug}", f"trend:{slug}"]
+    # ai_rec_summary (written in views.py, 600s TTL) must be invalidated here too, or
+    # the Overview citation card serves stale numbers for up to 10 min after a rerun.
+    keys = [f"sov:{slug}", f"cite:{slug}", f"trend:{slug}", f"ai_rec_summary:{slug}"]
     try:
         cache.delete_many(keys)
     except Exception:
