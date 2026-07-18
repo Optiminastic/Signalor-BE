@@ -45,7 +45,7 @@ x-app: &app
 
 services:
   db:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     # POSTGRES_* come from stack.env (injected as container env). We do NOT use
     # ${DB_*} here: compose-file interpolation reads the shell / default .env
