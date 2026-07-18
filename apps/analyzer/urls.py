@@ -1,9 +1,11 @@
 from django.urls import path
 
+from .agent_views import AgentPlanRefreshView, AgentPlanView
 from .views import (
     AchievementsView,
     ActionStatsView,
     ActionTemplatesView,
+    AnswerGapFaqView,
     # Sitemap audit
     AgentLogView,
     AiChatView,
@@ -13,6 +15,7 @@ from .views import (
     AnalysisRunListView,
     AnalysisRunStatusView,
     ApplyGeoFixesAndReanalyzeView,
+    AssignActionView,
     AutoFixApproveView,
     AutoFixPreviewView,
     AutoFixVerifyView,
@@ -22,22 +25,34 @@ from .views import (
     BacklinkOrderConfirmPaymentView,
     BacklinkOrderDetailView,
     BacklinkOrderListCreateView,
+    BacklinkScheduleView,
     BlogAutomationCalendarView,
     BlogAutomationConfigView,
     BlogAutomationGenerateView,
     BlogAutomationProcessDueView,
     BlogAutomationPublishView,
+    BlogAutoPublishAllView,
     BlogComposerGenerateView,
     BlogComposerPostsView,
     BlogComposerPublishView,
     BlogComposerTopicsView,
     BlogComposerUploadImageView,
+    BlogGenerateView,
+    BlogPostDetailView,
+    BlogPublishNetworkView,
+    BlogSourcesView,
+    BlogTitleIdeasView,
     BulkCreateUserActionView,
     CitationSourcesView,
     CitationTrendView,
     CompetitorDetailView,
     CompetitorListCreateView,
     CompetitorPromptListView,
+    CompetitorVisibilityMatrixView,
+    CrawlerIngestView,
+    CrawlerLogsView,
+    ShoppingReadinessView,
+    ShoppingSyncView,
     ContentApplyElementView,
     ContentPageFieldsView,
     # Content optimisation (Cursor-style edit + save)
@@ -51,11 +66,13 @@ from .views import (
     CrawlEssentialsStatusView,
     CreateUserActionView,
     DomainAnalyticsView,
+    DomainRatingFreeView,
     ExportPDFView,
     GeneratePromptsView,
     GeoImprovementsView,
     HealthCheckView,
     OnboardingStartView,
+    OurBacklinksView,
     OverviewInsightsView,
     PromptBacklinksView,
     PromptDeleteView,
@@ -66,6 +83,8 @@ from .views import (
     PromptResultDetailView,
     PromptSchemaView,
     PromptWikipediaDraftView,
+    PublicBlogDetailView,
+    PublicBlogListView,
     QuickActionView,
     # Schema watchtower
     RankAuditDetailView,
@@ -88,6 +107,7 @@ from .views import (
     # Sitemap audit
     SitemapAuditStartView,
     StartAnalysisView,
+    SyncActionsView,
     TopSourcesView,
     UpdateUserActionView,
     UserActionListView,
@@ -101,6 +121,7 @@ app_name = "analyzer"
 
 urlpatterns = [
     path("health/", HealthCheckView.as_view(), name="health-check"),
+    path("tools/domain-rating/", DomainRatingFreeView.as_view(), name="domain-rating-free"),
     path("onboarding-start/", OnboardingStartView.as_view(), name="onboarding-start"),
     path("analyze/", StartAnalysisView.as_view(), name="start-analysis"),
     path("generate-prompts/", GeneratePromptsView.as_view(), name="generate-prompts"),
@@ -154,6 +175,20 @@ urlpatterns = [
         ShareOfVoiceCompetitorsView.as_view(),
         name="share-of-voice-competitors",
     ),
+    path(
+        "runs/s/<str:slug>/competitor-visibility-matrix/",
+        CompetitorVisibilityMatrixView.as_view(),
+        name="competitor-visibility-matrix",
+    ),
+    path(
+        "runs/s/<str:slug>/answer-gap-faq/",
+        AnswerGapFaqView.as_view(),
+        name="answer-gap-faq",
+    ),
+    path("crawler/ingest/", CrawlerIngestView.as_view(), name="crawler-ingest"),
+    path("runs/s/<str:slug>/crawler-logs/", CrawlerLogsView.as_view(), name="crawler-logs"),
+    path("runs/s/<str:slug>/shopping/", ShoppingReadinessView.as_view(), name="shopping-readiness"),
+    path("runs/s/<str:slug>/shopping/sync/", ShoppingSyncView.as_view(), name="shopping-sync"),
     path("runs/s/<str:slug>/top-sources/", TopSourcesView.as_view(), name="top-sources"),
     path("runs/s/<str:slug>/citation-trend/", CitationTrendView.as_view(), name="citation-trend"),
     path("runs/s/<str:slug>/citations/", CitationSourcesView.as_view(), name="citation-sources"),
@@ -218,6 +253,13 @@ urlpatterns = [
     path("runs/s/<str:slug>/sitemap/", SitemapAuditDetailView.as_view(), name="sitemap-audit-detail"),
     path("runs/s/<str:slug>/sitemap/start/", SitemapAuditStartView.as_view(), name="sitemap-audit-start"),
     path("runs/s/<str:slug>/agent-log/", AgentLogView.as_view(), name="agent-log"),
+    # Growth Agent — today's ranked task plan (ownership-checked, not AllowAny)
+    path("runs/s/<str:slug>/agent/plan/", AgentPlanView.as_view(), name="agent-plan"),
+    path(
+        "runs/s/<str:slug>/agent/plan/refresh/",
+        AgentPlanRefreshView.as_view(),
+        name="agent-plan-refresh",
+    ),
     # Schema watchtower
     path("runs/s/<str:slug>/schema-watch/", SchemaWatchDetailView.as_view(), name="schema-watch-detail"),
     path("runs/s/<str:slug>/schema-watch/start/", SchemaWatchStartView.as_view(), name="schema-watch-start"),
@@ -232,6 +274,49 @@ urlpatterns = [
     path("runs/s/<str:slug>/prompts/<int:track_id>/rank/", PromptRankView.as_view(), name="prompt-rank"),
     # Backlink marketplace
     path("runs/s/<str:slug>/backlinks/free/", RunBacklinkFreeView.as_view(), name="backlink-free"),
+    path("runs/s/<str:slug>/backlinks/our/", OurBacklinksView.as_view(), name="backlink-our"),
+    path(
+        "runs/s/<str:slug>/backlinks/schedule/",
+        BacklinkScheduleView.as_view(),
+        name="backlink-schedule",
+    ),
+    # Public blog feed for the satellite sites (read-only, no auth; proxies S3).
+    path("public/blog/<str:site>/", PublicBlogListView.as_view(), name="public-blog-list"),
+    path(
+        "public/blog/<str:site>/<str:post_slug>/",
+        PublicBlogDetailView.as_view(),
+        name="public-blog-detail",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/generate/",
+        BlogGenerateView.as_view(),
+        name="blog-generate",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/auto-publish-all/",
+        BlogAutoPublishAllView.as_view(),
+        name="blog-auto-publish-all",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/item/<str:site>/<str:post_slug>/",
+        BlogPostDetailView.as_view(),
+        name="blog-post-detail",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/sources/",
+        BlogSourcesView.as_view(),
+        name="blog-sources",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/title-ideas/",
+        BlogTitleIdeasView.as_view(),
+        name="blog-title-ideas",
+    ),
+    path(
+        "runs/s/<str:slug>/blog/publish-network/",
+        BlogPublishNetworkView.as_view(),
+        name="blog-publish-network",
+    ),
     path("runs/s/<str:slug>/backlinks/catalog/", BacklinkCatalogView.as_view(), name="backlink-catalog"),
     path(
         "runs/s/<str:slug>/backlinks/orders/", BacklinkOrderListCreateView.as_view(), name="backlink-orders"
@@ -297,6 +382,8 @@ urlpatterns = [
     # Action endpoints
     path("actions/", UserActionListView.as_view(), name="action-list"),
     path("actions/create/", CreateUserActionView.as_view(), name="action-create"),
+    path("actions/sync/", SyncActionsView.as_view(), name="action-sync"),
+    path("actions/<int:action_id>/assign/", AssignActionView.as_view(), name="action-assign"),
     path("actions/<int:action_id>/", UpdateUserActionView.as_view(), name="action-update"),
     path("actions/crawl-essentials/", CrawlEssentialsStatusView.as_view(), name="crawl-essentials"),
     path(

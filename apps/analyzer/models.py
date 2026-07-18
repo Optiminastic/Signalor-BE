@@ -2,6 +2,13 @@ import secrets
 from datetime import time
 
 from django.db import models
+from pgvector.django import VectorField
+
+# Single source of truth for the embedding width (see organizations.models). Importing
+# it keeps the response-cache vector column in lockstep with BrandCorpusChunk.
+# analyzer -> organizations is the allowed dependency direction (organizations refers to
+# analyzer only via string FKs), so this import cannot cycle.
+from apps.organizations.models import EMBEDDING_DIMENSIONS
 
 
 def _generate_slug():
@@ -119,6 +126,58 @@ class Competitor(models.Model):
         return f"{self.name} ({self.url})"
 
 
+class CrawlerHit(models.Model):
+    """One AI-crawler request against the brand's site, reported by the site's
+    edge/log integration through the crawler ingest endpoint. Only requests
+    whose user agent matches a known AI crawler are ever stored."""
+
+    organization = models.ForeignKey(
+        "organizations.Organization", on_delete=models.CASCADE, related_name="crawler_hits"
+    )
+    bot = models.CharField(max_length=40)
+    path = models.CharField(max_length=512, blank=True, default="/")
+    user_agent = models.CharField(max_length=300, blank=True, default="")
+    hit_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["organization", "hit_at"])]
+
+    def __str__(self):
+        return f"{self.bot} {self.path} @ {self.hit_at:%Y-%m-%d %H:%M}"
+
+
+class ShopifyProduct(models.Model):
+    """AI-shopping readiness snapshot of one store product, refreshed by the
+    shopping sync endpoint from the connected Shopify integration."""
+
+    organization = models.ForeignKey(
+        "organizations.Organization", on_delete=models.CASCADE, related_name="shopify_products"
+    )
+    product_id = models.CharField(max_length=40)
+    handle = models.CharField(max_length=255, blank=True, default="")
+    title = models.CharField(max_length=512, blank=True, default="")
+    status = models.CharField(max_length=20, blank=True, default="")
+    price = models.CharField(max_length=40, blank=True, default="")
+    description_chars = models.IntegerField(default=0)
+    images_total = models.IntegerField(default=0)
+    images_missing_alt = models.IntegerField(default=0)
+    readiness = models.IntegerField(default=0)
+    issues = models.JSONField(default=list)
+    synced_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "product_id"], name="uniq_org_shopify_product"
+            )
+        ]
+        indexes = [models.Index(fields=["organization", "readiness"])]
+
+    def __str__(self):
+        return f"{self.title} ({self.readiness}/100)"
+
+
 class AIVisibilityProbe(models.Model):
     analysis_run = models.ForeignKey(AnalysisRun, on_delete=models.CASCADE, related_name="ai_probes")
     prompt_used = models.TextField()
@@ -162,6 +221,14 @@ class Recommendation(models.Model):
     finding_key = models.CharField(max_length=80, blank=True, default="")
     # Where this rec came from — "analyzer" (pipeline) or "ai_insight" (GA/GSC AI insights).
     source = models.CharField(max_length=20, choices=Source.choices, default=Source.ANALYZER, db_index=True)
+
+    # ── Daily re-check / re-prioritize state ──────────────────────────────────
+    # Last time the daily job re-verified this fix against the live site.
+    last_checked_at = models.DateTimeField(null=True, blank=True)
+    # Re-ranked order among still-open recs for this run (1 = highest). 0 = unranked.
+    daily_priority_rank = models.IntegerField(default=0)
+    # The single "priority fix of the day" surfaced at the top of Tasks.
+    is_top_fix = models.BooleanField(default=False)
 
     class Meta:
         ordering = ["priority", "pillar"]
@@ -242,6 +309,9 @@ class UserAction(models.Model):
         VERIFIED = "verified", "Verified (Score Improved)"
 
     user_email = models.EmailField(db_index=True)
+    # Agency teammate this task is assigned to (blank = unassigned). Distinct from
+    # user_email (the owner/creator — the agency admin for materialized tasks).
+    assignee_email = models.EmailField(db_index=True, blank=True, default="")
     analysis_run = models.ForeignKey(
         AnalysisRun, on_delete=models.CASCADE, related_name="user_actions", null=True, blank=True
     )
@@ -278,6 +348,9 @@ class UserAction(models.Model):
             models.Index(fields=["user_email", "status"]),
             models.Index(fields=["user_email", "-created_at"]),
             models.Index(fields=["analysis_run_id"]),
+            # Agency-member task list filters on assignee_email then status
+            # (UserActionListView); mirror the owner (user_email, status) index.
+            models.Index(fields=["assignee_email", "status"]),
         ]
 
     def __str__(self):
@@ -672,6 +745,9 @@ class PromptResult(models.Model):
         PERPLEXITY = "perplexity", "Perplexity"
         GOOGLE = "google", "Google"
         BING = "bing", "Bing"
+        DEEPSEEK = "deepseek", "DeepSeek"
+        GROK = "grok", "Grok"
+        LLAMA = "llama", "Meta Llama"
 
     class Sentiment(models.TextChoices):
         POSITIVE = "positive", "Positive"
@@ -1029,6 +1105,42 @@ class ScheduledAnalysis(models.Model):
 
     def __str__(self):
         return f"Schedule<{self.email} {self.frequency}>"
+
+
+class BacklinkSchedule(models.Model):
+    """Per-brand daily auto-backlinks schedule.
+
+    When active, the ``run_backlink_schedules`` cron command publishes one fresh
+    blog to each of the 5 satellite sites (via ``services.backlink_engine``)
+    every 24 hours, growing the brand's backlink footprint over time. Mirrors
+    ``ScheduledAnalysis``: a per-row ``next_run_at`` the command filters on and
+    bumps by one day after each run.
+    """
+
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="backlink_schedules",
+        null=True,
+        blank=True,
+    )
+    email = models.EmailField(db_index=True)
+    run_slug = models.CharField(max_length=20, blank=True, default="")  # context run; refreshed to latest
+    is_active = models.BooleanField(default=True)
+    next_run_at = models.DateTimeField()
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    last_batch_count = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [("organization", "email")]
+        indexes = [
+            models.Index(fields=["next_run_at", "is_active"]),
+        ]
+
+    def __str__(self):
+        return f"BacklinkSchedule<{self.email} active={self.is_active}>"
 
 
 class AutoFixJob(models.Model):
@@ -1668,3 +1780,152 @@ class ContentSuggestion(models.Model):
 
     def __str__(self):
         return f"ContentSuggestion<{self.target_field} {self.url}>"
+
+
+class BlogPost(models.Model):
+    """A blog post published to a satellite site — stored in the SHARED blog DB.
+
+    No FKs (it lives in a separate DB the satellite sites read standalone). ``site``
+    separates the 5 sites; ``brand_ref`` + ``brand_url`` let Signalor's "Our
+    backlinks" tab filter to a brand. Signalor writes these rows; sites read them.
+    Routed to the ``blog`` database via config.db_router.BlogRouter.
+    """
+
+    class Site(models.TextChoices):
+        RESEARCH = "research", "Research"
+        LISTICALS = "listicals", "Listicals"
+        MARKET_TRENDS = "market_trends", "Market Trends"
+        COMPARISON = "comparison", "Comparison"
+        STEP_GUIDE = "step_guide", "Step Guide"
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        PUBLISHED = "published", "Published"
+
+    site = models.CharField(max_length=20, choices=Site.choices, db_index=True)
+    slug = models.CharField(max_length=160, db_index=True)
+    title = models.CharField(max_length=300)
+    description = models.TextField(blank=True, default="")
+    content_html = models.TextField(blank=True, default="")
+    image_url = models.URLField(max_length=2048, blank=True, default="")
+    category = models.CharField(max_length=80, blank=True, default="")
+    # The brand domain the post links back to (the backlink target).
+    brand_url = models.URLField(max_length=2048, blank=True, default="")
+    # String ref to the Signalor org/brand (no cross-DB FK) for dashboard filtering.
+    brand_ref = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    source = models.CharField(max_length=20, default="signalor")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PUBLISHED)
+    published_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-published_at", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["site", "slug"], name="uniq_blogpost_site_slug"),
+        ]
+        indexes = [
+            models.Index(fields=["site", "status"]),
+            models.Index(fields=["brand_ref"]),
+        ]
+
+    def __str__(self):
+        return f"BlogPost<{self.site}/{self.slug}>"
+
+
+class PromptEvalLog(models.Model):
+    """A single prompt-evaluation result (Epic 6).
+
+    One row per golden case (or live generation) judged by the LLM-as-judge. Persisting
+    prompt name + version alongside the faithfulness/relevance/format scores and token
+    usage is what makes prompt changes measurable over time and lets an eval run gate CI.
+    """
+
+    class Mode(models.TextChoices):
+        RECORDED = "recorded", "Recorded known-good"
+        LIVE = "live", "Live generation"
+
+    prompt_name = models.CharField(max_length=64, db_index=True)
+    prompt_version = models.CharField(max_length=16)
+    case_id = models.CharField(max_length=128, blank=True, default="")
+    mode = models.CharField(max_length=12, choices=Mode.choices, default=Mode.RECORDED)
+
+    faithfulness = models.FloatField(default=0.0)
+    relevance = models.FloatField(default=0.0)
+    format_score = models.FloatField(default=0.0)
+    passed = models.BooleanField(default=False, db_index=True)
+    rationale = models.TextField(blank=True, default="")
+
+    prompt_tokens = models.PositiveIntegerField(default=0)
+    completion_tokens = models.PositiveIntegerField(default=0)
+    total_tokens = models.PositiveIntegerField(default=0)
+    # [{"source_url": ..., "score": ...}] when the evaluated prompt used retrieval.
+    retrieved_chunks = models.JSONField(default=list, blank=True)
+
+    # Provenance only; a deleted run must not delete its eval history.
+    source_run = models.ForeignKey(
+        "analyzer.AnalysisRun",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="prompt_eval_logs",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["prompt_name", "prompt_version"]),
+            models.Index(fields=["prompt_name", "passed"]),
+        ]
+
+    def __str__(self):
+        return f"PromptEvalLog<{self.prompt_name}/{self.prompt_version}:{'pass' if self.passed else 'fail'}>"
+
+
+class LLMResponseCache(models.Model):
+    """Cached LLM responses for repeat prompts (Epic 7).
+
+    Two-tier lookup: an exact ``prompt_hash`` match (free, zero-risk) and, failing that,
+    a pgvector cosine search over ``prompt_embedding`` with a conservative similarity
+    floor. Both are constrained to the same SCOPE -- (purpose, model_key, organization) --
+    which is the safety property: two brands can never share a cache entry.
+
+    Opt-in per call site (``ask_llm(cache=True)``); entries expire via ``expires_at``.
+    """
+
+    # Scope. A lookup must match all three, so a hit can never cross brands/purposes.
+    purpose = models.CharField(max_length=128, db_index=True)
+    model_key = models.CharField(max_length=64)
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="llm_response_cache",
+    )
+
+    # sha256 of the normalized prompt; the exact-match fast path.
+    prompt_hash = models.CharField(max_length=64, db_index=True)
+    prompt_text = models.TextField(blank=True, default="")  # truncated, for debugging
+    prompt_embedding = VectorField(dimensions=EMBEDDING_DIMENSIONS, null=True, blank=True)
+    response_text = models.TextField()
+
+    hit_count = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["purpose", "model_key", "organization", "prompt_hash"],
+                name="uniq_llm_cache_scope_hash",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["purpose", "model_key", "organization"]),
+            models.Index(fields=["expires_at"]),
+        ]
+
+    def __str__(self):
+        return f"LLMResponseCache<{self.purpose}:{self.prompt_hash[:8]}>"

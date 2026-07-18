@@ -1,0 +1,24 @@
+Create an llms.txt file following the llmstxt.org specification.
+
+BRAND: {{ brand }}
+URL: {{ url }}
+INSTRUCTIONS: {{ action }}
+
+The llms.txt format is Markdown with this EXACT structure:
+
+# {{ brand }}
+
+> One sentence describing what this site/business is about.
+
+## Section Name
+
+- [Page Title](https://full-url): Brief description of the page
+
+RULES:
+1. Start with H1 (# Brand Name) — exactly one
+2. Blockquote (>) with a one-line description right after H1
+3. Use H2 (##) for sections: Products, Pages, Info, etc.
+4. Each item is a Markdown link with description: - [Title](URL): Description
+5. Use REAL URLs from the site (based on the URL pattern)
+6. Keep it concise — table of contents, NOT essays
+7. Return ONLY the markdown content. No code blocks.

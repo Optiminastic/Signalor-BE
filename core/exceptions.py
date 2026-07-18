@@ -147,6 +147,30 @@ def _render(detail: str, code: str, status_code: int) -> Response:
     )
 
 
+# Envelope keys that are metadata, not a field error to surface as `detail`.
+_ENVELOPE_KEYS = frozenset({"detail", "code", "status_code", "extra"})
+
+
+def _first_field_message(data: Any) -> str | None:
+    """First human-readable field error from a DRF validation payload.
+
+    DRF renders field errors as ``{"field": ["message", …]}``. Return the first
+    such message so it can be promoted to ``detail`` instead of a generic string.
+    """
+    if not isinstance(data, dict):
+        return None
+    for key, value in data.items():
+        if key in _ENVELOPE_KEYS:
+            continue
+        if isinstance(value, str) and value.strip():
+            return value
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    return item
+    return None
+
+
 def _handle_app_error(exc: AppError) -> Response:
     payload: dict[str, Any] = {
         "detail": exc.detail,
@@ -241,7 +265,9 @@ def custom_exception_handler(exc, context):
     if response is not None:
         # Normalize shape: ensure detail + code + status_code are present.
         data = response.data if isinstance(response.data, dict) else {"detail": str(response.data)}
-        data.setdefault("detail", "Request failed.")
+        # Prefer a real field-level message (e.g. {"org_id": ["…"]}) over the
+        # generic fallback so the client shows what actually went wrong.
+        data.setdefault("detail", _first_field_message(data) or "Request failed.")
         data.setdefault("code", _drf_code_for(exc))
         data["status_code"] = response.status_code
         response.data = data

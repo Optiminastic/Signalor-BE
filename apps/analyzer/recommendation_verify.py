@@ -19,6 +19,26 @@ from .pipeline.technical import _check_robots_allows_ai
 
 logger = logging.getLogger("apps")
 
+# ── Per-run live-page cache ───────────────────────────────────────────────────
+# The daily re-check verifies many recommendations for the same run. To avoid
+# re-fetching the live page once per recommendation, a caller can wrap a batch in
+# begin_html_cache()/end_html_cache(): _fetch_html then fetches the URL once per
+# run and returns a FRESH BeautifulSoup each call (so individual verifiers that
+# mutate the soup can't corrupt each other). Disabled by default, so the
+# interactive verify endpoint behaves exactly as before.
+_html_cache: dict[int, str] | None = None
+
+
+def begin_html_cache() -> None:
+    global _html_cache
+    _html_cache = {}
+
+
+def end_html_cache() -> None:
+    global _html_cache
+    _html_cache = None
+
+
 # Pipeline finding key → verifier kind (on-page recommendations only).
 FINDING_TO_VERIFY_KIND: dict[str, str] = {
     "no_h1": "h1_present",
@@ -105,17 +125,29 @@ def _base_host(url: str) -> str:
 def _fetch_html(run: AnalysisRun) -> tuple[str, BeautifulSoup | None]:
     from .pipeline.crawler import crawl_page
 
+    # Batch cache (daily re-check): reuse the fetched HTML, hand back a fresh soup.
+    if _html_cache is not None and run.id in _html_cache:
+        html = _html_cache[run.id]
+        return html, (BeautifulSoup(html, "html.parser") if html else None)
+
+    def _remember(html: str) -> None:
+        if _html_cache is not None:
+            _html_cache[run.id] = html
+
     cr = crawl_page(run.url)
     if cr.ok and cr.soup:
+        _remember(cr.html or "")
         return cr.html or "", cr.soup
     try:
         from .tasks import _crawl_via_integration
 
         alt = _crawl_via_integration(run)
         if alt and alt.ok and alt.soup:
+            _remember(alt.html or "")
             return alt.html or "", alt.soup
     except Exception as exc:
         logger.warning("verify: integration crawl fallback failed run=%s: %s", run.id, exc)
+    _remember("")
     return "", None
 
 

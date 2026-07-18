@@ -28,11 +28,13 @@ grpcio-status==1.68.0
 html5lib==1.1
 httplib2==0.31.2
 idna==3.11
+Jinja2==3.1.6
 joblib==1.5.3
 Levenshtein==0.27.3
 lxml==6.0.2
 nltk==3.9.2
 pillow==12.1.1
+pgvector==0.3.6
 proto-plus==1.27.1
 protobuf==5.29.2
 psycopg2-binary==2.9.10
@@ -66,6 +68,7 @@ whitenoise==6.11.0
 weasyprint==62.3
 xhtml2pdf==0.2.16
 gunicorn==25.1.0
+boto3==1.43.37
 googlesearch-python==1.3.0
 google-analytics-admin==0.27.0
 google-analytics-data==0.20.0
@@ -90,3 +93,13 @@ apscheduler>=3.10,<4
 # threading.Thread; migrate piecemeal as new tasks land.
 celery[redis]>=5.4,<6
 sentry-sdk>=2.0,<3
+
+# Crawlee — in-process HTTP crawler for the analyzer site crawl (crawl_site)
+crawlee>=1.7,<2
+
+# Multiprocess-safe rotating file log handler. Stock RotatingFileHandler cannot
+# rotate django.log on Windows when the dev-server autoreloader (2 procs) or the
+# analyzer thread-pool hold the file open — os.rename() raises WinError 32.
+# ConcurrentRotatingFileHandler coordinates rotation with a portalocker file lock.
+# (Pulls pywin32 on Windows only, via its own env markers.)
+concurrent-log-handler>=0.9,<1

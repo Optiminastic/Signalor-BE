@@ -10,11 +10,10 @@ Results are not persisted as ORM rows (no model is keyed to AnalysisRun for
 opportunities). Instead the calling view caches the latest list inside
 `BrandKit.payload` so reloads don't re-hit the LLM.
 """
+
 from __future__ import annotations
 
-import json
 import logging
-import re
 
 from apps.analyzer.models import AnalysisRun
 from apps.analyzer.pipeline.llm import ask_llm
@@ -24,20 +23,12 @@ logger = logging.getLogger("apps")
 VALID_CATEGORIES = {"directory", "review", "press", "forum", "resource", "other"}
 
 
-def _strip_code_fences(text: str) -> str:
-    text = (text or "").strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    return text.strip()
-
-
 def _build_prompt(brand_name: str, brand_url: str, brand_description: str = "") -> str:
     desc_block = f"\nWHAT THEY DO: {brand_description}" if brand_description else ""
     return f"""You are a backlink acquisition strategist helping a brand earn citations on the open web.
 
-BRAND: {brand_name or '(no name)'}
-BRAND SITE: {brand_url or '(unknown)'}{desc_block}
+BRAND: {brand_name or "(no name)"}
+BRAND SITE: {brand_url or "(unknown)"}{desc_block}
 
 Generate 12 high-value, REAL, currently-existing sites where this brand can submit a listing, claim a profile, contribute content, or earn a citation. Choose targets that are:
 - Topically relevant to the brand's industry / niche
@@ -70,11 +61,12 @@ URLs MUST be the actual submission/signup/contribution page if known, otherwise 
 
 
 def _parse_response(raw: str) -> list[dict]:
-    cleaned = _strip_code_fences(raw)
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError as exc:
-        logger.warning("site_backlink_opportunities: JSON parse failed: %s; raw=%r", exc, cleaned[:300])
+    # Epic 8: shared extractor (was a private fence-stripper + json.loads).
+    from .structured import extract_json
+
+    data = extract_json(raw, expect=list)
+    if data is None:
+        logger.warning("site_backlink_opportunities: JSON parse failed; raw=%r", (raw or "")[:300])
         return []
     if not isinstance(data, list):
         logger.warning(
@@ -101,15 +93,17 @@ def _parse_response(raw: str) -> list[dict]:
         except (TypeError, ValueError):
             priority = 2
         priority = max(1, min(3, priority))
-        out.append({
-            "id": idx,
-            "name": name[:200],
-            "description": (row.get("description") or "").strip()[:400],
-            "rationale": (row.get("rationale") or "").strip()[:400],
-            "submit_url": url[:2048],
-            "category": category,
-            "priority": priority,
-        })
+        out.append(
+            {
+                "id": idx,
+                "name": name[:200],
+                "description": (row.get("description") or "").strip()[:400],
+                "rationale": (row.get("rationale") or "").strip()[:400],
+                "submit_url": url[:2048],
+                "category": category,
+                "priority": priority,
+            }
+        )
     return out
 
 

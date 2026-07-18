@@ -16,7 +16,9 @@ staging.env
 # Django
 # db.sqlite3
 *.log
+*.log.*
 logs/*.log
+logs/*.log.*
 staticfiles/
 media/
 
@@ -49,3 +51,6 @@ deploy/stack.env
 # Cloudflare Origin Certificate (private key) — never commit
 deploy/certs/
 origin.cert
+# concurrent-log-handler runtime lock files
+logs/*.lock
+deploy/stack.local.env

@@ -38,6 +38,8 @@ from .models import (
     ACHIEVEMENTS_INFO,
     ACTION_TEMPLATES,
     AnalysisRun,
+    CrawlerHit,
+    ShopifyProduct,
     BlogAutomationConfig,
     BlogAutomationJob,
     Competitor,
@@ -316,13 +318,56 @@ def _resolve_blog_integration(email: str):
     return None, "none"
 
 
+def _short_title(text: str, max_words: int = 16) -> str:
+    """Clean + clamp a blog title to a short headline (default ≤16 words).
+
+    Strips trailing "Guide for <domain>" / "for <domain>" boilerplate and any
+    leading lowercase angle phrasing, then trims to max_words.
+    """
+    import re as _re
+
+    t = " ".join(str(text or "").split())
+    # Drop trailing "... Guide for example.com" / "... for example.com"
+    t = _re.sub(r"\s+(?:guide\s+)?for\s+[\w.-]+\.[a-z]{2,}\s*$", "", t, flags=_re.I)
+    t = t.strip(" -–—:") or "Untitled"
+    words = t.split()
+    if len(words) > max_words:
+        t = " ".join(words[:max_words]).rstrip(" ,.;:") + "…"
+    return t[0].upper() + t[1:] if t else t
+
+
 def _generate_blog_draft(
     site_url: str,
     topic: str,
     keywords: list[str],
     recommendations: list[str],
+    length: str = "medium",
+    sources: list | None = None,
 ) -> dict:
     from .pipeline.llm import ask_llm
+
+    word_target, min_words, max_tokens = {
+        "short": ("about 500 words", 450, 1400),
+        "medium": ("1000-1500 words", 1000, 3200),
+        "long": ("1500-3000 words", 1800, 6000),
+    }.get((length or "medium").lower(), ("1000-1500 words", 1000, 3200))
+
+    src_lines = []
+    for s in sources or []:
+        if isinstance(s, dict):
+            name = (s.get("name") or "").strip()
+            url = (s.get("url") or "").strip()
+            label = f"{name} ({url})" if url else name
+        else:
+            label = str(s).strip()
+        if label:
+            src_lines.append(label)
+    sources_block = (
+        "\nTake reference and inspiration from these sources (cite or link a couple "
+        "where it reads naturally):\n" + "\n".join(f"- {x}" for x in src_lines)
+        if src_lines
+        else ""
+    )
 
     prompt = f"""
 You are an expert SEO + GEO content strategist.
@@ -333,30 +378,38 @@ Primary Topic: {topic}
 Target Keywords: {", ".join(keywords) if keywords else "none"}
 Technical recommendations to align with:
 {chr(10).join(f"- {item}" for item in recommendations[:6]) if recommendations else "- Improve AI visibility and crawlability"}
+{sources_block}
 
 Return STRICT JSON only with keys:
 title, slug, meta_description, excerpt, content_markdown, tags
 
 Requirements:
-- title: compelling and specific
+- title: a punchy headline, MAX 12 words. Do NOT restate the prompt verbatim and
+  do NOT append the site name or "Guide for ...".
 - slug: URL-safe
 - meta_description: max 160 chars
 - excerpt: 2-3 sentences
-- content_markdown: 1200-1800 words, clear H2/H3 headings, actionable sections
+- meta_description: ALWAYS write a 140-160 char SEO summary (never leave blank)
+- content_markdown: write {word_target} — HARD requirement: the body MUST be at
+  least {min_words} words. Do NOT stop early or summarize; use multiple H2/H3
+  sections with examples and actionable detail to reach the length.
+- content_markdown MUST include 1-2 natural, contextual links back to the brand
+  site ({site_url}) using markdown link syntax [anchor]({site_url}), placed where
+  they read naturally — these are the backlinks.
 - tags: array of 4-8 short tags
 - Mention practical steps readers can apply.
 """
 
     raw = ask_llm(
         prompt=prompt.strip(),
-        preferred_provider="gemini",
-        max_tokens=2200,
+        preferred_provider="opus",
+        max_tokens=max_tokens,
         temperature=0.5,
         purpose="actions.blog_automation.generate",
     )
 
     parsed = _extract_blog_json(raw) or {}
-    title = str(parsed.get("title") or f"{topic} Guide for {urlparse(site_url).netloc}").strip()
+    title = _short_title(parsed.get("title") or topic or urlparse(site_url).netloc)
     slug = _slugify(str(parsed.get("slug") or title))
     meta_description = str(parsed.get("meta_description") or "")[:160].strip()
     excerpt = str(parsed.get("excerpt") or "").strip()
@@ -409,14 +462,61 @@ def _parse_publish_time(raw: str | None):
 
 
 def _to_html_from_markdownish(text: str) -> str:
-    chunks = [chunk.strip() for chunk in (text or "").split("\n\n") if chunk.strip()]
-    if not chunks:
+    """Convert lightweight markdown (headings, bullet lists, bold, links) to HTML.
+
+    Markdown links ``[text](url)`` become anchors — that's how the brand backlink
+    is rendered on the satellite sites.
+    """
+    import html as _html
+    import re as _re
+
+    raw = (text or "").strip()
+    if not raw:
         return "<p></p>"
-    html_chunks = []
-    for chunk in chunks:
-        chunk_html = chunk.replace("\n", "<br/>")
-        html_chunks.append(f"<p>{chunk_html}</p>")
-    return "".join(html_chunks)
+
+    def inline(s: str) -> str:
+        s = _html.escape(s, quote=False)
+        s = _re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r'<a href="\2">\1</a>', s)
+        s = _re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
+        return s
+
+    out: list[str] = []
+    list_buf: list[str] = []
+    para_buf: list[str] = []
+
+    def flush_list():
+        if list_buf:
+            out.append("<ul>" + "".join(f"<li>{inline(x)}</li>" for x in list_buf) + "</ul>")
+            list_buf.clear()
+
+    def flush_para():
+        if para_buf:
+            out.append(f"<p>{inline(' '.join(para_buf))}</p>")
+            para_buf.clear()
+
+    for line in raw.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            flush_para()
+            flush_list()
+            continue
+        heading = _re.match(r"^(#{1,6})\s+(.*)$", stripped)
+        if heading:
+            flush_para()
+            flush_list()
+            level = min(len(heading.group(1)), 6)
+            out.append(f"<h{level}>{inline(heading.group(2))}</h{level}>")
+            continue
+        if _re.match(r"^[-*]\s+", stripped):
+            flush_para()
+            list_buf.append(_re.sub(r"^[-*]\s+", "", stripped))
+            continue
+        flush_list()
+        para_buf.append(stripped)
+
+    flush_para()
+    flush_list()
+    return "".join(out) or "<p></p>"
 
 
 def _get_or_create_blog_config(
@@ -763,37 +863,36 @@ class StartAnalysisView(APIView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-        # Block duplicate submissions: same URL still pending/running for the same org (or user)
+        # One analysis at a time per brand: if this org already has a run in
+        # flight (on ANY url), return it instead of starting a second. Falls back
+        # to the per-(email, url) check for anonymous / no-org submissions.
+        from .run_guard import IN_FLIGHT_STATUSES, active_run_for
+
         submitted_url = data["url"]
-        in_flight_statuses = [
-            AnalysisRun.Status.PENDING,
-            AnalysisRun.Status.CRAWLING,
-            AnalysisRun.Status.ANALYZING,
-            AnalysisRun.Status.SCORING,
-        ]
         if org_id:
-            existing = AnalysisRun.objects.filter(
-                organization_id=org_id,
-                url=submitted_url,
-                status__in=in_flight_statuses,
-            ).first()
+            existing = active_run_for(Organization.objects.filter(pk=org_id).first())
         elif email:
             existing = AnalysisRun.objects.filter(
                 email=email,
                 url=submitted_url,
-                status__in=in_flight_statuses,
+                status__in=IN_FLIGHT_STATUSES,
             ).first()
         else:
             existing = None
 
         if existing:
+            same_url = existing.url == submitted_url
             return Response(
                 {
                     "id": existing.id,
                     "slug": existing.slug,
                     "url": existing.url,
                     "status": existing.status,
-                    "message": "Analysis already in progress for this URL",
+                    "message": (
+                        "Analysis already in progress for this URL"
+                        if same_url
+                        else "An analysis is already running for this brand. Only one runs at a time."
+                    ),
                 },
                 status=status.HTTP_200_OK,
             )
@@ -839,7 +938,14 @@ class StartAnalysisView(APIView):
 # worker is gone; we mark it failed on the next poll so the UI recovers on its
 # own. A single-page analysis normally finishes in well under a minute.
 _TERMINAL_RUN_STATUSES = {AnalysisRun.Status.COMPLETE, AnalysisRun.Status.FAILED}
-_STALE_RUN_TIMEOUT = timedelta(minutes=5)
+# Two timeouts, because a run can sit in two very different "not done" states:
+#   • PENDING  → queued in RabbitMQ, waiting for a free worker. This is normal
+#     and can legitimately last minutes during a burst, so give it a long grace
+#     before declaring it dead (otherwise we false-fail valid queued jobs).
+#   • running (crawling/analyzing/scoring) → a worker picked it up and refreshes
+#     updated_at as it progresses; 5 min of silence means that worker died.
+_STALE_PENDING_TIMEOUT = timedelta(minutes=30)
+_STALE_RUNNING_TIMEOUT = timedelta(minutes=5)
 
 
 class AnalysisRunBySlugView(APIView):
@@ -865,14 +971,21 @@ class AnalysisRunBySlugView(APIView):
             )
 
         # Self-heal orphaned runs whose background worker died (see note above).
-        if run.status not in _TERMINAL_RUN_STATUSES and run.updated_at < timezone.now() - _STALE_RUN_TIMEOUT:
-            run.status = AnalysisRun.Status.FAILED
-            if not run.error_message:
-                run.error_message = (
-                    "Analysis stalled — no progress for over 5 minutes, so the "
-                    "background worker likely restarted. Please re-run the analysis."
-                )
-            run.save(update_fields=["status", "error_message", "updated_at"])
+        # PENDING runs are still queued waiting for a worker, so they get the
+        # longer grace; only runs that actually started and went silent are
+        # failed at the short timeout.
+        if run.status not in _TERMINAL_RUN_STATUSES:
+            is_pending = run.status == AnalysisRun.Status.PENDING
+            timeout = _STALE_PENDING_TIMEOUT if is_pending else _STALE_RUNNING_TIMEOUT
+            if run.updated_at < timezone.now() - timeout:
+                run.status = AnalysisRun.Status.FAILED
+                if not run.error_message:
+                    mins = int(timeout.total_seconds() // 60)
+                    run.error_message = (
+                        f"Analysis stalled — no progress for over {mins} minutes, so the "
+                        "background worker likely restarted. Please re-run the analysis."
+                    )
+                run.save(update_fields=["status", "error_message", "updated_at"])
 
         serializer = AnalysisRunDetailSerializer(run)
         return Response(serializer.data)
@@ -898,7 +1011,10 @@ class AnalysisRunListView(APIView):
         # Heavy JSONFields (llm_logs, onboarding_prompts) aren't in the list
         # serializer — defer them so we don't ship hundreds of KB per row.
         runs = runs.defer("llm_logs", "onboarding_prompts").order_by("-created_at")
-        serializer = AnalysisRunListSerializer(runs, many=True)
+        # Backstop against unbounded response growth (see apps.analyzer.pagination).
+        from .pagination import bounded_slice
+
+        serializer = AnalysisRunListSerializer(bounded_slice(request, runs), many=True)
         return Response(serializer.data)
 
 
@@ -1124,12 +1240,29 @@ class UserActionListView(APIView):
 
         status_filter = request.query_params.get("status")
 
-        actions = UserAction.objects.filter(user_email=email)
+        from apps.accounts.agency_utils import agency_org_ids, get_agency_context
+
+        # Role-scoped visibility:
+        #   agency admin  → every task across the agency's brands
+        #   agency member → only tasks assigned to them
+        #   individual    → their own tasks (owner)
+        ctx = get_agency_context(email)
+        if ctx is not None and ctx.is_admin:
+            org_ids = agency_org_ids(ctx.agency_email)
+            actions = UserAction.objects.filter(analysis_run__organization_id__in=org_ids)
+        elif ctx is not None:
+            actions = UserAction.objects.filter(assignee_email=email)
+        else:
+            actions = UserAction.objects.filter(user_email=email)
 
         if status_filter:
             actions = actions.filter(status=status_filter)
 
-        serializer = UserActionSerializer(actions, many=True)
+        # Backstop against unbounded response growth — the agency-admin branch spans
+        # every brand in the agency (see apps.analyzer.pagination).
+        from .pagination import bounded_slice
+
+        serializer = UserActionSerializer(bounded_slice(request, actions.distinct()), many=True)
         return Response(serializer.data)
 
 
@@ -1241,8 +1374,8 @@ class UpdateUserActionView(APIView):
                     action.score_after = data["score_after"]
                     if action.score_before:
                         action.score_improvement = data["score_after"] - action.score_before
-                        gamification.total_score_improvement += action
-                        gamification.score_improvement.total_actions_verified += 1
+                        gamification.total_score_improvement += action.score_improvement
+                        gamification.total_actions_verified += 1
                         gamification.save()
                 # Award bonus points for verification
                 gamification.add_points(action.points_value // 2)
@@ -1263,6 +1396,102 @@ class UpdateUserActionView(APIView):
                 "new_achievements": new_achievements,
             }
         )
+
+
+class SyncActionsView(APIView):
+    """POST actions/sync/ {email, org_id} → materialize the org's latest-run
+    recommendations into UserAction tasks (idempotent). This is what makes tasks
+    'auto' — no manual 'start this action' step."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from apps.accounts.agency_utils import get_agency_context
+        from apps.organizations.models import Organization
+
+        email = (request.data.get("email") or "").lower().strip()
+        org_id = request.data.get("org_id")
+        if not email or not org_id:
+            return Response(
+                {"error": "email and org_id are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        ctx = get_agency_context(email)
+        owner_email = ctx.agency_email if ctx else email
+        if not Organization.objects.filter(id=org_id, owner_email=owner_email).exists():
+            return Response(
+                {"detail": "Brand not found for this account.", "code": "not_found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Latest run that actually produced recommendations (a newer run may have
+        # failed or be mid-flight with none yet).
+        run = (
+            AnalysisRun.objects.filter(organization_id=org_id, recommendations__isnull=False)
+            .order_by("-created_at")
+            .distinct()
+            .first()
+        )
+        if run is None:
+            return Response({"created": 0, "total": 0})
+
+        from .action_sync import materialize_run_actions
+
+        created, total = materialize_run_actions(run, owner_email)
+        return Response({"created": created, "total": total})
+
+
+class AssignActionView(APIView):
+    """POST actions/<id>/assign/ {email, assignee_email} → admin assigns a task
+    to an agency teammate ('' = unassign)."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, action_id):
+        from apps.accounts.agency_utils import agency_org_ids, get_agency_context
+        from apps.accounts.models import AgencyMembership
+
+        email = (request.data.get("email") or "").lower().strip()
+        assignee = (request.data.get("assignee_email") or "").lower().strip()
+
+        ctx = get_agency_context(email)
+        if ctx is None or not ctx.is_admin:
+            return Response(
+                {"detail": "Only an agency admin can assign tasks.", "code": "forbidden"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            action = UserAction.objects.select_related("analysis_run").get(pk=action_id)
+        except UserAction.DoesNotExist:
+            return Response({"error": "Action not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        org_ids = agency_org_ids(ctx.agency_email)
+        if not action.analysis_run or action.analysis_run.organization_id not in org_ids:
+            return Response(
+                {"detail": "This task is not in your agency.", "code": "forbidden"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if assignee:
+            is_team = (
+                assignee == ctx.agency_email
+                or AgencyMembership.objects.filter(
+                    agency_email=ctx.agency_email,
+                    member_email=assignee,
+                    status=AgencyMembership.Status.ACTIVE,
+                ).exists()
+            )
+            if not is_team:
+                return Response(
+                    {"detail": "That person is not on your team.", "code": "not_member"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        action.assignee_email = assignee
+        action.save(update_fields=["assignee_email"])
+        return Response(UserActionSerializer(action).data)
 
 
 class ActionStatsView(APIView):
@@ -1295,12 +1524,22 @@ class ActionStatsView(APIView):
             if code in ACHIEVEMENTS_INFO
         ]
 
+        # One aggregate for the five status totals — was 5 round trips.
+        from django.db.models import Count, Q
+
+        _c = actions.aggregate(
+            total=Count("id"),
+            pending=Count("id", filter=Q(status=UserAction.ActionStatus.PENDING)),
+            in_progress=Count("id", filter=Q(status=UserAction.ActionStatus.IN_PROGRESS)),
+            completed=Count("id", filter=Q(status=UserAction.ActionStatus.COMPLETED)),
+            verified=Count("id", filter=Q(status=UserAction.ActionStatus.VERIFIED)),
+        )
         stats = {
-            "total_actions": actions.count(),
-            "pending_actions": actions.filter(status=UserAction.ActionStatus.PENDING).count(),
-            "in_progress_actions": actions.filter(status=UserAction.ActionStatus.IN_PROGRESS).count(),
-            "completed_actions": actions.filter(status=UserAction.ActionStatus.COMPLETED).count(),
-            "verified_actions": actions.filter(status=UserAction.ActionStatus.VERIFIED).count(),
+            "total_actions": _c["total"],
+            "pending_actions": _c["pending"],
+            "in_progress_actions": _c["in_progress"],
+            "completed_actions": _c["completed"],
+            "verified_actions": _c["verified"],
             "total_points": gamification.total_points,
             "points_this_week": gamification.points_this_week,
             "current_streak": gamification.current_streak,
@@ -1507,12 +1746,22 @@ class BlogAutomationCalendarView(APIView):
             jobs = jobs.filter(scheduled_for__date__gte=start, scheduled_for__date__lte=end)
 
         serializer = BlogAutomationJobSerializer(jobs, many=True)
+        # One aggregate for the five status totals — was 5 round trips.
+        from django.db.models import Count, Q
+
+        _s = jobs.aggregate(
+            scheduled=Count("id", filter=Q(status=BlogAutomationJob.Status.SCHEDULED)),
+            draft=Count("id", filter=Q(status=BlogAutomationJob.Status.DRAFT)),
+            needs_review=Count("id", filter=Q(status=BlogAutomationJob.Status.NEEDS_REVIEW)),
+            published=Count("id", filter=Q(status=BlogAutomationJob.Status.PUBLISHED)),
+            failed=Count("id", filter=Q(status=BlogAutomationJob.Status.FAILED)),
+        )
         summary = {
-            "scheduled": jobs.filter(status=BlogAutomationJob.Status.SCHEDULED).count(),
-            "draft": jobs.filter(status=BlogAutomationJob.Status.DRAFT).count(),
-            "needs_review": jobs.filter(status=BlogAutomationJob.Status.NEEDS_REVIEW).count(),
-            "published": jobs.filter(status=BlogAutomationJob.Status.PUBLISHED).count(),
-            "failed": jobs.filter(status=BlogAutomationJob.Status.FAILED).count(),
+            "scheduled": _s["scheduled"],
+            "draft": _s["draft"],
+            "needs_review": _s["needs_review"],
+            "published": _s["published"],
+            "failed": _s["failed"],
         }
         return Response({"summary": summary, "jobs": serializer.data})
 
@@ -2966,9 +3215,16 @@ class ScoreHistoryView(APIView):
 
         # Order by when the run finished updating (score finalized); expose that as `date`
         # so the chart shows distinct points per analysis, not just calendar day.
-        data = list(
-            qs.order_by("updated_at").values("id", "created_at", "updated_at", "composite_score", "slug")
+        # Cap to the most recent N points (backstop) but keep ascending order so the
+        # delta computation below is correct.
+        from .pagination import MAX_LIST_LIMIT
+
+        recent = list(
+            qs.order_by("-updated_at").values(
+                "id", "created_at", "updated_at", "composite_score", "slug"
+            )[:MAX_LIST_LIMIT]
         )
+        data = list(reversed(recent))
         result = []
         prev_score = None
         for row in data:
@@ -2998,9 +3254,26 @@ class ScoreHistoryView(APIView):
 
 
 class ScheduledAnalysisView(APIView):
-    """GET/POST /api/analyzer/schedule/"""
+    """GET/POST /api/analyzer/schedule/
+
+    Both halves resolve the caller's agency and require that the caller actually
+    owns ``org_id``. Without that check ``org_id`` is a sequential integer and
+    ``email`` is unauthenticated, so anyone could (a) read a brand's
+    ``last_run_slug`` — which unlocks the whole ``runs/s/<slug>/`` family — and
+    (b) enroll any brand into a recurring analysis whose digest emails land in
+    their own inbox.
+    """
 
     permission_classes = [AllowAny]
+
+    @staticmethod
+    def _owned_org(email: str, org_id) -> Organization | None:
+        """The org ``email`` may act on, or None. Agency members act as their agency."""
+        from apps.accounts.agency_utils import get_agency_context
+
+        ctx = get_agency_context(email)
+        owner_email = ctx.agency_email if ctx else email
+        return Organization.objects.filter(id=org_id, owner_email=owner_email).first()
 
     def get(self, request):
         email = request.query_params.get("email", "").lower().strip()
@@ -3008,15 +3281,21 @@ class ScheduledAnalysisView(APIView):
         if not email or not org_id:
             return Response({"error": "email and org_id required."}, status=status.HTTP_400_BAD_REQUEST)
 
+        if self._owned_org(email, org_id) is None:
+            return Response(
+                {"detail": "Brand not found for this account.", "code": "not_found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
         from .models import ScheduledAnalysis
 
-        try:
-            schedule = ScheduledAnalysis.objects.get(organization_id=org_id, email=email)
-            from .serializers import ScheduledAnalysisSerializer
-
-            return Response(ScheduledAnalysisSerializer(schedule).data)
-        except ScheduledAnalysis.DoesNotExist:
+        schedule = ScheduledAnalysis.objects.filter(organization_id=org_id, email=email).first()
+        if schedule is None:
             return Response(None, status=status.HTTP_200_OK)
+
+        from .serializers import ScheduledAnalysisSerializer
+
+        return Response(ScheduledAnalysisSerializer(schedule).data)
 
     def post(self, request):
         email = request.data.get("email", "").lower().strip()
@@ -3035,10 +3314,12 @@ class ScheduledAnalysisView(APIView):
                 {"error": "frequency must be once/weekly/monthly."}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        try:
-            org = Organization.objects.get(pk=org_id)
-        except Organization.DoesNotExist:
-            return Response({"error": "Organization not found."}, status=status.HTTP_404_NOT_FOUND)
+        org = self._owned_org(email, org_id)
+        if org is None:
+            return Response(
+                {"detail": "Brand not found for this account.", "code": "not_found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         # Parse explicit run_at when provided, else derive from frequency
         next_run_at = None
@@ -3668,17 +3949,25 @@ class ApplyGeoFixesAndReanalyzeView(APIView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-            new_run = AnalysisRun.objects.create(
-                organization=run.organization,
-                url=run.url,
-                brand_name=run.brand_name or "",
-                country=run.country or "",
-                email=run.email or "",
-                run_type=run.run_type,
-                status=AnalysisRun.Status.PENDING,
-            )
-            start_analysis_task(new_run.id)
-            next_run_payload = {"id": new_run.id, "slug": new_run.slug}
+            # One analysis at a time per brand — reuse the in-flight run instead
+            # of stacking a second re-analysis on the same org.
+            from .run_guard import active_run_for
+
+            in_flight = active_run_for(run.organization)
+            if in_flight is not None:
+                next_run_payload = {"id": in_flight.id, "slug": in_flight.slug}
+            else:
+                new_run = AnalysisRun.objects.create(
+                    organization=run.organization,
+                    url=run.url,
+                    brand_name=run.brand_name or "",
+                    country=run.country or "",
+                    email=run.email or "",
+                    run_type=run.run_type,
+                    status=AnalysisRun.Status.PENDING,
+                )
+                start_analysis_task(new_run.id)
+                next_run_payload = {"id": new_run.id, "slug": new_run.slug}
 
         return Response(
             {
@@ -4785,8 +5074,6 @@ class PromptWikipediaDraftView(APIView):
         return Response({**existing.payload, "cached": True})
 
     def post(self, request, slug, track_id):
-        import json
-        import re
 
         from django.shortcuts import get_object_or_404
 
@@ -4879,29 +5166,19 @@ Return ONLY valid JSON. No markdown fences. Schema:
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        # Strip code fences and parse. Try progressively looser extraction.
-        cleaned = raw.strip()
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned.strip())
+        # Epic 8: shared extractor -- it already handles fences and prose around the JSON.
+        from .pipeline.structured import extract_json
 
-        payload = None
-        try:
-            payload = json.loads(cleaned)
-        except json.JSONDecodeError:
-            # LLM may have added prose before/after the JSON object — extract first {...}
-            m = re.search(r"\{.*\}", cleaned, re.DOTALL)
-            if m:
-                try:
-                    payload = json.loads(m.group())
-                except json.JSONDecodeError:
-                    pass
+        payload = extract_json(raw, expect=dict)
+        if not isinstance(payload, dict):
+            payload = None
 
         if payload is None:
             logger.warning(
                 "Wikipedia draft JSON parse failed for slug=%s track=%s. Raw: %s",
                 slug,
                 track_id,
-                cleaned[:300],
+                (raw or "")[:300],
             )
             return Response(
                 {
@@ -5293,6 +5570,59 @@ class RunBacklinkFreeView(APIView):
         return Response({"rows": rows, "has_generated": True})
 
 
+class DomainRatingFreeView(APIView):
+    """POST /api/analyzer/tools/domain-rating/
+
+    Public, no-auth Domain Rating tool for the marketing site. Body: {domain}.
+    Validates the domain format, then returns a 0-100 Domain Rating plus the
+    domain's global rank, sourced from the free Open PageRank API.
+
+    Results are cached per-domain for 7 days; the endpoint is throttled to keep
+    abuse off the upstream free-tier quota.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request):
+        from apps.integrations.services.openpagerank import (
+            OpenPageRankError,
+            OpenPageRankNotConfigured,
+        )
+
+        from .services.domain_rating import InvalidDomain, get_or_generate
+
+        domain = (request.data.get("domain") or "").strip()
+        if not domain:
+            return Response(
+                {"detail": "A domain is required.", "code": "invalid_domain"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            return Response(get_or_generate(domain))
+        except InvalidDomain as exc:
+            return Response(
+                {"detail": str(exc), "code": "invalid_domain"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except OpenPageRankNotConfigured:
+            return Response(
+                {
+                    "detail": "Domain rating is temporarily unavailable.",
+                    "code": "openpagerank_not_configured",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except OpenPageRankError:
+            return Response(
+                {
+                    "detail": "Couldn't fetch domain rating right now. Try again shortly.",
+                    "code": "openpagerank_upstream",
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+
 class ContentRewriteElementView(APIView):
     """POST /api/analyzer/runs/s/<slug>/content/rewrite-element/
 
@@ -5592,14 +5922,75 @@ class ContentRawFileUpsertView(APIView):
         return Response(saved)
 
 
-# ---------- Blog Composer endpoints (dashboard "Blog Agent" page) ----------
-#
-# Slug-scoped endpoints powering the dashboard blog composer at
-# runs/s/<slug>/blog/{posts,generate,publish}/. Distinct from the Actions
-# "AI Blog Automation" flow (BlogAutomation*Views): these return HTML drafts
-# directly and publish straight to the org's connected WordPress, with no job
-# persistence. The composer page sends only the run slug, so email + site URL
-# are resolved from the AnalysisRun.
+# ── Satellite blog network ("Our Backlinks") ─────────────────────────────────
+
+
+def _brand_ref_for_run(run) -> str:
+    """Stable string key for the run's brand (no cross-DB FK to the blog DB)."""
+    if run.organization_id:
+        return f"org:{run.organization_id}"
+    return f"run:{run.slug}"
+
+
+def _blog_source_candidates(run) -> list:
+    """Reference sources for blog generation, shown as a selectable table.
+
+    Recommended (pre-selected): top 3 competitors + Google + Reddit. Then the
+    run's top cited pages (real domains AI engines surface for this brand) so the
+    user can pick richer references.
+    """
+    from .pipeline.citations import host_of
+
+    rows: list = []
+    seen: set = set()
+
+    def add(name, url, type_, pos, recommended):
+        dom = host_of(url or "") or (name or "").lower()
+        if not dom or dom in seen:
+            return
+        seen.add(dom)
+        rows.append(
+            {
+                "name": name or dom,
+                "domain": dom,
+                "url": url or "",
+                "type": type_,
+                "pos": pos,
+                "recommended": recommended,
+            }
+        )
+
+    try:
+        for c in run.competitors.all().order_by("-scored", "-composite_score")[:3]:
+            add(c.name or urlparse(c.url or "").netloc or "Competitor", c.url or "", "Competitor", 1, True)
+    except Exception:
+        pass
+    add("Google", "https://www.google.com", "Google", 1, True)
+    add("Reddit", "https://www.reddit.com", "Reddit", 1, True)
+
+    try:
+        from .models import PromptCitation
+
+        cites = (
+            PromptCitation.objects.filter(prompt_result__prompt_track__analysis_run=run, is_brand=False)
+            .order_by("position")
+            .values("url", "domain", "position", "is_competitor")
+        )
+        for ct in cites:
+            if len(rows) >= 20:
+                break
+            dom = ct.get("domain") or host_of(ct.get("url") or "")
+            add(
+                dom,
+                ct.get("url") or "",
+                "Competitor" if ct.get("is_competitor") else "Source",
+                ct.get("position") or 1,
+                False,
+            )
+    except Exception:
+        pass
+
+    return rows
 
 
 def _blog_run_email(slug: str):
@@ -6322,6 +6713,440 @@ class ShareOfVoiceCompetitorsView(APIView):
         )
 
 
+def _crawler_ingest_signer():
+    from django.core import signing
+
+    return signing.Signer(salt="crawler-ingest")
+
+
+def crawler_ingest_token(org_id: int) -> str:
+    """Org-scoped token the site's log integration uses to report crawler hits."""
+    return _crawler_ingest_signer().sign(str(org_id))
+
+
+class CrawlerIngestView(APIView):
+    """POST /api/analyzer/crawler/ingest/ — receive AI-crawler hits from a site.
+
+    Authenticated by the org-scoped signed token shown on the Crawler Logs
+    page. The bot identity is always re-derived server-side from the user
+    agent; requests that don't match a known AI crawler are ignored, so the
+    endpoint never stores anything about human visitors.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    _MAX_BATCH = 500
+
+    @staticmethod
+    def _rows(org_id: int, hits: list) -> tuple[list, int]:
+        from django.utils import timezone
+        from django.utils.dateparse import parse_datetime
+
+        from .crawler_bots import detect_bot
+
+        now = timezone.now()
+        rows: list[CrawlerHit] = []
+        ignored = 0
+        for h in hits:
+            ua = str(h.get("user_agent") or "")[:300] if isinstance(h, dict) else ""
+            bot = detect_bot(ua)
+            if not bot:
+                ignored += 1
+                continue
+            ts = parse_datetime(str(h.get("ts"))) if h.get("ts") else None
+            if ts is not None and ts.tzinfo is None:
+                ts = None  # naive client clocks are not trusted; stamp server time
+            rows.append(
+                CrawlerHit(
+                    organization_id=org_id,
+                    bot=bot,
+                    path=str(h.get("path") or "/")[:512],
+                    user_agent=ua,
+                    hit_at=ts or now,
+                )
+            )
+        return rows, ignored
+
+    def post(self, request):
+        from django.core import signing
+
+        token = str(request.data.get("token") or "")
+        try:
+            org_id = int(_crawler_ingest_signer().unsign(token))
+        except (signing.BadSignature, ValueError):
+            return Response({"detail": "Invalid ingest token."}, status=status.HTTP_403_FORBIDDEN)
+        if not Organization.objects.filter(id=org_id).exists():
+            return Response({"detail": "Unknown organization."}, status=status.HTTP_403_FORBIDDEN)
+
+        hits = request.data.get("hits")
+        if not isinstance(hits, list) or not hits:
+            return Response(
+                {"detail": "hits must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        rows, ignored = self._rows(org_id, hits[: self._MAX_BATCH])
+        CrawlerHit.objects.bulk_create(rows)
+        return Response({"stored": len(rows), "ignored": ignored})
+
+
+class CrawlerLogsView(APIView):
+    """GET /runs/s/<slug>/crawler-logs/ — AI crawler activity for the brand:
+    daily per-bot counts (last 30 days), top crawlers, top pages, and the
+    ingest credentials for wiring the site up."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request, slug):
+        from collections import defaultdict
+        from datetime import timedelta
+
+        from django.db.models import Count
+        from django.db.models.functions import TruncDate
+        from django.shortcuts import get_object_or_404
+        from django.utils import timezone
+
+        from .crawler_bots import BOT_LABELS
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        org = run.organization
+        if org is None:
+            return Response(
+                {"detail": "Run has no organization."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        since = timezone.now() - timedelta(days=30)
+        qs = CrawlerHit.objects.filter(organization=org, hit_at__gte=since)
+
+        by_day: dict[str, dict[str, int]] = defaultdict(dict)
+        daily = qs.annotate(day=TruncDate("hit_at")).values("day", "bot").annotate(n=Count("id"))
+        for row in daily:
+            by_day[row["day"].isoformat()][row["bot"]] = row["n"]
+
+        bots = [
+            {"bot": r["bot"], "label": BOT_LABELS.get(r["bot"], r["bot"]), "hits": r["n"]}
+            for r in qs.values("bot").annotate(n=Count("id")).order_by("-n")
+        ]
+        pages = [
+            {"path": r["path"], "hits": r["n"]}
+            for r in qs.values("path").annotate(n=Count("id")).order_by("-n")[:10]
+        ]
+        return Response(
+            {
+                "ingest_token": crawler_ingest_token(org.id),
+                "total_hits": qs.count(),
+                "days": [{"date": d, "bots": b} for d, b in sorted(by_day.items())],
+                "bots": bots,
+                "pages": pages,
+            }
+        )
+
+
+class AnswerGapFaqView(APIView):
+    """POST /runs/s/<slug>/answer-gap-faq/
+
+    Turns the run's weakest tracked prompts (real questions where AI engines
+    under-represent the brand) into publishable FAQ content: question/answer
+    pairs written for the brand, plus FAQPage JSON-LD built server-side so the
+    schema is always valid regardless of LLM output.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    _MAX_PROMPTS = 6
+
+    @staticmethod
+    def _generation_prompt(run, tracks) -> str:
+        brand = run.brand_name or run.url
+        questions = "\n".join(f"- {t.prompt_text}" for t in tracks)
+        return (
+            f"You write FAQ content for {brand} ({run.url}).\n"
+            "These are real questions people ask AI assistants, where the brand is "
+            "currently under-represented in the answers:\n"
+            f"{questions}\n\n"
+            "Write an FAQ section the brand can publish on its own site. For each "
+            "input question produce one entry: rephrase the question naturally from "
+            "a customer's perspective, then answer in 2-4 factual, direct sentences "
+            "that lead with the answer and mention the brand naturally exactly once. "
+            "No marketing fluff and no superlatives you cannot verify.\n"
+            'Return STRICT JSON only: [{"question": "...", "answer": "..."}]'
+        )
+
+    def post(self, request, slug):
+        import json
+
+        from django.shortcuts import get_object_or_404
+
+        from .pipeline.llm import ask_llm
+        from .pipeline.structured import extract_json
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        tracks = list(
+            run.prompt_tracks.filter(deleted_at__isnull=True).order_by("score", "-created_at")[
+                : self._MAX_PROMPTS
+            ]
+        )
+        if not tracks:
+            return Response(
+                {"detail": "No tracked prompts yet."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        text = ask_llm(
+            self._generation_prompt(run, tracks),
+            max_tokens=1600,
+            purpose=f"Answer-gap FAQ ({slug})",
+            tier="medium",
+        )
+        raw_items = extract_json(text or "", expect=list) or []
+        items = [
+            {
+                "question": str(i.get("question", "")).strip(),
+                "answer": str(i.get("answer", "")).strip(),
+            }
+            for i in raw_items
+            if isinstance(i, dict) and i.get("question") and i.get("answer")
+        ]
+        if not items:
+            return Response(
+                {"detail": "Generation failed. Please try again."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        jsonld = json.dumps(
+            {
+                "@context": "https://schema.org",
+                "@type": "FAQPage",
+                "mainEntity": [
+                    {
+                        "@type": "Question",
+                        "name": i["question"],
+                        "acceptedAnswer": {"@type": "Answer", "text": i["answer"]},
+                    }
+                    for i in items
+                ],
+            },
+            indent=2,
+        )
+        return Response({"items": items, "jsonld": jsonld})
+
+
+class CompetitorVisibilityMatrixView(APIView):
+    """GET /runs/s/<slug>/competitor-visibility-matrix/
+
+    Heatmap data: brand + competitors as rows, AI engines as columns. The brand
+    cell is its per-engine mention rate; a competitor cell is the share of that
+    engine's responses citing the competitor's domain — the same mention-rate
+    basis, so cells are directly comparable across rows.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    @staticmethod
+    def _engine_stats(run):
+        """Per-engine response totals, brand hits, and result-id → engine map."""
+        from collections import defaultdict
+
+        totals: dict[str, int] = defaultdict(int)
+        brand_hits: dict[str, int] = defaultdict(int)
+        engine_of: dict[int, str] = {}
+        rows = PromptResult.objects.filter(
+            prompt_track__analysis_run=run,
+            prompt_track__deleted_at__isnull=True,
+        ).values("id", "engine", "brand_mentioned")
+        for r in rows:
+            eng = (r["engine"] or "").strip().lower()
+            if not eng:
+                continue
+            totals[eng] += 1
+            engine_of[r["id"]] = eng
+            if r["brand_mentioned"]:
+                brand_hits[eng] += 1
+        return totals, brand_hits, engine_of
+
+    @staticmethod
+    def _citing_results(run, engine_of):
+        """domain → engine → set of citing result ids."""
+        from collections import defaultdict
+
+        by_domain: dict[str, dict[str, set]] = defaultdict(lambda: defaultdict(set))
+        cite_rows = (
+            PromptCitation.objects.filter(
+                prompt_result__prompt_track__analysis_run=run,
+                prompt_result__prompt_track__deleted_at__isnull=True,
+            )
+            .exclude(domain="")
+            .values("domain", "prompt_result_id")
+        )
+        for r in cite_rows:
+            eng = engine_of.get(r["prompt_result_id"])
+            if eng:
+                by_domain[_norm_domain(r["domain"])][eng].add(r["prompt_result_id"])
+        return by_domain
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        from .pipeline.utils import extract_domain
+
+        run = get_object_or_404(AnalysisRun.objects.prefetch_related("competitors"), slug=slug)
+        totals, brand_hits, engine_of = self._engine_stats(run)
+        citing = self._citing_results(run, engine_of)
+        engines = sorted(totals.keys())
+
+        def pct(hits: int, eng: str) -> float:
+            total = totals.get(eng) or 0
+            return round(hits / total * 100, 1) if total else 0.0
+
+        rows = [
+            {
+                "name": run.brand_name or run.url,
+                "domain": _norm_domain(extract_domain(run.url or "")),
+                "is_brand": True,
+                "cells": {eng: pct(brand_hits.get(eng, 0), eng) for eng in engines},
+            }
+        ]
+        for c in run.competitors.all():
+            cdom = _norm_domain(extract_domain(c.url or ""))
+            by_eng = citing.get(cdom, {})
+            rows.append(
+                {
+                    "name": c.name or cdom or "Competitor",
+                    "domain": cdom,
+                    "is_brand": False,
+                    "cells": {eng: pct(len(by_eng.get(eng, ())), eng) for eng in engines},
+                }
+            )
+
+        return Response({"engines": engines, "rows": rows})
+
+
+def _shopify_integration_for(org):
+    """The org's active Shopify integration, or None."""
+    if org is None:
+        return None
+    return Integration.objects.filter(
+        organization=org, provider=Integration.Provider.SHOPIFY, is_active=True
+    ).first()
+
+
+class ShoppingSyncView(APIView):
+    """POST /runs/s/<slug>/shopping/sync/
+
+    Pulls the connected store's product catalog through the Admin API and
+    refreshes per-product AI-shopping readiness rows. Interim pull path until
+    the Remix app's catalog-sync webhook lands (P1 of the Shopify app plan).
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        from apps.integrations.services.shopify import fetch_shopify_products
+
+        from .shopping import analyze_product
+
+        run = get_object_or_404(AnalysisRun.objects.select_related("organization"), slug=slug)
+        integration = _shopify_integration_for(run.organization)
+        if integration is None:
+            return Response(
+                {"detail": "Connect your Shopify store first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        products = fetch_shopify_products(integration)
+        seen_ids = []
+        for product in products:
+            metrics = analyze_product(product)
+            product_id = str(product.get("id") or "")
+            if not product_id:
+                continue
+            seen_ids.append(product_id)
+            variants = product.get("variants") or []
+            ShopifyProduct.objects.update_or_create(
+                organization=run.organization,
+                product_id=product_id,
+                defaults={
+                    "handle": str(product.get("handle") or "")[:255],
+                    "title": str(product.get("title") or "")[:512],
+                    "status": str(product.get("status") or "")[:20],
+                    "price": str(variants[0].get("price") if variants else "")[:40],
+                    **metrics,
+                },
+            )
+        # A partial fetch (capped pages) must not delete rows we didn't see.
+        if len(products) < 1000:
+            ShopifyProduct.objects.filter(organization=run.organization).exclude(
+                product_id__in=seen_ids
+            ).delete()
+        return Response({"synced": len(seen_ids)})
+
+
+class ShoppingReadinessView(APIView):
+    """GET /runs/s/<slug>/shopping/
+
+    AI-shopping readiness rollup: average score, issue counts, and the worst
+    products first — plus connection state so the page can prompt setup.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request, slug):
+        from collections import Counter
+
+        from django.shortcuts import get_object_or_404
+
+        from .shopping import ISSUE_LABELS
+
+        run = get_object_or_404(AnalysisRun.objects.select_related("organization"), slug=slug)
+        integration = _shopify_integration_for(run.organization)
+        shop_domain = integration.metadata.get("shop_domain", "") if integration else ""
+
+        rows = list(
+            ShopifyProduct.objects.filter(organization=run.organization).order_by(
+                "readiness", "title"
+            )
+        )
+        issue_counts: Counter = Counter()
+        for row in rows:
+            issue_counts.update(row.issues or [])
+
+        avg = round(sum(r.readiness for r in rows) / len(rows)) if rows else 0
+        return Response(
+            {
+                "connected": integration is not None,
+                "shop_domain": shop_domain,
+                "product_count": len(rows),
+                "avg_readiness": avg,
+                "last_synced": max((r.synced_at for r in rows), default=None),
+                "issues": [
+                    {"code": code, "label": ISSUE_LABELS.get(code, code), "count": count}
+                    for code, count in issue_counts.most_common()
+                ],
+                "products": [
+                    {
+                        "product_id": r.product_id,
+                        "handle": r.handle,
+                        "title": r.title,
+                        "status": r.status,
+                        "price": r.price,
+                        "readiness": r.readiness,
+                        "issues": r.issues,
+                        "images_total": r.images_total,
+                        "images_missing_alt": r.images_missing_alt,
+                        "description_chars": r.description_chars,
+                    }
+                    for r in rows[:100]
+                ],
+            }
+        )
+
+
 class TopSourcesView(APIView):
     """GET /runs/s/<slug>/top-sources/
 
@@ -6405,3 +7230,466 @@ class TopSourcesView(APIView):
             sources.append(src)
 
         return Response({"sources": sources})
+
+
+class BlogSourcesView(APIView):
+    """GET /runs/s/<slug>/blog/sources/ — candidate reference sources (3 competitors + Google + Reddit)."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        return Response({"sources": _blog_source_candidates(run)})
+
+
+class BlogTitleIdeasView(APIView):
+    """POST /runs/s/<slug>/blog/title-ideas/ — ~5 blog title ideas from the run's
+    tracked prompts + brand analysis."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        from .pipeline.llm import ask_llm
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        site_url = (run.organization.url if run.organization else "") or run.url or ""
+        brand = (
+            getattr(run, "brand_name", "")
+            or (run.organization.name if run.organization else "")
+            or urlparse(site_url).netloc
+        )
+        try:
+            prompts = list(
+                run.prompt_tracks.filter(deleted_at__isnull=True)
+                .order_by("-score")
+                .values_list("prompt_text", flat=True)[:10]
+            )
+        except Exception:
+            prompts = []
+
+        prompt = f"""You are a content strategist for the brand "{brand}" ({site_url}).
+These are the real AI-search queries people ask in this brand's space:
+{chr(10).join(f"- {p}" for p in prompts) if prompts else "- (no tracked prompts yet)"}
+
+Generate 5 compelling, specific blog post titles that would help this brand get
+cited in AI search for these topics. Click-worthy, SEO/GEO-friendly, no numbering.
+Return STRICT JSON only: {{"titles": ["...", "...", "...", "...", "..."]}}"""
+
+        raw = ask_llm(
+            prompt=prompt,
+            preferred_provider="opus",
+            max_tokens=600,
+            temperature=0.85,
+            purpose="actions.blog_automation.title_ideas",
+        )
+        parsed = _extract_blog_json(raw) or {}
+        titles = []
+        if isinstance(parsed.get("titles"), list):
+            titles = [str(t).strip() for t in parsed["titles"] if str(t).strip()][:5]
+        if not titles:
+            titles = [str(p).strip()[:90] for p in prompts[:5] if str(p).strip()]
+        if not titles:
+            titles = [f"{brand}: A Practical Guide to AI Search Visibility"]
+        return Response({"titles": titles})
+
+
+class BlogGenerateView(APIView):
+    """POST /runs/s/<slug>/blog/generate/ — AI-generate a blog draft for a run
+    (used by the Our-backlinks tab). Wraps _generate_blog_draft and returns HTML.
+    Accepts optional title (forced), length (short|medium|long), sources (list)."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        data = request.data or {}
+        forced_title = (data.get("title") or "").strip()
+        topic = (data.get("topic") or forced_title or "").strip()
+        site_url = (run.organization.url if run.organization else "") or run.url or ""
+        if not topic:
+            brand = getattr(run, "brand_name", "") or urlparse(site_url).netloc
+            topic = f"{brand} AI search strategy"
+        keywords = data.get("keywords") if isinstance(data.get("keywords"), list) else []
+        length = (data.get("length") or "medium").strip()
+        sources = data.get("sources") if isinstance(data.get("sources"), list) else None
+        try:
+            recommendations = list(run.recommendations.values_list("title", flat=True)[:8])
+        except Exception:
+            recommendations = []
+
+        draft = _generate_blog_draft(
+            site_url, topic, keywords, recommendations, length=length, sources=sources
+        )
+        title = forced_title or _short_title(draft.get("title", ""))
+        slug_val = _slugify(forced_title) if forced_title else draft.get("slug", "")
+        content_html = _to_html_from_markdownish(draft.get("content_markdown") or "")
+
+        # Guarantee at least one backlink to the brand site in the content.
+        if site_url:
+            from .pipeline.citations import host_of
+
+            brand_host = host_of(site_url)
+            if brand_host and brand_host not in content_html:
+                brand_name = getattr(run, "brand_name", "") or brand_host
+                content_html += (
+                    f'\n<p>Learn more about {brand_name} at <a href="{site_url}">{site_url}</a>.</p>'
+                )
+
+        # Always provide an AI description: meta -> excerpt -> derived from body.
+        meta = (draft.get("meta_description") or draft.get("excerpt") or "").strip()
+        if not meta:
+            import re as _re
+
+            plain = _re.sub(r"[#*`>_\-]", " ", draft.get("content_markdown") or "")
+            plain = " ".join(plain.split())
+            meta = plain[:157] + ("…" if len(plain) > 157 else "")
+
+        return Response(
+            {
+                "title": title,
+                "slug": slug_val,
+                "meta_description": meta[:300],
+                "excerpt": draft.get("excerpt", ""),
+                "tags": draft.get("tags", []),
+                "content_html": content_html,
+                "content_markdown": draft.get("content_markdown", ""),
+            }
+        )
+
+
+class BlogPublishNetworkView(APIView):
+    """POST /runs/s/<slug>/blog/publish-network/ — publish a generated blog to one
+    satellite site. Writes a published BlogPost into the shared blog DB (the site
+    reads it) and returns the live URL, which is the backlink shown in "Our backlinks"."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug):
+        from django.conf import settings as dj_settings
+        from django.shortcuts import get_object_or_404
+        from django.utils import timezone
+
+        from . import blog_store
+        from .models import BlogPost
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        data = request.data or {}
+        site = (data.get("site") or "").strip()
+        if site not in dict(BlogPost.Site.choices):
+            return Response(
+                {"error": "site must be one of: research, listicals, market_trends, comparison, step_guide."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        title = (data.get("title") or "").strip()
+        if not title:
+            return Response({"error": "title is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        content_html = data.get("content_html") or ""
+        content_markdown = data.get("content_markdown") or ""
+        if not content_html and content_markdown:
+            content_html = _to_html_from_markdownish(content_markdown)
+
+        base_slug = _slugify(data.get("slug") or title)
+        slug_val, n = base_slug, 2
+        while blog_store.slug_exists(site, slug_val):
+            slug_val = f"{base_slug}-{n}"
+            n += 1
+
+        brand_url = (run.organization.url if run.organization else "") or run.url or ""
+        now = timezone.now().isoformat()
+        post = {
+            "id": blog_store.new_id(),
+            "site": site,
+            "slug": slug_val,
+            "title": title[:300],
+            "description": (data.get("description") or data.get("meta_description") or "")[:2000],
+            "content_html": content_html,
+            "image_url": (data.get("image_url") or "")[:2048],
+            "category": (data.get("category") or "")[:80],
+            "brand_url": brand_url,
+            "brand_ref": _brand_ref_for_run(run),
+            "source": "signalor",
+            "status": "published",
+            "published_at": now,
+            "created_at": now,
+        }
+        blog_store.put_post(post)
+        domain = (dj_settings.SATELLITE_SITES.get(site) or "").rstrip("/")
+        return Response(
+            {**post, "url": f"{domain}/{slug_val}" if domain else ""},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class OurBacklinksView(APIView):
+    """GET /runs/s/<slug>/backlinks/our/ — backlinks created for this brand by
+    publishing blogs to the satellite network (read from the shared blog DB)."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        from django.conf import settings as dj_settings
+        from django.shortcuts import get_object_or_404
+
+        from . import blog_store
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        rows = []
+        try:
+            for p in blog_store.list_for_brand(_brand_ref_for_run(run)):
+                domain = (dj_settings.SATELLITE_SITES.get(p.get("site")) or "").rstrip("/")
+                rows.append(
+                    {
+                        "id": p.get("id"),
+                        "site": p.get("site"),
+                        "category": p.get("site"),
+                        "slug": p.get("slug"),
+                        "title": p.get("title"),
+                        "url": f"{domain}/{p.get('slug')}" if domain else "",
+                        "brand_url": p.get("brand_url", ""),
+                        "status": p.get("status", "published"),
+                        "published_at": p.get("published_at"),
+                    }
+                )
+        except Exception as exc:  # S3 not configured / unreachable → empty list
+            logger.warning("our-backlinks: S3 read failed for %s: %s", slug, exc)
+        return Response({"rows": rows, "can_add_today": _auto_can_add_today(run)})
+
+
+class BacklinkScheduleView(APIView):
+    """GET/POST /runs/s/<slug>/backlinks/schedule/ — the per-brand DAILY
+    auto-backlinks schedule. When active, ``run_backlink_schedules`` publishes a
+    fresh 5-site batch every 24h. Keyed per brand (organization, else email)."""
+
+    permission_classes = [AllowAny]
+
+    @staticmethod
+    def _lookup(run):
+        """Existing BacklinkSchedule for this run's brand, or None."""
+        from .models import BacklinkSchedule
+
+        if run.organization_id:
+            return BacklinkSchedule.objects.filter(organization_id=run.organization_id).first()
+        email = (run.email or "").strip()
+        if email:
+            return BacklinkSchedule.objects.filter(organization__isnull=True, email=email).first()
+        return None
+
+    @staticmethod
+    def _serialize(sched):
+        if not sched:
+            return {
+                "is_active": False,
+                "next_run_at": None,
+                "last_run_at": None,
+                "last_batch_count": 0,
+            }
+        return {
+            "is_active": sched.is_active,
+            "next_run_at": sched.next_run_at,
+            "last_run_at": sched.last_run_at,
+            "last_batch_count": sched.last_batch_count,
+        }
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        return Response(self._serialize(self._lookup(run)))
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+        from django.utils import timezone
+
+        from .models import BacklinkSchedule
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        is_active = bool(request.data.get("is_active", True))
+
+        sched = self._lookup(run)
+        if sched is None:
+            sched = BacklinkSchedule(
+                organization_id=run.organization_id or None,
+                email=(run.email or "").strip(),
+            )
+
+        sched.is_active = is_active
+        sched.run_slug = run.slug
+        if is_active and (sched.next_run_at is None or not sched.pk):
+            # Fire on the next cron tick; the daily gate skips it if a batch
+            # already published today for this brand.
+            sched.next_run_at = timezone.now()
+        elif sched.next_run_at is None:
+            sched.next_run_at = timezone.now()
+        sched.save()
+
+        return Response(self._serialize(sched))
+
+
+class BlogPostDetailView(APIView):
+    """GET/PATCH/DELETE /runs/s/<slug>/blog/item/<site>/<post_slug>/ — read, edit,
+    or delete one published backlink post in S3 (scoped to this brand)."""
+
+    permission_classes = [AllowAny]
+
+    def _owned(self, run, post):
+        return bool(post) and post.get("brand_ref") == _brand_ref_for_run(run)
+
+    def _serialize(self, post):
+        from django.conf import settings as dj_settings
+
+        domain = (dj_settings.SATELLITE_SITES.get(post.get("site")) or "").rstrip("/")
+        out = dict(post)
+        out["category"] = post.get("site")
+        out["url"] = f"{domain}/{post.get('slug')}" if domain else ""
+        return out
+
+    def get(self, request, slug, site, post_slug):
+        from django.shortcuts import get_object_or_404
+
+        from . import blog_store
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        post = blog_store.get_post(site, post_slug)
+        if not self._owned(run, post):
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(self._serialize(post))
+
+    def patch(self, request, slug, site, post_slug):
+        from django.shortcuts import get_object_or_404
+
+        from . import blog_store
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        post = blog_store.get_post(site, post_slug)
+        if not self._owned(run, post):
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        data = request.data or {}
+        fields = {}
+        if "title" in data:
+            fields["title"] = (str(data.get("title") or "").strip()[:300]) or post.get("title")
+        if "description" in data:
+            fields["description"] = str(data.get("description") or "")[:2000]
+        if "content_html" in data:
+            fields["content_html"] = str(data.get("content_html") or "")
+        if "image_url" in data:
+            fields["image_url"] = str(data.get("image_url") or "")[:2048]
+        updated = blog_store.update_post(site, post_slug, fields)
+        return Response(self._serialize(updated))
+
+    def delete(self, request, slug, site, post_slug):
+        from django.shortcuts import get_object_or_404
+
+        from . import blog_store
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        post = blog_store.get_post(site, post_slug)
+        if not self._owned(run, post):
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        blog_store.delete_post(site, post_slug)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _auto_can_add_today(run) -> bool:
+    """Whether the brand may auto-publish another backlink batch today.
+
+    Thin delegate to the shared engine so this view and OurBacklinksView agree
+    on the once-per-day gate. Imported lazily to avoid a circular import."""
+    from .services.backlink_engine import auto_can_add_today
+
+    return auto_can_add_today(run)
+
+
+class BlogAutoPublishAllView(APIView):
+    """POST /runs/s/<slug>/blog/auto-publish-all/ — one click: AI-generate a themed
+    blog for each of the 5 satellite sites and publish them all. Limited to once
+    per calendar day per brand."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        from .services.backlink_engine import auto_can_add_today, run_auto_backlinks
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        if not auto_can_add_today(run):
+            return Response(
+                {"error": "You can add backlinks once per day. Try again tomorrow."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        result = run_auto_backlinks(run)
+        if result.get("skipped"):
+            return Response(
+                {"error": "You can add backlinks once per day. Try again tomorrow."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        if not result["created"]:
+            return Response(
+                {"error": "Failed to generate blogs. Please try again."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response(
+            {
+                "created": result["created"],
+                "errors": result["errors"],
+                "can_add_today": auto_can_add_today(run),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+def _normalize_site(raw: str) -> str:
+    """Accept either a BlogPost.site value (market_trends) or its S3 folder
+    name (market-trends) and return the canonical site value."""
+    from . import blog_store
+
+    folder_to_site = {v: k for k, v in blog_store.SITE_FOLDERS.items()}
+    return folder_to_site.get(raw, raw)
+
+
+class PublicBlogListView(APIView):
+    """GET /public/blog/<site>/ — public, read-only list of published posts for one
+    satellite site. The 5 sites fetch this (no auth, no brand scope); the backend
+    reads S3 with creds so the bucket can stay private."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, site):
+        from . import blog_store
+
+        site = _normalize_site(site)
+        try:
+            rows = [p for p in blog_store.list_index(site) if (p.get("status") or "published") == "published"]
+        except Exception as exc:
+            logger.warning("public-blog-list: S3 read failed for %s: %s", site, exc)
+            rows = []
+        return Response(rows)
+
+
+class PublicBlogDetailView(APIView):
+    """GET /public/blog/<site>/<post_slug>/ — public, read-only full post (incl.
+    content_html) for one satellite site."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, site, post_slug):
+        from . import blog_store
+
+        site = _normalize_site(site)
+        try:
+            post = blog_store.get_post(site, post_slug)
+        except Exception as exc:
+            logger.warning("public-blog-detail: S3 read failed for %s/%s: %s", site, post_slug, exc)
+            post = None
+        if not post or (post.get("status") and post["status"] != "published"):
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(post)

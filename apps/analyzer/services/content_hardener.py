@@ -41,7 +41,6 @@ network and no LLM, unit-tested with hand-built evidence (see tests.py).
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -249,16 +248,14 @@ def validate_edits(
 # default LLM-backed steps (injectable; network only here)
 # --------------------------------------------------------------------------- #
 def _parse_json_array(text: str) -> list:
-    """Pull the first JSON array out of an LLM response. [] on failure."""
-    if not text:
-        return []
-    fenced = re.search(r"\[.*\]", text, re.DOTALL)
-    raw = fenced.group(0) if fenced else text
-    try:
-        data = json.loads(raw)
-        return data if isinstance(data, list) else []
-    except (ValueError, TypeError):
-        return []
+    """Pull the first JSON array out of an LLM response. [] on failure.
+
+    Epic 8: delegates to the shared extractor rather than a local regex + json.loads.
+    """
+    from apps.analyzer.pipeline.structured import extract_json
+
+    data = extract_json(text, expect=list)
+    return data if isinstance(data, list) else []
 
 
 def research_evidence(topic: str, kind: str, *, run=None, ask_cited=None) -> list[Evidence]:

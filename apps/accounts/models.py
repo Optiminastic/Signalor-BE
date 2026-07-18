@@ -12,7 +12,7 @@ from django.db import models
 # is handled by the Contact Sales form and never gets a plan key / Dodo checkout.
 # Both Individual plans get the full engine set — prompts + human support are the
 # differentiators, not engine access.
-_ALL_ENGINES = ["chatgpt", "gemini", "perplexity", "claude", "google", "bing"]
+_ALL_ENGINES = ["chatgpt", "gemini", "perplexity", "claude", "deepseek", "grok", "llama", "google", "bing"]
 
 # Interim project cap for Agency accounts — effectively "unlimited" until
 # per-brand Dodo billing lands (each added client brand becomes a paid line
@@ -146,7 +146,8 @@ class AccountProfile(models.Model):
     # Distinct from the brand/project name entered during onboarding. Blank for
     # individuals (and agencies created before this field existed).
     agency_name = models.CharField(max_length=255, blank=True, default="")
-    # The signing-up person's role/job title, captured on the agency sign-up
+    # The person's position at the agency (e.g. "Founder / CEO", "Marketing /
+    # Growth"), captured on the same sign-up step. Free-form label from a fixed
     # dropdown; blank for individuals.
     role = models.CharField(max_length=100, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -157,6 +158,40 @@ class AccountProfile(models.Model):
 
     def __str__(self):
         return f"{self.email} ({self.account_type})"
+
+
+class AgencyMembership(models.Model):
+    """A person on an agency's team, keyed by email (consistent with the rest of
+    the email-based identity model).
+
+    The agency is identified by the owner's email (an ``AccountProfile`` with
+    ``account_type=agency``); that owner is the implicit Admin and does NOT need a
+    membership row. Invited teammates get one row each, with an access ``role``
+    (admin/member) distinct from ``AccountProfile.role`` (a cosmetic job title).
+    """
+
+    class Role(models.TextChoices):
+        ADMIN = "admin", "Admin"
+        MEMBER = "member", "Member"
+
+    class Status(models.TextChoices):
+        INVITED = "invited", "Invited"
+        ACTIVE = "active", "Active"
+
+    agency_email = models.EmailField(db_index=True)
+    member_email = models.EmailField(db_index=True)
+    role = models.CharField(max_length=20, choices=Role.choices, default=Role.MEMBER)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
+    invited_by = models.EmailField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "accounts_agency_membership"
+        unique_together = ("agency_email", "member_email")
+
+    def __str__(self):
+        return f"{self.member_email} @ {self.agency_email} ({self.role})"
 
 
 class Subscription(models.Model):

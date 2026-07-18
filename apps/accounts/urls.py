@@ -1,5 +1,10 @@
 from django.urls import path
 
+from .agency_views import (
+    AgencyMemberDetailView,
+    AgencyMemberListView,
+    AgencyRoleView,
+)
 from .enterprise import EnterpriseLeadCreateView
 from .views import (
     AccountTypeView,
@@ -36,4 +41,9 @@ urlpatterns = [
     path("account/profile/", ProfileView.as_view(), name="profile"),
     path("account/profile/photo/", ProfilePhotoView.as_view(), name="profile-photo"),
     path("enterprise/lead/", EnterpriseLeadCreateView.as_view(), name="enterprise-lead"),
+    # Agency team management (role-based access)
+    path("agency/role/", AgencyRoleView.as_view(), name="agency-role"),
+    path("agency/members/", AgencyMemberListView.as_view(), name="agency-members"),
+    path("agency/members/invite/", AgencyMemberListView.as_view(), name="agency-members-invite"),
+    path("agency/members/<int:member_id>/", AgencyMemberDetailView.as_view(), name="agency-member-detail"),
 ]

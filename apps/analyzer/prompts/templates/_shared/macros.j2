@@ -1,0 +1,8 @@
+{# Shared prompt fragments (Epic 5). Import with:
+     {% import "_shared/macros.j2" as m %}
+   Keeping these in one place means a wording change (e.g. the GEO persona) updates every
+   prompt that uses it. #}
+
+{% macro geo_expert() -%}
+GEO (Generative Engine Optimization) expert
+{%- endmacro %}

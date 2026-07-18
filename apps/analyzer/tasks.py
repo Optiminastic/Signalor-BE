@@ -169,9 +169,10 @@ def _save_probes_and_tracks(
         generate_brand_prompts,
     )
 
-    # Save visibility probes
-    for probe in probes_data:
-        AIVisibilityProbe.objects.create(analysis_run=run, **probe)
+    # Save visibility probes — one INSERT, not one per probe (no custom save()/signals).
+    AIVisibilityProbe.objects.bulk_create(
+        [AIVisibilityProbe(analysis_run=run, **probe) for probe in probes_data]
+    )
 
     em = (run.email or "").strip().lower()
     limits = get_plan_limits(run.email)
@@ -192,16 +193,28 @@ def _save_probes_and_tracks(
         brand_prompts = stored[:gen_count]
     else:
         try:
+            from apps.organizations.services.brand_context import build_context
+            from apps.organizations.services.retrieval import build_knowledge_block
+
+            # Epic 4 (RAG): reason over retrieved, relevant knowledge instead of a raw
+            # crawl-text slice. The knowledge base is populated late in a run, so the
+            # brand's first analysis has an empty KB and cleanly falls back to crawl_text;
+            # later runs retrieve real content. The brand card stays the system= prompt.
+            kb_query = " ".join(filter(None, [brand_name, industry, "products, services, pricing, audience"]))
+            page_content = build_knowledge_block(run, kb_query) or crawl_text
+
             brand_prompts = generate_brand_prompts(
                 brand_name=brand_name,
                 brand_url=brand_url,
                 industry=industry,
-                page_content=crawl_text,
+                page_content=page_content,
                 meta_description=meta_description,
                 products=site_pages,
                 location="",
                 country=country,
                 count=gen_count,
+                brand_card=build_context(run),
+                cache_org=run.organization,
             )
         except Exception as exc:
             logger.warning("AI prompt generation failed for run %d: %s", run.id, exc)
@@ -461,8 +474,8 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
         technical_details["findings"].append("crawl_timeout")
 
     recs = generate_recommendations(pillar_details)
-    for rec in recs:
-        Recommendation.objects.create(analysis_run=run, **rec)
+    # one INSERT instead of one per recommendation (finding_code set upstream; no signals).
+    Recommendation.objects.bulk_create([Recommendation(analysis_run=run, **rec) for rec in recs])
 
     # Save brand visibility
     if brand_vis_result:
@@ -590,11 +603,22 @@ def run_single_page_analysis(run_id: int):
         industry = detect_industry(crawl.soup, crawl.text)
         logger.info("Run %d: detected industry = %s", run_id, industry)
 
+        # Optional SiteOne technical/SEO enrichment (gated by SIGNALOR_USE_SITEONE;
+        # best-effort — a failure never blocks the analysis).
+        from .pipeline import siteone_crawl
+
+        siteone_report = None
+        if siteone_crawl.is_configured():
+            try:
+                siteone_report = siteone_crawl.run_report(run.url, max_urls=12)
+            except siteone_crawl.SiteOneError as exc:
+                logger.warning("SiteOne report skipped for %s: %s", run.url, exc)
+
         # Phase 2: Run static pillars across ALL crawled pages
         # Score homepage first
-        content_score, content_details = score_content(crawl)
+        content_score, content_details = score_content(crawl, siteone=siteone_report)
         schema_score_val, schema_details = score_schema(crawl)
-        technical_score_val, technical_details = score_technical(crawl)
+        technical_score_val, technical_details = score_technical(crawl, siteone=siteone_report)
 
         # Score additional pages and aggregate
         all_content_scores = [content_score]
@@ -859,8 +883,11 @@ def run_single_page_analysis(run_id: int):
             "ai_visibility": ai_vis_score,
         }
         recs = generate_recommendations(pillar_details, pillar_scores=pillar_scores)
-        for rec in recs:
-            Recommendation.objects.create(analysis_run=run, **rec)
+        # Fold in SiteOne technical-crawl findings as tasks (otherwise display-only).
+        if siteone_report is not None:
+            recs.extend(siteone_crawl.to_recommendations(siteone_report))
+        # one INSERT instead of one per recommendation (see note above).
+        Recommendation.objects.bulk_create([Recommendation(analysis_run=run, **rec) for rec in recs])
 
         # Save brand visibility
         if brand_vis_result:
@@ -915,10 +942,38 @@ def run_single_page_analysis(run_id: int):
         except Exception as exc:
             logger.warning("Competitor citation reclassify failed for run %d: %s", run_id, exc)
 
+        # Epic 2: bootstrap a PENDING BrandProfile from this run's signals (BrandKit +
+        # competitors + run fields) so it can be reviewed/approved. Fail-soft — the
+        # bootstrap never raises, and an org-less run simply produces nothing.
+        try:
+            from apps.organizations.services.brand_profile import bootstrap_from_run
+
+            bootstrap_from_run(run, market_profile={})
+        except Exception as exc:
+            logger.warning("Brand profile bootstrap failed for run %d: %s", run_id, exc)
+
+        # Epic 3: ingest every page we already crawled (homepage + extras) into the
+        # org knowledge base. Fail-soft and org-scoped — anonymous runs are skipped
+        # inside the service, and ingestion never gates the run's completion.
+        from django.conf import settings as _settings
+
+        if getattr(_settings, "SIGNALOR_ENABLE_INGESTION", True):
+            try:
+                from apps.organizations.services.corpus_ingest import ingest_run_pages
+
+                pages = [{"url": crawl.url, "html": crawl.html, "text": crawl.text}]
+                pages += [{"url": c.url, "html": c.html, "text": c.text} for c in additional_crawls if c.ok]
+                ingest_run_pages(run, pages)
+            except Exception as exc:
+                logger.warning("Corpus ingestion failed for run %d: %s", run_id, exc)
+
         # Finalize
         run.composite_score = composite
         run.status = AnalysisRun.Status.COMPLETE
         run.progress = 100
+        # Clear any stale error (e.g. a "stalled" message the watchdog set while
+        # this run was waiting in the queue) — it completed cleanly after all.
+        run.error_message = ""
         run.llm_logs = get_collected_logs()
         run.save()
         logger.info("Analysis complete for run %d: score %.1f", run_id, composite)
@@ -1046,11 +1101,14 @@ def _generate_and_fire_competitive_prompts(run: AnalysisRun) -> None:
         brand = (run.brand_name or "").strip() or _domain_label(run.url)
         url = (run.url or "").strip()
 
+        from apps.organizations.services.brand_context import build_context
+
         prompts = generate_brand_prompts(
             brand_name=brand,
             brand_url=url,
             country=(run.country or "").strip(),
             count=10,
+            brand_card=build_context(run),
         )
         if not prompts:
             logger.info("Auto-gen returned no competitive prompts for run %d.", run.id)
@@ -1123,13 +1181,26 @@ def _kickoff_sitemap_audit(run_id: int) -> None:
 
 
 def start_analysis_task(run_id: int):
-    """Start the main analysis in a background thread and fire the sitemap
-    audit in parallel so the Sitemap tab is populated as soon as possible."""
+    """Dispatch the main analysis and fire the sitemap audit in parallel so the
+    Sitemap tab is populated as soon as possible.
+
+    The main analysis goes onto the RabbitMQ queue (``analyzer.run_analysis``)
+    when a broker is configured, so it runs on a dedicated worker off the web
+    process. When no broker is set (local dev / tests) the RabbitMQ app is in
+    eager mode, which would block the HTTP response for the whole run — so we
+    fall back to the original daemon thread to keep ``/analyze/`` fast.
+    """
     if not AnalysisRun.objects.filter(pk=run_id).exists():
         return
 
-    thread = threading.Thread(target=run_single_page_analysis, args=(run_id,), daemon=True)
-    thread.start()
+    from config.celery_rabbit import analysis_app
+
+    from .analysis_tasks import run_analysis_task
+
+    if analysis_app.conf.task_always_eager:
+        threading.Thread(target=run_single_page_analysis, args=(run_id,), daemon=True).start()
+    else:
+        run_analysis_task.delay(run_id)
 
     # Sibling sitemap audit — runs concurrently with the main analysis above.
     # Dispatch in its own thread: with no Celery broker (local dev) .delay()

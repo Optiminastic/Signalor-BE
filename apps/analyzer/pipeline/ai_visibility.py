@@ -1,8 +1,7 @@
-import json
 import logging
 import re
 from datetime import datetime
-from urllib.parse import urlparse, quote_plus
+from urllib.parse import quote_plus, urlparse
 
 import requests
 
@@ -86,26 +85,41 @@ def _detect_industry_keywords(soup, text: str) -> tuple[str, str]:
 
     # Industry detection with keyword extraction
     patterns = [
-        ("software_developer", ["developer", "software engineer", "full stack", "frontend", "backend", "programmer", "coder", "portfolio"],
-         "software development"),
-        ("saas", ["saas", "software as a service", "cloud platform", "subscription", "api", "dashboard"],
-         None),  # Will extract from content
-        ("ecommerce", ["shop", "store", "buy", "product", "cart", "price", "ecommerce"],
-         None),
-        ("agency", ["agency", "consulting", "services", "firm", "solutions provider"],
-         None),
-        ("health", ["health", "medical", "doctor", "wellness", "clinic", "therapy", "healthcare"],
-         "healthcare"),
-        ("education", ["course", "learn", "education", "training", "tutorial", "university"],
-         "education"),
-        ("finance", ["finance", "banking", "investment", "fintech", "insurance", "trading"],
-         "financial services"),
-        ("legal", ["lawyer", "attorney", "legal", "law firm", "litigation"],
-         "legal services"),
-        ("news", ["news", "media", "journalism", "editorial", "press"],
-         "news and media"),
-        ("local_business", ["local", "restaurant", "salon", "repair", "plumber", "dentist"],
-         None),
+        (
+            "software_developer",
+            [
+                "developer",
+                "software engineer",
+                "full stack",
+                "frontend",
+                "backend",
+                "programmer",
+                "coder",
+                "portfolio",
+            ],
+            "software development",
+        ),
+        (
+            "saas",
+            ["saas", "software as a service", "cloud platform", "subscription", "api", "dashboard"],
+            None,
+        ),  # Will extract from content
+        ("ecommerce", ["shop", "store", "buy", "product", "cart", "price", "ecommerce"], None),
+        ("agency", ["agency", "consulting", "services", "firm", "solutions provider"], None),
+        (
+            "health",
+            ["health", "medical", "doctor", "wellness", "clinic", "therapy", "healthcare"],
+            "healthcare",
+        ),
+        ("education", ["course", "learn", "education", "training", "tutorial", "university"], "education"),
+        (
+            "finance",
+            ["finance", "banking", "investment", "fintech", "insurance", "trading"],
+            "financial services",
+        ),
+        ("legal", ["lawyer", "attorney", "legal", "law firm", "litigation"], "legal services"),
+        ("news", ["news", "media", "journalism", "editorial", "press"], "news and media"),
+        ("local_business", ["local", "restaurant", "salon", "repair", "plumber", "dentist"], None),
     ]
 
     for category, keywords, default_desc in patterns:
@@ -132,8 +146,14 @@ def _extract_industry_description(soup, combined: str, keyword_hits: list[str]) 
 
     # Check for service/product descriptions in headings
     service_keywords = [
-        "services", "solutions", "products", "features", "what we do",
-        "how it works", "offerings", "capabilities",
+        "services",
+        "solutions",
+        "products",
+        "features",
+        "what we do",
+        "how it works",
+        "offerings",
+        "capabilities",
     ]
 
     for h in [h1] + h2s:
@@ -154,7 +174,9 @@ def _extract_industry_description(soup, combined: str, keyword_hits: list[str]) 
         return keywords[:60]
 
     # Try meta description
-    meta_desc = soup.find("meta", attrs={"name": "description"}) or soup.find("meta", property="og:description")
+    meta_desc = soup.find("meta", attrs={"name": "description"}) or soup.find(
+        "meta", property="og:description"
+    )
     if meta_desc and meta_desc.get("content"):
         desc = meta_desc["content"].strip()
         if len(desc) > 10:
@@ -175,26 +197,6 @@ def _extract_industry_description(soup, combined: str, keyword_hits: list[str]) 
             return p_text[:80]
 
     return "general website"
-
-
-def _build_site_context(soup, url: str, text: str) -> str:
-    """Build rich context for Gemini probe generation (no brand name)."""
-    parts = []
-
-    meta_desc = soup.find("meta", attrs={"name": "description"})
-    if meta_desc and meta_desc.get("content"):
-        parts.append(f"Description: {meta_desc['content'].strip()}")
-
-    h1 = soup.find("h1")
-    if h1:
-        parts.append(f"Main heading: {h1.get_text(strip=True)}")
-
-    h2s = [h.get_text(strip=True) for h in soup.find_all("h2")[:5]]
-    if h2s:
-        parts.append(f"Sections: {', '.join(h2s)}")
-
-    parts.append(f"Content: {text[:500]}")
-    return "\n".join(parts)
 
 
 def _apply_country_context(prompt: str, target_country: str | None) -> str:
@@ -219,6 +221,7 @@ def _generate_probes_llm(
     """Use LLM (via OpenRouter) to generate 5 category-specific probe prompts."""
     try:
         from .llm import ask_llm
+        from .structured import extract_json
 
         current_year = datetime.now().year
         country_line = (
@@ -251,23 +254,22 @@ def _generate_probes_llm(
         )
         text = ask_llm(prompt, preferred_provider="gemini", max_tokens=1024, purpose="AI Probe Generation")
 
-        match = re.search(r"\[.*\]", text, re.DOTALL)
-        if match:
-            probes = json.loads(match.group())
-            if isinstance(probes, list) and len(probes) >= 3:
-                # Extra safety: filter out any probe that contains the brand name
-                clean_probes = []
-                brand_lower = brand_name.lower()
-                brand_parts = [p for p in brand_lower.split() if len(p) >= 4]
-                for p in probes[:5]:
-                    p_lower = str(p).lower()
-                    if brand_lower in p_lower:
-                        continue
-                    if any(part in p_lower for part in brand_parts):
-                        continue
-                    clean_probes.append(_apply_country_context(str(p), target_country))
-                if len(clean_probes) >= 3:
-                    return clean_probes[:5]
+        # Epic 8: parse via the shared extractor instead of a local regex + json.loads.
+        probes = extract_json(text, expect=list)
+        if isinstance(probes, list) and len(probes) >= 3:
+            # Extra safety: filter out any probe that contains the brand name
+            clean_probes = []
+            brand_lower = brand_name.lower()
+            brand_parts = [p for p in brand_lower.split() if len(p) >= 4]
+            for p in probes[:5]:
+                p_lower = str(p).lower()
+                if brand_lower in p_lower:
+                    continue
+                if any(part in p_lower for part in brand_parts):
+                    continue
+                clean_probes.append(_apply_country_context(str(p), target_country))
+            if len(clean_probes) >= 3:
+                return clean_probes[:5]
     except Exception as exc:
         logger.warning("Probe generation failed: %s", exc)
 
@@ -314,7 +316,7 @@ def _match_brand(aliases: list[str], text: str) -> tuple[bool, float, str]:
 
     # 1. Exact word-boundary match
     for alias in aliases:
-        pattern = r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])'
+        pattern = r"(?<![a-z])" + re.escape(alias) + r"(?![a-z])"
         if re.search(pattern, text_lower):
             return True, 1.0, "exact"
 
@@ -327,7 +329,7 @@ def _match_brand(aliases: list[str], text: str) -> tuple[bool, float, str]:
     for alias in aliases:
         if "." not in alias and len(alias) >= 4:
             # Check for domain mention like "stripe.com"
-            domain_pattern = re.escape(alias) + r'\.\w{2,4}'
+            domain_pattern = re.escape(alias) + r"\.\w{2,4}"
             if re.search(domain_pattern, text_lower):
                 return True, 0.9, "domain"
 
@@ -346,7 +348,7 @@ def _match_brand(aliases: list[str], text: str) -> tuple[bool, float, str]:
             else:
                 alias_parts = alias.split()
                 for i in range(len(cleaned_words) - len(alias_parts) + 1):
-                    chunk = " ".join(cleaned_words[i:i + len(alias_parts)])
+                    chunk = " ".join(cleaned_words[i : i + len(alias_parts)])
                     if Levenshtein.ratio(alias, chunk) > 0.85:
                         return True, 0.7, "fuzzy_ngram"
     except ImportError:
@@ -386,8 +388,20 @@ def _analyze_mention_quality(text: str, aliases: list[str]) -> dict:
     surrounding = text_lower[context_start:context_end]
 
     # Sentiment
-    positive = ["recommend", "best", "top", "leading", "excellent", "popular",
-                "trusted", "innovative", "standout", "preferred", "outstanding", "great"]
+    positive = [
+        "recommend",
+        "best",
+        "top",
+        "leading",
+        "excellent",
+        "popular",
+        "trusted",
+        "innovative",
+        "standout",
+        "preferred",
+        "outstanding",
+        "great",
+    ]
     negative = ["avoid", "worst", "poor", "weak", "lacking", "limited", "issue", "problem"]
 
     pos_hits = sum(1 for s in positive if s in surrounding)
@@ -409,11 +423,15 @@ def _analyze_mention_quality(text: str, aliases: list[str]) -> dict:
     # Prominence
     context_bonus = {"recommended": 0.3, "top_mentioned": 0.25, "compared": 0.1, "listed": 0.0}
     sentiment_bonus = {"positive": 0.2, "neutral": 0.0, "negative": -0.2}
-    result["prominence"] = min(1.0, max(0.0,
-        result["position_score"] * 0.5
-        + context_bonus.get(result["context"], 0)
-        + sentiment_bonus.get(result["sentiment"], 0)
-    ))
+    result["prominence"] = min(
+        1.0,
+        max(
+            0.0,
+            result["position_score"] * 0.5
+            + context_bonus.get(result["context"], 0)
+            + sentiment_bonus.get(result["sentiment"], 0),
+        ),
+    )
 
     return result
 
@@ -438,8 +456,7 @@ def _check_ranking_position(text: str, brand_aliases: list[str]) -> dict:
 
     # Check numbered list patterns (1. Brand, **1. Brand**, 1) Brand)
     numbered_pattern = re.compile(
-        r'(?:^|\n)\s*(?:\*{0,2})(\d+)[.)]\s*(?:\*{0,2})\s*(.+?)(?:\n|$|:|\s*[-–—])',
-        re.MULTILINE
+        r"(?:^|\n)\s*(?:\*{0,2})(\d+)[.)]\s*(?:\*{0,2})\s*(.+?)(?:\n|$|:|\s*[-–—])", re.MULTILINE
     )
     matches = numbered_pattern.findall(text_lower)
 
@@ -467,7 +484,9 @@ def _fire_probe(prompt: str, brand_aliases: list[str]) -> tuple[str, bool, float
         from .llm import ask_multiple_llms
 
         # Ask 3 providers the same question (exclude perplexity to control cost)
-        responses = ask_multiple_llms(prompt, providers=["gpt", "claude", "gemini"], purpose="AI Visibility Probe", max_tokens=400)
+        responses = ask_multiple_llms(
+            prompt, providers=["gpt", "claude", "gemini"], purpose="AI Visibility Probe", max_tokens=400
+        )
 
         # Combine all responses for matching
         all_text = "\n\n".join(f"[{provider}]: {resp}" for provider, resp in responses.items() if resp)
@@ -479,8 +498,11 @@ def _fire_probe(prompt: str, brand_aliases: list[str]) -> tuple[str, bool, float
 
         # Apply entity collision confidence filter
         from .utils import compute_entity_confidence
+
         if found:
-            collision_confidence = compute_entity_confidence(brand_aliases[0] if brand_aliases else "", all_text)
+            collision_confidence = compute_entity_confidence(
+                brand_aliases[0] if brand_aliases else "", all_text
+            )
             match_confidence *= collision_confidence
             if collision_confidence < 0.3:
                 found = False  # Confirmed wrong entity — discard mention
@@ -492,12 +514,14 @@ def _fire_probe(prompt: str, brand_aliases: list[str]) -> tuple[str, bool, float
         # Count how many providers mentioned the brand
         provider_mentions = 0
         ranked_first_count = 0
-        for provider, resp in responses.items():
+        for _provider, resp in responses.items():
             if resp:
                 pf_found, _, _ = _match_brand(brand_aliases, resp)
                 # Apply collision confidence to per-provider matches too
                 if pf_found:
-                    prov_confidence = compute_entity_confidence(brand_aliases[0] if brand_aliases else "", resp)
+                    prov_confidence = compute_entity_confidence(
+                        brand_aliases[0] if brand_aliases else "", resp
+                    )
                     if prov_confidence < 0.3:
                         pf_found = False
                 if pf_found:
@@ -527,34 +551,39 @@ def _fire_probe(prompt: str, brand_aliases: list[str]) -> tuple[str, bool, float
 
 # ── Web Presence Checks (Google, Reddit, Medium, Brand Site) ───────────────
 
-def _check_google_presence(brand_name: str, domain: str) -> dict:
-    """Check if brand appears in Google search results via site content signals."""
-    result = {"found": False, "signals": []}
-    try:
-        from .llm import is_available, ask_llm
-        if not is_available():
-            return result
 
-        prompt = (
-            f"When someone searches Google for '{brand_name}', does this brand "
-            f"typically appear in results? Consider their domain '{domain}'. "
-            f"Also, would Google's AI Overview (SGE) likely mention this brand "
-            f"for industry-related queries? "
-            f"Reply JSON: {{\"in_google_results\": true/false, "
-            f"\"in_ai_overview\": true/false, \"confidence\": 0.0-1.0}}"
-        )
-        text = ask_llm(prompt, preferred_provider="gemini", max_tokens=256, purpose="Google Presence Check")
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            data = json.loads(match.group())
-            if data.get("in_google_results"):
-                result["found"] = True
-                result["signals"].append("google_search")
-            if data.get("in_ai_overview"):
-                result["signals"].append("google_ai_overview")
-            result["confidence"] = data.get("confidence", 0.0)
-    except Exception as exc:
-        logger.warning("Google presence check failed: %s", exc)
+def _check_google_presence(brand_name: str, domain: str) -> dict:
+    """Whether the brand actually appears in Google results, via a real Serper search.
+
+    Epic 8: this previously asked an LLM "does this brand typically appear in Google
+    results / AI Overview?" -- something no model can know -- and awarded points for the
+    guess. It now reports observed organic results and knowledgeGraph presence.
+
+    ``unknown=True`` (with ``found=False``) when Serper is unavailable, so the caller
+    awards nothing rather than crediting a guess. The old ``in_ai_overview`` signal is
+    gone: Serper does not expose AI Overview, and inventing it is what this epic removes.
+    """
+    from . import serper
+
+    result = {"found": False, "signals": [], "confidence": 0.0, "unknown": False}
+    data = serper.search(brand_name, num=10)
+    if data is None:
+        result["unknown"] = True
+        return result
+
+    own = (domain or "").lower().removeprefix("www.")
+    for item in (data.get("organic") or [])[:10]:
+        host = urlparse(item.get("link") or "").netloc.lower().removeprefix("www.")
+        if own and (host == own or host.endswith("." + own)):
+            result["found"] = True
+            result["signals"].append("google_search")
+            break
+
+    if (data.get("knowledgeGraph") or {}).get("title"):
+        result["found"] = True
+        result["signals"].append("google_knowledge_panel")
+
+    result["confidence"] = 1.0  # observed, not estimated
     return result
 
 
@@ -594,6 +623,7 @@ def _check_reddit_presence(brand_name: str, brand_aliases: list[str]) -> dict:
 def _check_platform_presence(brand_name: str, brand_aliases: list[str], site: str, label: str) -> dict:
     """Check brand mentions on a specific platform via Serper.dev Google site search."""
     import os
+
     result = {"found": False, "mentions": 0, "top_urls": [], "platform": label}
 
     api_key = os.getenv("SERPER_API_KEY", "")
@@ -626,7 +656,9 @@ def _check_platform_presence(brand_name: str, brand_aliases: list[str], site: st
             link = item.get("link", "")
 
             # Check if brand is mentioned in title or snippet
-            mentioned_here = any(a in title or a in snippet for a in [brand_lower] + [a.lower() for a in brand_aliases])
+            mentioned_here = any(
+                a in title or a in snippet for a in [brand_lower] + [a.lower() for a in brand_aliases]
+            )
             if mentioned_here:
                 mention_count += 1
                 urls.append(link)
@@ -678,7 +710,6 @@ def _check_brand_website_quality(crawl: CrawlResult) -> dict:
         return result
 
     soup = crawl.soup
-    html_lower = str(soup).lower()
 
     # Check for key pages linked
     for a in soup.find_all("a", href=True):
@@ -725,7 +756,9 @@ def _check_brand_website_quality(crawl: CrawlResult) -> dict:
     return result
 
 
-def score_ai_visibility(crawl: CrawlResult, target_country: str | None = None, override_brand: str = "") -> tuple[float, dict, list[dict]]:
+def score_ai_visibility(
+    crawl: CrawlResult, target_country: str | None = None, override_brand: str = ""
+) -> tuple[float, dict, list[dict]]:
     """Returns (score, details, probes_data)."""
     if not crawl.ok:
         return 0.0, {"error": crawl.error}, []
@@ -737,7 +770,6 @@ def score_ai_visibility(crawl: CrawlResult, target_country: str | None = None, o
 
     # Detect industry keywords — NOT the brand name
     category, industry_desc = _detect_industry_keywords(soup, crawl.text)
-    site_context = _build_site_context(soup, crawl.url, crawl.text)
 
     details = {
         "checks": {
@@ -797,12 +829,14 @@ def score_ai_visibility(crawl: CrawlResult, target_country: str | None = None, o
                 ranked_first = quality.get("ranked_first_count", 0)
                 total_ranked_first += ranked_first
 
-                probes_data.append({
-                    "prompt_used": prompt,
-                    "llm_response": response_text[:2000],
-                    "brand_mentioned": mentioned,
-                    "confidence": round(confidence, 2),
-                })
+                probes_data.append(
+                    {
+                        "prompt_used": prompt,
+                        "llm_response": response_text[:2000],
+                        "brand_mentioned": mentioned,
+                        "confidence": round(confidence, 2),
+                    }
+                )
             except Exception as exc:
                 logger.warning("Probe execution failed: %s", exc)
 
@@ -848,7 +882,9 @@ def score_ai_visibility(crawl: CrawlResult, target_country: str | None = None, o
             # Platform presence checks (Reddit, Quora, Wikipedia, etc.)
             platform_futures = {}
             for plat in PRESENCE_PLATFORMS:
-                f = executor.submit(_check_platform_presence, brand_name, brand_aliases, plat["site"], plat["label"])
+                f = executor.submit(
+                    _check_platform_presence, brand_name, brand_aliases, plat["site"], plat["label"]
+                )
                 platform_futures[plat["label"]] = f
 
             platform_results["google"] = future_google.result()
@@ -861,16 +897,23 @@ def score_ai_visibility(crawl: CrawlResult, target_country: str | None = None, o
 
     _run_checks()
 
-    # Google presence (10 pts)
+    # Google presence (10 pts) — observed Serper signals only (Epic 8).
+    # The retired "google_ai_overview" half of these points was an LLM guess; it is now
+    # earned by a real knowledge panel instead.
     google_data = platform_results.get("google", {})
     details["checks"]["google_presence"] = google_data
     google_pts = 0.0
-    if google_data.get("found"):
-        google_pts += 5.0
-    if "google_ai_overview" in google_data.get("signals", []):
-        google_pts += 5.0
-    if google_pts == 0:
-        details["findings"].append("not_in_google_ai")
+    if google_data.get("unknown"):
+        # No search backend -> we did not measure it. Award nothing, but do not claim an
+        # absence we never observed (that would raise a bogus recommendation).
+        pass
+    else:
+        if google_data.get("found"):
+            google_pts += 5.0
+        if "google_knowledge_panel" in google_data.get("signals", []):
+            google_pts += 5.0
+        if google_pts == 0:
+            details["findings"].append("not_in_google_ai")
     score += google_pts
 
     # Platform presence scoring (20 pts total — spread across all platforms)

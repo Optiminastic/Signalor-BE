@@ -1,0 +1,15 @@
+{
+  "id": "auto_fix_meta",
+  "prompt": "auto_fix_meta",
+  "version": "v1",
+  "vars": {
+    "brand": "Acme Analytics",
+    "url": "https://acmeanalytics.io/pricing",
+    "title": "Improve the pricing page meta tags",
+    "action": "Write an SEO title and meta description that mention pricing and the product category.",
+    "page_content": "Acme Analytics pricing. Simple self-serve plans for B2B SaaS teams. Free tier, Pro, and Enterprise."
+  },
+  "format_spec": "A single JSON object with exactly two keys, seo_title and seo_description. seo_title must be <= 60 characters and seo_description <= 160 characters. No markdown.",
+  "known_good": "{\"seo_title\": \"Acme Analytics Pricing - Plans for SaaS Teams\", \"seo_description\": \"Compare Acme Analytics pricing: free, Pro, and Enterprise self-serve product analytics plans built for B2B SaaS teams.\"}",
+  "thresholds": {"faithfulness": 0.7, "relevance": 0.7, "format_score": 0.8}
+}

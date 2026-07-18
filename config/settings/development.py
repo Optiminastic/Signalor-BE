@@ -28,6 +28,10 @@ else:
         }
     }
 
+# Shared satellite-blog DB (routed via config.db_router.BlogRouter).
+if BLOG_DATABASE_URL:
+    DATABASES["blog"] = dj_database_url.parse(BLOG_DATABASE_URL, conn_max_age=600)
+
 
 CORS_ALLOW_ALL_ORIGINS = True
 # Chrome 117+ requires this on the preflight for cross-port localhost requests

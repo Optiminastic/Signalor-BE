@@ -11,6 +11,7 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from dodopayments import AuthenticationError, PermissionDeniedError
 from rest_framework import status
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -343,15 +344,14 @@ class AccountTypeView(APIView):
         if not email:
             return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
         account_type = get_account_type(email)
-        agency_name = (
-            AccountProfile.objects.filter(email=email).values_list("agency_name", flat=True).first() or ""
-        )
+        row = AccountProfile.objects.filter(email=email).values("agency_name", "role").first() or {}
         return Response(
             {
                 "email": email,
                 "account_type": account_type,
                 "is_agency": account_type == "agency",
-                "agency_name": agency_name,
+                "agency_name": row.get("agency_name") or "",
+                "role": row.get("role") or "",
             }
         )
 
@@ -379,10 +379,11 @@ class AccountTypeView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Optional agency name, captured on the dedicated agency sign-up step.
-        # Trimmed and length-capped; only stored for agency accounts (ignored
-        # for individuals, who have no agency name).
+        # Optional agency name + role, captured on the dedicated agency sign-up
+        # step. Trimmed and length-capped; only stored for agency accounts
+        # (ignored for individuals, who have no agency name/role).
         agency_name = (request.data.get("agency_name") or "").strip()[:255]
+        role = (request.data.get("role") or "").strip()[:100]
 
         # Set the NOT NULL string fields explicitly on create so a schema/code
         # drift (DB has the column NOT NULL but a deployed build lacks the model
@@ -395,10 +396,13 @@ class AccountTypeView(APIView):
         if profile.account_type != account_type:
             profile.account_type = account_type
             update_fields.append("account_type")
-        if account_type == AccountProfile.AccountType.AGENCY and agency_name:
-            if profile.agency_name != agency_name:
+        if account_type == AccountProfile.AccountType.AGENCY:
+            if agency_name and profile.agency_name != agency_name:
                 profile.agency_name = agency_name
                 update_fields.append("agency_name")
+            if role and profile.role != role:
+                profile.role = role
+                update_fields.append("role")
         if update_fields:
             update_fields.append("updated_at")
             profile.save(update_fields=update_fields)
@@ -408,6 +412,7 @@ class AccountTypeView(APIView):
                 "account_type": profile.account_type,
                 "is_agency": profile.account_type == "agency",
                 "agency_name": profile.agency_name,
+                "role": profile.role,
             }
         )
 
@@ -1343,11 +1348,14 @@ class DeleteAccountView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        email = request.data.get("email", "").lower().strip()
-        confirm = request.data.get("confirm", "").lower().strip()
+        # Delete the *verified* caller's account (JWT); legacy ?email= until enforcement
+        # is on. Without this, anyone could delete any account by naming its email.
+        from .identity import resolve_request_email
 
-        if not email:
-            return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
+        email, err = resolve_request_email(request)
+        if err:
+            return err
+        confirm = request.data.get("confirm", "").lower().strip()
 
         if confirm != "delete my account":
             return Response(
@@ -1433,6 +1441,23 @@ class DeleteAccountView(APIView):
         )
 
 
+def _get_or_provision_user(email):
+    """Return the Django ``User`` for ``email``, creating it on demand.
+
+    Identity lives in the better-auth session; the Django ``User`` row is a
+    secondary app-data store (profile photo, phone, tour flag) that may not
+    exist yet for an authenticated email. Mirror the ``Subscription``
+    get_or_create pattern so profile writes don't 404 for a real user.
+    """
+    from .models import User
+
+    user, created = User.objects.get_or_create(email=email, defaults={"username": email})
+    if created:
+        user.set_unusable_password()
+        user.save(update_fields=["password"])
+    return user
+
+
 class ProfileView(APIView):
     """GET /api/account/profile/?email= — user-editable profile fields.
 
@@ -1479,16 +1504,11 @@ class ProfileView(APIView):
 
     def patch(self, request):
         """Update editable name / phone fields. Email is identity, not editable here."""
-        from .models import User
-
         email = (request.data.get("email") or "").lower().strip()
         if not email:
             return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
-            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        user = _get_or_provision_user(email)
 
         changed = []
         for field in ("first_name", "last_name", "phone_number"):
@@ -1517,12 +1537,14 @@ class ProfilePhotoView(APIView):
     """
 
     permission_classes = [AllowAny]
+    # The project's global DRF config only enables JSONParser; a file upload
+    # needs multipart, so opt this view into the form parsers explicitly.
+    parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
-        from .models import User
-        from .profile_storage import delete_photo, is_b2_enabled, photo_url, upload_photo
+        from .profile_storage import delete_photo, is_storage_enabled, photo_url, upload_photo
 
-        if not is_b2_enabled():
+        if not is_storage_enabled():
             return Response(
                 {"error": "Photo uploads are not configured on this server."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -1532,10 +1554,7 @@ class ProfilePhotoView(APIView):
         if not email:
             return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
-            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        user = _get_or_provision_user(email)
 
         photo = request.FILES.get("photo")
         if not photo:
@@ -1569,7 +1588,8 @@ class ProfilePhotoView(APIView):
         try:
             user = User.objects.get(email=email)
         except User.DoesNotExist:
-            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+            # No row, nothing to remove — succeed idempotently.
+            return Response({"photo_url": None})
 
         if user.profile_photo_key:
             delete_photo(user.profile_photo_key)

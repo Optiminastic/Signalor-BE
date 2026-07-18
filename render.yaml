@@ -75,6 +75,11 @@ services:
           type: redis
           name: signalor-redis
           property: connectionString
+      # Broker for the analysis Celery app (config.celery_rabbit). Without it the
+      # dispatcher falls back to running analyses inline in a web thread instead
+      # of handing them to signalor-analysis-worker. External broker (CloudAMQP).
+      - key: RABBITMQ_URL
+        sync: false
       - key: ALLOWED_HOSTS
         value: api.signalor.ai,signalor-backend.onrender.com
       - key: CORS_ALLOWED_ORIGINS
@@ -123,6 +128,14 @@ services:
         sync: false
       - key: GOOGLE_CLIENT_SECRET
         sync: false
+      # Both redirect URIs must be set explicitly: the settings defaults point at
+      # localhost, so omitting them here silently builds consent URLs that send
+      # production users to their own machine. Each must also be registered on the
+      # OAuth client in the Google Cloud console, byte-for-byte.
+      - key: GOOGLE_ANALYTICS_REDIRECT_URI
+        value: https://signalor.ai/settings/integrations/callback/google-analytics
+      - key: GOOGLE_SEARCH_CONSOLE_REDIRECT_URI
+        value: https://api.signalor.ai/api/integrations/google-search-console/callback/
       - key: GEMINI_API_KEY
         sync: false
       - key: DATAFORSEO_LOGIN
@@ -215,6 +228,53 @@ services:
       - key: DATAFORSEO_PASSWORD
         sync: false
 
+  - type: worker
+    name: signalor-analysis-worker
+    runtime: python
+    plan: starter
+    region: oregon
+    buildCommand: ./build.sh
+    # Dedicated worker for the analyze / re-analyze pipeline on the RabbitMQ
+    # Celery app (config.celery_rabbit). Sitemap audits stay on the Redis
+    # worker above. Bump --concurrency as analysis volume grows.
+    startCommand: celery -A config.celery_rabbit worker -Q analysis --loglevel=info --concurrency=2
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: signalor-backend
+          envVarKey: SECRET_KEY
+      - key: DATABASE_URL
+        fromDatabase:
+          name: signalor-db
+          property: connectionString
+      # Still needed: the analysis pipeline reads/invalidates the Redis cache.
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: signalor-redis
+          property: connectionString
+      # Render has no managed RabbitMQ — point this at an external broker
+      # (e.g. CloudAMQP): amqp://user:pass@host:5672/vhost
+      - key: RABBITMQ_URL
+        sync: false
+      - key: ALLOWED_HOSTS
+        value: api.signalor.ai
+      - key: FRONTEND_BASE_URL
+        value: https://signalor.ai
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DATAFORSEO_LOGIN
+        sync: false
+      - key: DATAFORSEO_PASSWORD
+        sync: false
+
   - type: cron
     name: signalor-scheduled-analyses
     runtime: python
@@ -289,3 +349,185 @@ services:
           envVarKey: SECRET_KEY
       - key: ALLOWED_HOSTS
         value: api.signalor.ai
+
+  # Daily re-check of open fixes. Re-verifies each brand's still-open on-page
+  # recommendations against the live site, then re-ranks them and flags one
+  # "priority fix of the day" (daily_priority_rank / is_top_fix) — which is what
+  # the Growth Agent's plan is ordered by. Cheap: the verifier caches one page
+  # fetch per run and makes no LLM calls. RECHECK_LIMIT caps brands per tick
+  # without a redeploy (0 = all).
+  - type: cron
+    name: signalor-recheck-recommendations
+    runtime: python
+    plan: starter
+    region: oregon
+    schedule: "0 3 * * *"
+    buildCommand: ./build.sh
+    startCommand: python manage.py recheck_recommendations --limit ${RECHECK_LIMIT:-0}
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: RECHECK_LIMIT
+        value: "0"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: signalor-db
+          property: connectionString
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: signalor-backend
+          envVarKey: SECRET_KEY
+      - key: ALLOWED_HOSTS
+        value: api.signalor.ai
+
+  # Lifecycle drip queue — ticks every 10 min and sends the next-due email
+  # (E1 30m / E2 24h / E3 48h / E4 72h) to enrolled, non-suppressed users.
+  # process_drip_queue is idempotent (never resends a step) and honours each
+  # user's due time + the 20h anti-burst gap, so a missed tick just retries.
+  - type: cron
+    name: signalor-drip-queue
+    runtime: python
+    plan: starter
+    region: oregon
+    schedule: "*/10 * * * *"
+    buildCommand: ./build.sh
+    startCommand: python manage.py process_drip_queue
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: signalor-backend
+          envVarKey: SECRET_KEY
+      - key: DATABASE_URL
+        fromDatabase:
+          name: signalor-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: signalor-redis
+          property: connectionString
+      - key: ALLOWED_HOSTS
+        value: api.signalor.ai
+      - key: FRONTEND_BASE_URL
+        value: https://signalor.ai
+      # SMTP creds — the only secrets this cron needs. Copy from the
+      # signalor-backend web service. (No Gemini/DataForSEO/encryption key:
+      # the drip just reads persisted run data and sends email.)
+      - key: EMAIL_HOST
+        sync: false
+      - key: EMAIL_PORT
+        value: "587"
+      - key: EMAIL_HOST_USER
+        sync: false
+      - key: EMAIL_HOST_PASSWORD
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        value: hello@signalor.ai
+      # All lifecycle mail sends from hello@signalor.ai as "Team Signalor".
+      # FOUNDER_* drives Email 4's From header + the unsubscribe mailto.
+      - key: FOUNDER_FROM_EMAIL
+        value: hello@signalor.ai
+      - key: FOUNDER_FROM_NAME
+        value: Team Signalor
+      # NEVER set DRIP_FAST_MODE here — it compresses the 4-email sequence to
+      # ~4 minutes. The command also refuses to start if FAST_MODE + DEBUG=False.
+
+  # Weekly AI-visibility email — Fridays 09:00 UTC.
+  - type: cron
+    name: signalor-weekly-emails
+    runtime: python
+    plan: starter
+    region: oregon
+    schedule: "0 9 * * 5"
+    buildCommand: ./build.sh
+    startCommand: python manage.py send_weekly_emails
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: signalor-backend
+          envVarKey: SECRET_KEY
+      - key: DATABASE_URL
+        fromDatabase:
+          name: signalor-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: signalor-redis
+          property: connectionString
+      - key: ALLOWED_HOSTS
+        value: api.signalor.ai
+      - key: FRONTEND_BASE_URL
+        value: https://signalor.ai
+      # SMTP creds — the only secrets this cron needs. Copy from the
+      # signalor-backend web service.
+      - key: EMAIL_HOST
+        sync: false
+      - key: EMAIL_PORT
+        value: "587"
+      - key: EMAIL_HOST_USER
+        sync: false
+      - key: EMAIL_HOST_PASSWORD
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        value: hello@signalor.ai
+
+  # Daily auto-backlinks — hourly tick publishes one fresh blog to each of the 5
+  # satellite sites for every brand whose schedule is due, then reschedules +24h.
+  # Brands' next_run_at spread across the day, so load is spread and each brand
+  # gets its 5-blog batch ~24h apart. run_auto_backlinks is idempotent per day.
+  - type: cron
+    name: signalor-backlink-scheduler
+    runtime: python
+    plan: starter
+    region: oregon
+    schedule: "0 * * * *"
+    buildCommand: ./build.sh
+    startCommand: python manage.py run_backlink_schedules
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: signalor-backend
+          envVarKey: SECRET_KEY
+      - key: DATABASE_URL
+        fromDatabase:
+          name: signalor-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: signalor-redis
+          property: connectionString
+      - key: ALLOWED_HOSTS
+        value: api.signalor.ai
+      # Gemini generates the blogs; the S3 backlink store persists them.
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_BUCKET
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_REGION
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_PREFIX
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_ACCESS_KEY_ID
+        sync: false
+      - key: BACKLINKS_BLOG_AWS_SECRET_ACCESS_KEY
+        sync: false

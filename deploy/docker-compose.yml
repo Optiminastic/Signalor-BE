@@ -2,13 +2,25 @@
 #
 # Self-hosted, single box:
 #   caddy   → TLS termination + reverse proxy (Let's Encrypt, auto-renew)
-#   web     → Django + Gunicorn (built from ../Dockerfile, Chromium baked in)
-#   worker  → Celery worker (sitemap audits) — same image as web
-#   db      → PostgreSQL 16, data dir on the Hetzner volume
-#   redis   → cache / throttling / Celery broker
+#   web             → Django + Gunicorn (built from ../Dockerfile, Chromium baked in)
+#   worker          → Celery worker (sitemap audits, Redis broker) — same image as web
+#   analysis-worker → Celery worker (analyze / re-analyze, RabbitMQ broker)
+#   db              → PostgreSQL 16, data dir on the Hetzner volume
+#   redis           → cache / throttling / sitemap Celery broker
+#   rabbitmq        → broker for the analysis Celery app
 #
-# The two Render cron jobs (run_scheduled_analyses, cleanup_stale_rewards) and
-# nightly pg_dump backups run from the HOST crontab — see DEPLOY.md.
+# The Render cron jobs (run_scheduled_analyses, cleanup_stale_rewards,
+# run_backlink_schedules — the daily auto-backlinks publisher,
+# recheck_recommendations) and nightly pg_dump backups run from the HOST
+# crontab — see DEPLOY.md. Example entry for the backlinks job (hourly):
+#   0 * * * * cd /opt/signalor/deploy && docker compose run --rm web \
+#             python manage.py run_backlink_schedules
+#
+# The daily re-check re-verifies each brand's open fixes and ranks them, which is
+# what orders the Growth Agent's daily plan (daily_priority_rank / is_top_fix).
+# Without it those fields stay unset and the plan falls back to raw priority:
+#   0 3 * * * cd /opt/signalor/deploy && docker compose run --rm web \
+#             python manage.py recheck_recommendations
 #
 # Durable state lives on the Hetzner volume mounted at /mnt/HC_Volume_105845076
 # (Postgres data, backups, Caddy certs).
@@ -72,6 +84,9 @@ services:
       # /app/scripts (not /app) on sys.path[0], so `import config` fails. Putting
       # /app on PYTHONPATH makes the project package importable for that script.
       PYTHONPATH: /app
+      # Enqueue analysis runs to RabbitMQ (else the dispatcher runs them inline
+      # in a web thread). Must match the analysis-worker's broker.
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
     # Migrate before serving, then exec gunicorn so it becomes PID 1 and
     # receives signals cleanly. (We don't run scripts/reconcile_migrations.py:
     # it patches Render/staging-specific migration drift that this fresh,
@@ -87,6 +102,7 @@ services:
     depends_on:
       db: {condition: service_healthy}
       redis: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
     healthcheck:
       # Just verify gunicorn is accepting connections. A full HTTP check would
       # trip ALLOWED_HOSTS / SECURE_SSL_REDIRECT from inside the container.
@@ -102,6 +118,37 @@ services:
     depends_on:
       db: {condition: service_healthy}
       redis: {condition: service_healthy}
+      web: {condition: service_started}
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    restart: unless-stopped
+    # Broker for the analysis Celery app only (sitemap stays on Redis). The
+    # management UI on 15672 is handy for inspecting the analysis queue.
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [internal]
+
+  analysis-worker:
+    <<: *app
+    # Dedicated worker for the RabbitMQ-backed analyze / re-analyze pipeline.
+    # -Q analysis: consume the work queue only, NOT the dead-letter queue.
+    command: ["celery", "-A", "config.celery_rabbit", "worker", "-Q", "analysis", "--loglevel=info", "--concurrency=2"]
+    # Point the analysis app at the in-stack RabbitMQ. Set here (not via stack.env
+    # interpolation) so the broker host resolves to the compose service name.
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
+    depends_on:
+      db: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
       web: {condition: service_started}
 
   caddy:
@@ -124,6 +171,7 @@ services:
 
 volumes:
   redis_data:
+  rabbitmq_data:
 
 networks:
   internal:

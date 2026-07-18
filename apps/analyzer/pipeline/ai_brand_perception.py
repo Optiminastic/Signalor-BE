@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Any
 
 from apps.analyzer.pipeline.llm import ask_llm, is_available
@@ -98,15 +97,18 @@ JSON:
                 "error": "empty_llm_response",
             }
 
-        m = re.search(r"\{[\s\S]*\}", raw)
-        if not m:
+        # Epic 8: one shared extractor (handles fences + chatty preambles) instead of a
+        # local regex + json.loads.
+        from .structured import extract_json
+
+        data = extract_json(raw, expect=dict)
+        if not isinstance(data, dict):
             return {
                 "facts": [],
                 "summary": raw[:500].strip(),
                 "caveat": "Response was not structured JSON; showing excerpt only.",
                 "error": "parse_json",
             }
-        data = json.loads(m.group())
         facts = data.get("facts") or []
         if not isinstance(facts, list):
             facts = []

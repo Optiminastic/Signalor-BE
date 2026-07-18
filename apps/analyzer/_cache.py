@@ -10,14 +10,35 @@ backend error internally so call sites stay clean (no defensive try/except
 wrappers needed). A failed invalidation is never an excuse to fail the
 underlying business operation.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from django.core.cache import cache
 
 logger = logging.getLogger("apps")
+
+# Brand card (Epic 7). Cached per org and invalidated whenever the BrandProfile
+# changes, so the TTL is only a safety net against a missed invalidation.
+BRAND_CARD_TTL = 600
+
+
+def brand_card_key(org_id: int | str) -> str:
+    return f"brandcard:{org_id}"
+
+
+def invalidate_brand_card(org_id: int | str | None) -> None:
+    """Drop an org's cached brand card. Call on any BrandProfile change
+    (approve/reject, edit, bootstrap upsert). Best-effort: never raises."""
+    if not org_id:
+        return
+    try:
+        cache.delete(brand_card_key(org_id))
+    except Exception:
+        logger.warning("invalidate_brand_card(%s) failed", org_id, exc_info=True)
 
 
 def cached_or_compute(key: str, ttl_seconds: int, compute: Callable[[], Any]) -> Any:
@@ -57,7 +78,9 @@ def invalidate_run_aggregates(slug: str) -> None:
     """
     if not slug:
         return
-    keys = [f"sov:{slug}", f"cite:{slug}", f"trend:{slug}"]
+    # ai_rec_summary (written in views.py, 600s TTL) must be invalidated here too, or
+    # the Overview citation card serves stale numbers for up to 10 min after a rerun.
+    keys = [f"sov:{slug}", f"cite:{slug}", f"trend:{slug}", f"ai_rec_summary:{slug}"]
     try:
         cache.delete_many(keys)
     except Exception:

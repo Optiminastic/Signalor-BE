@@ -82,6 +82,30 @@ WORKDIR /app
 RUN playwright install --with-deps chromium chromium-headless-shell \
     && rm -rf /var/lib/apt/lists/*
 
+# ── SiteOne crawler (optional technical-crawl engine) ──────────────────────
+# Bake the Linux x64 binary into the image so run_single_page_analysis can shell
+# out to it (siteone_crawl.py -> siteone-crawler on PATH). It stays *disabled* at
+# runtime until SIGNALOR_USE_SITEONE=true, so this only affects whether the binary
+# is present. Supply the verified release tarball at build time
+# (--build-arg SITEONE_URL=... , optional SITEONE_SHA256=...); left unset the build
+# skips it and SiteOne simply stays off. Placed before COPY so it stays cached.
+ARG SITEONE_URL=""
+ARG SITEONE_SHA256=""
+RUN if [ -n "$SITEONE_URL" ]; then \
+        set -eux; \
+        apt-get update && apt-get install -y --no-install-recommends curl ca-certificates; \
+        curl -fsSL -o /tmp/siteone.tar.gz "$SITEONE_URL"; \
+        if [ -n "$SITEONE_SHA256" ]; then echo "$SITEONE_SHA256  /tmp/siteone.tar.gz" | sha256sum -c -; fi; \
+        mkdir -p /opt/siteone; \
+        tar -xzf /tmp/siteone.tar.gz -C /opt/siteone; \
+        ln -sf "$(find /opt/siteone -type f -name 'siteone-crawler' | head -1)" /usr/local/bin/siteone-crawler; \
+        chmod +x /usr/local/bin/siteone-crawler; \
+        rm -rf /tmp/siteone.tar.gz /var/lib/apt/lists/*; \
+        /usr/local/bin/siteone-crawler --version || true; \
+    else \
+        echo "SITEONE_URL not set — SiteOne crawler not baked (stays disabled)"; \
+    fi
+
 # App source last — keeps the deps + chromium layers cached across edits.
 COPY . .
 

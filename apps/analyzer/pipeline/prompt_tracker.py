@@ -12,7 +12,6 @@ extracts signals, and computes 5-factor weighted AI visibility scores.
   Final Score = authority×0.40 + content_quality×0.35 + structural×0.25
 """
 
-import json
 import logging
 
 logger = logging.getLogger("apps")
@@ -23,6 +22,9 @@ _ENGINE_MAP = {
     "claude": "claude",
     "gemini": "gemini",
     "perplexity": "perplexity",
+    "deepseek": "deepseek",
+    "grok": "grok",
+    "llama": "llama",
 }
 
 DEFAULT_RUNS = 3  # Fire each prompt N times to handle AI randomness
@@ -245,7 +247,7 @@ def _providers_and_search_from_plan_engines(
     If allowed_engines is None, use full stack.
     """
     if allowed_engines is None:
-        return (["gpt", "claude", "gemini", "perplexity"], True, True)
+        return (["gpt", "claude", "gemini", "perplexity", "deepseek", "grok", "llama"], True, True)
     s = {e.strip().lower() for e in allowed_engines if e}
     provs: list[str] = []
     if "chatgpt" in s:
@@ -256,6 +258,12 @@ def _providers_and_search_from_plan_engines(
         provs.append("claude")
     if "perplexity" in s:
         provs.append("perplexity")
+    if "deepseek" in s:
+        provs.append("deepseek")
+    if "grok" in s:
+        provs.append("grok")
+    if "llama" in s:
+        provs.append("llama")
     include_google = "google" in s
     include_bing = "bing" in s
     if not provs and not include_google and not include_bing:
@@ -490,12 +498,22 @@ def generate_brand_prompts(
     location: str = "",
     country: str = "",
     count: int = 10,
+    brand_card: str | None = None,
+    cache_org=None,
 ) -> list[str]:
     """
     Use AI to deeply understand the brand — what it is (product, service, person,
     local business, anything) — then generate prompts real users would ask AI.
+
+    ``brand_card`` (Epic 2) is an optional verified brand-context block passed as the
+    system prompt so generation is grounded in the approved BrandProfile.
+
+    ``cache_org`` (Epic 7) scopes the semantic response cache to one brand. Tracking
+    prompts are meant to be stable across re-runs, so replaying an identical prompt from
+    cache is the desired behavior and saves a generation per re-analysis.
     """
-    from .llm import ask_llm as ask_single_llm
+    from .schemas import PromptList
+    from .structured import ask_structured
 
     # Build rich context
     context_parts = [
@@ -510,7 +528,9 @@ def generate_brand_prompts(
         loc = ", ".join(filter(None, [location, country]))
         context_parts.append(f"Location/Region: {loc}")
     if page_content:
-        context_parts.append(f"Website content (first 2000 chars):\n{page_content[:2000]}")
+        # ``page_content`` is retrieved, relevant knowledge when the KB has content
+        # (Epic 4), else a raw crawl-text fallback. The slice is a safety cap only.
+        context_parts.append(f"Relevant website content:\n{page_content[:2500]}")
     if products:
         context_parts.append(f"Pages/products found on site: {', '.join(products[:10])}")
 
@@ -538,65 +558,29 @@ def generate_brand_prompts(
     except Exception:
         pass
 
-    prompt = f"""You are a GEO (Generative Engine Optimization) expert. Your job is to deeply understand this entity and generate {count} prompts that real people would type into ChatGPT, Gemini, Perplexity, or Claude.
+    from apps.analyzer.prompts import render
 
-CONTEXT:
-{chr(10).join(context_parts)}
+    prompt = render(
+        "brand_prompts",
+        count=count,
+        context=chr(10).join(context_parts),
+        brand_name=brand_name,
+    )
 
-STEP 1 — First, figure out WHAT this entity is:
-- Is it a SaaS product? Physical product? Service? Agency? Local business? Blog? Personal brand? Marketplace? Nonprofit? Something else?
-- What specific problem does it solve or what need does it serve?
-- Who is the target audience (age, role, industry, location)?
-- What are the key offerings (products, services, content)?
-- Who are the likely competitors or alternatives?
-- Is location relevant? (local business, regional service, global SaaS)
-
-STEP 2 — Generate {count} prompts that REAL users would ask AI assistants. Cover these categories:
-
-1. DISCOVERY (2 prompts): User searching for what this entity offers
-   - Be specific to the actual niche, not generic
-   - If location matters, include location context
-
-2. COMPARISON (2 prompts): User comparing options in this space
-   - Reference the actual category, not vague terms
-   - Include audience context (e.g., "for small businesses", "in India")
-
-3. SPECIFIC USE CASE (2 prompts): User has a specific need this entity serves
-   - Match real tasks/problems the entity solves
-
-4. EXPERT RECOMMENDATION (2 prompts): User wants trusted advice
-   - Include specifics about the niche
-
-5. LOCAL/REGIONAL (1 prompt): If location is relevant
-   - Include city, country, or region in the prompt
-   - If the entity is global, use a market-specific angle
-
-6. ALTERNATIVE/EVALUATION (1 prompt): User evaluating options
-   - "Is X worth it?", "What to look for in Y?"
-
-CRITICAL RULES:
-- NEVER mention "{brand_name}" in any prompt — these should be natural user queries
-- Be SPECIFIC to what this entity actually does (not generic "best tools" prompts)
-- If it's a local business → include location in at least 2 prompts
-- If it's a product → ask about specific features, pricing, alternatives
-- If it's a service → ask about hiring, evaluating, comparing providers
-- If it's a person/personal brand → ask about expertise, credentials, content
-- Write conversational, the way real people talk to AI assistants
-- Each prompt MUST be something a potential customer/user would actually ask
-
-Return ONLY a JSON array of {count} strings. No markdown, no explanations.
-Example: ["What are the best...", "How do I...", "Which ... in Mumbai?"]"""
-
-    try:
-        raw = ask_single_llm(prompt, purpose="Generate Brand Prompts", max_tokens=1200)
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        prompts = json.loads(raw)
-        if isinstance(prompts, list) and len(prompts) > 0:
-            return [str(p).strip() for p in prompts[:count] if str(p).strip()]
-    except Exception as exc:
-        logger.warning("generate_brand_prompts failed: %s", exc)
+    result = ask_structured(
+        prompt,
+        PromptList,
+        tier="cheap",
+        purpose="Generate Brand Prompts",
+        max_tokens=1200,
+        system=brand_card or None,
+        cache=True,
+        cache_org=cache_org,
+    )
+    if result is not None:
+        cleaned = [str(p).strip() for p in result.root[:count] if str(p).strip()]
+        if cleaned:
+            return cleaned
 
     # Fallback with whatever context we have
     niche = industry or "services"

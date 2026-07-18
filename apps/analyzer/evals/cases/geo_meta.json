@@ -1,0 +1,14 @@
+{
+  "id": "geo_meta",
+  "prompt": "geo_meta",
+  "version": "v1",
+  "vars": {
+    "brand_name": "Riverside Dental",
+    "site_url": "https://riversidedental.co.uk",
+    "current_title": "(not set)",
+    "current_desc": "(not set)"
+  },
+  "format_spec": "A single JSON object with exactly two keys, title and description. title 50-60 characters including the brand and a geographic signal; description 140-160 characters. No extra text.",
+  "known_good": "{\"title\": \"Riverside Dental - Family Dentist in Manchester\", \"description\": \"Riverside Dental is a trusted family and cosmetic dental clinic in Manchester, UK, offering checkups, emergency care, and private treatments.\"}",
+  "thresholds": {"faithfulness": 0.7, "relevance": 0.7, "format_score": 0.8}
+}

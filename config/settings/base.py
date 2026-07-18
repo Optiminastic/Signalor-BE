@@ -162,7 +162,9 @@ REST_FRAMEWORK = {
         "rest_framework.parsers.JSONParser",
     ],
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        # 'apps.auth.authentication.JWTAuthentication',
+        # Verifies a better-auth JWT (JWKS) and sets request.user when the FE sends one.
+        # Dormant until BETTER_AUTH_JWKS_URL is set; never raises, so this is non-breaking.
+        "apps.accounts.authentication.BetterAuthJWTAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
@@ -208,6 +210,21 @@ REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
 }
 
+# ── better-auth JWT verification (FE identity → verified request.user) ─────
+# The FE runs better-auth; with its JWT plugin enabled it sends
+# `Authorization: Bearer <jwt>`. The backend verifies that token against
+# better-auth's published public keys (JWKS). All optional: with JWKS_URL unset the
+# auth class is a no-op and the app behaves exactly as before. Flip
+# REQUIRE_VERIFIED_IDENTITY=true only AFTER the FE reliably sends tokens.
+BETTER_AUTH_JWKS_URL = os.getenv("BETTER_AUTH_JWKS_URL", "").strip()
+BETTER_AUTH_ISSUER = os.getenv("BETTER_AUTH_ISSUER", "").strip()
+BETTER_AUTH_AUDIENCE = os.getenv("BETTER_AUTH_AUDIENCE", "").strip()
+BETTER_AUTH_EMAIL_CLAIM = os.getenv("BETTER_AUTH_EMAIL_CLAIM", "email").strip()
+BETTER_AUTH_JWT_ALGORITHMS = [
+    a.strip() for a in os.getenv("BETTER_AUTH_JWT_ALGORITHMS", "EdDSA").split(",") if a.strip()
+]
+REQUIRE_VERIFIED_IDENTITY = os.getenv("REQUIRE_VERIFIED_IDENTITY", "false").strip().lower() == "true"
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -233,7 +250,12 @@ LOGGING = {
         "console": {"level": "INFO", "class": "logging.StreamHandler", "formatter": "simple"},
         "file": {
             "level": "INFO",
-            "class": "logging.handlers.RotatingFileHandler",
+            # ConcurrentRotatingFileHandler (not stdlib RotatingFileHandler) so
+            # rotation is multiprocess-safe. On Windows the stdlib handler's
+            # os.rename() during rollover fails with WinError 32 whenever a second
+            # process (dev-server autoreloader) or the analyzer thread-pool still
+            # holds django.log open, which then errors on every log emit.
+            "class": "concurrent_log_handler.ConcurrentRotatingFileHandler",
             "filename": LOGS_DIR / "django.log",
             "maxBytes": 1024 * 1024 * 15,  # 15MB
             "backupCount": 10,
@@ -283,8 +305,31 @@ GITHUB_APP_SLUG = os.getenv("GITHUB_APP_SLUG", "")
 GITHUB_APP_PRIVATE_KEY = os.getenv("GITHUB_APP_PRIVATE_KEY", "")
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 
+# Knowledge base ingestion (Epic 3). Each analysis run chunks + embeds the pages
+# it already crawled into BrandCorpusChunk rows (org-scoped, fail-soft). Bounds
+# keep per-run embedding cost predictable; skip-unchanged keeps steady state cheap.
+SIGNALOR_ENABLE_INGESTION = os.getenv("SIGNALOR_ENABLE_INGESTION", "true").lower() != "false"
+CORPUS_EMBED_MODEL = os.getenv("CORPUS_EMBED_MODEL", "models/text-embedding-004")
+CORPUS_CHUNK_MAX_CHARS = int(os.getenv("CORPUS_CHUNK_MAX_CHARS", 2800))
+CORPUS_CHUNK_OVERLAP_CHARS = int(os.getenv("CORPUS_CHUNK_OVERLAP_CHARS", 200))
+CORPUS_CHUNK_MIN_CHARS = int(os.getenv("CORPUS_CHUNK_MIN_CHARS", 40))
+CORPUS_MAX_PAGES = int(os.getenv("CORPUS_MAX_PAGES", 25))
+CORPUS_MAX_CHUNKS_PER_RUN = int(os.getenv("CORPUS_MAX_CHUNKS_PER_RUN", 300))
+
+# Semantic response cache (Epic 7). Opt-in per call site via ask_llm(cache=True); this
+# flag is the kill-switch. The similarity floor is deliberately conservative -- only
+# near-identical prompts may reuse a response, and only within the same
+# (purpose, model, organization) scope.
+SIGNALOR_ENABLE_SEMANTIC_CACHE = os.getenv("SIGNALOR_ENABLE_SEMANTIC_CACHE", "true").lower() != "false"
+SEMANTIC_CACHE_SIMILARITY = float(os.getenv("SEMANTIC_CACHE_SIMILARITY", 0.97))
+SEMANTIC_CACHE_TTL_SECONDS = int(os.getenv("SEMANTIC_CACHE_TTL_SECONDS", 7 * 24 * 3600))
+
 DATAFORSEO_LOGIN = os.getenv("DATAFORSEO_LOGIN", "")
 DATAFORSEO_PASSWORD = os.getenv("DATAFORSEO_PASSWORD", "")
+
+# Open PageRank — free, Common Crawl–based domain authority metric powering the
+# public Domain Rating tool. Free key from domcop.com/openpagerank.
+OPENPAGERANK_API_KEY = os.getenv("OPENPAGERANK_API_KEY", "")
 
 # Scraping-API fallback for the crawler. When a direct crawl is hard-blocked
 # (e.g. 403 from a Cloudflare/WAF against our datacenter IPs), the crawler
@@ -356,6 +401,22 @@ CORS_ALLOWED_ORIGINS = [
 # the preflight (OPTIONS 200) but blocks the actual request — the FE then shows
 # "Cannot reach the server." Extend the defaults rather than replace them.
 CORS_ALLOW_HEADERS = (*default_cors_headers, "x-onboarding-token")
+
+# ── Satellite blog network (shared Neon DB) ───────────────────────────────────
+# Domains of our 5 external Next.js blog sites (category == site). Used to build
+# the live backlink URL (``<domain>/blog/<slug>``) shown in "Our backlinks".
+SATELLITE_SITES = {
+    "research": os.getenv("SATELLITE_SITE_RESEARCH_URL", "https://brightsfindings.com").rstrip("/"),
+    "listicals": os.getenv("SATELLITE_SITE_LISTICALS_URL", "https://thepickpost.com").rstrip("/"),
+    "market_trends": os.getenv("SATELLITE_SITE_MARKET_TRENDS_URL", "https://trendledgers.com").rstrip("/"),
+    "comparison": os.getenv("SATELLITE_SITE_COMPARISON_URL", "https://betterversus.com").rstrip("/"),
+    "step_guide": os.getenv("SATELLITE_SITE_STEP_GUIDE_URL", "https://guidefactories.com").rstrip("/"),
+}
+# Shared blog DB (Signalor writes BlogPost rows; the satellite sites read it).
+# The "blog" connection is added per-env (development/production/staging) where
+# DATABASES is defined. Router sends the BlogPost model to it.
+BLOG_DATABASE_URL = os.getenv("BLOG_DATABASE_URL", "")
+DATABASE_ROUTERS = ["config.db_router.BlogRouter"]
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
