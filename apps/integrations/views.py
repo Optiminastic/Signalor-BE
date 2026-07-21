@@ -20,8 +20,6 @@ from rest_framework.views import APIView
 
 from apps.accounts.subscription_utils import (
     integration_connect_allowed_for_email,
-    plan_limit_error_response_dict,
-    project_limit_reached,
 )
 from apps.organizations.models import Organization
 from core.throttling import ExpensiveThrottle, PollingThrottle
@@ -97,22 +95,26 @@ GSC_SCOPES = [
 
 
 def _get_org_or_400(email):
-    """Return the org for this email, auto-creating a default one if needed."""
-    org = Organization.objects.filter(owner_email=email).first()
+    """Return the caller's existing org, or a 404 response when they have none.
+
+    IMPORTANT: this never creates an organization. Brands/orgs are created ONLY
+    during onboarding (apps/organizations/serializers.py). Auto-creating one here
+    caused the "Individual accounts include a single brand" bug: a status poll
+    (IntegrationStatusView) would silently create the user's first org right after
+    sign-in, so by the time onboarding reached the URL step the project limit was
+    already used up. A read must never have this side effect.
+    """
+    org = (
+        Organization.objects.filter(owner_email=(email or "").lower().strip())
+        .order_by("id")
+        .first()
+    )
     if org:
         return org, None
-    reached, msg = project_limit_reached(email)
-    if reached:
-        return None, Response(
-            plan_limit_error_response_dict(msg),
-            status=status.HTTP_403_FORBIDDEN,
-        )
-    org = Organization.objects.create(
-        name=email.split("@")[0],
-        url="",
-        owner_email=email,
+    return None, Response(
+        {"error": "No brand found for this account. Complete onboarding first."},
+        status=status.HTTP_404_NOT_FOUND,
     )
-    return org, None
 
 
 def _append_query_params(url: str, extra: dict[str, str]) -> str:
@@ -384,9 +386,18 @@ class IntegrationStatusView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        org, err = _resolve_org(email, org_id)
-        if err:
-            return err
+        # Read-only: a status poll must never create an org (see _get_org_or_400).
+        # A brand-new user simply has no org yet → no integrations.
+        if org_id:
+            org, err = _resolve_org(email, org_id)
+            if err:
+                return err
+        else:
+            org = (
+                Organization.objects.filter(owner_email=email).order_by("id").first()
+            )
+        if org is None:
+            return Response([])
 
         integrations = Integration.objects.filter(organization=org)
         serializer = IntegrationSerializer(integrations, many=True)
