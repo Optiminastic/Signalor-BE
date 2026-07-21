@@ -10,6 +10,11 @@ from .utils import extract_brand_name, extract_domain, safe_score
 
 logger = logging.getLogger("apps")
 
+# Fuzzy brand matching: allow a single typo, and only for aliases long enough
+# that one edit can't turn them into an unrelated word.
+_FUZZY_MAX_EDITS = 1
+_FUZZY_MIN_ALIAS_LEN = 6
+
 # User agent for web presence checks
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
@@ -333,7 +338,14 @@ def _match_brand(aliases: list[str], text: str) -> tuple[bool, float, str]:
             if re.search(domain_pattern, text_lower):
                 return True, 0.9, "domain"
 
-    # 4. Fuzzy match
+    # 4. Fuzzy match — typo tolerance only.
+    #
+    # Deliberately keyed on edit *distance* (<= 1), not Levenshtein.ratio. A ratio
+    # threshold scales with word length, so for an 8-char brand it accepts an edit
+    # distance of 2 and matches unrelated common words: "signalor" vs "signal"
+    # scores 0.857 and used to report a mention on any text saying "ranking
+    # signal". Distance <= 1 still catches genuine misspellings of the brand
+    # ("signaler") while refusing different words.
     try:
         import Levenshtein
 
@@ -341,15 +353,19 @@ def _match_brand(aliases: list[str], text: str) -> tuple[bool, float, str]:
         cleaned_words = [w.strip(".,;:!?()[]{}\"'") for w in words]
 
         for alias in aliases:
+            if len(alias) < _FUZZY_MIN_ALIAS_LEN:
+                continue
             if " " not in alias:
                 for word in cleaned_words:
-                    if len(word) >= 3 and Levenshtein.ratio(alias, word) > 0.85:
+                    if abs(len(word) - len(alias)) <= _FUZZY_MAX_EDITS and (
+                        Levenshtein.distance(alias, word) <= _FUZZY_MAX_EDITS
+                    ):
                         return True, 0.7, "fuzzy"
             else:
                 alias_parts = alias.split()
                 for i in range(len(cleaned_words) - len(alias_parts) + 1):
                     chunk = " ".join(cleaned_words[i : i + len(alias_parts)])
-                    if Levenshtein.ratio(alias, chunk) > 0.85:
+                    if Levenshtein.distance(alias, chunk) <= _FUZZY_MAX_EDITS:
                         return True, 0.7, "fuzzy_ngram"
     except ImportError:
         pass
