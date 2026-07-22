@@ -339,6 +339,7 @@ class GACallbackView(APIView):
                 "redirect_uri": settings.GOOGLE_ANALYTICS_REDIRECT_URI,
                 "grant_type": "authorization_code",
             },
+            timeout=15,
         )
 
         if token_resp.status_code != 200:
@@ -439,6 +440,7 @@ class GADisconnectView(APIView):
             http_requests.post(
                 "https://oauth2.googleapis.com/revoke",
                 params={"token": integration.get_access_token()},
+                timeout=15,
             )
         except Exception:
             logger.warning("Failed to revoke Google token, deleting anyway")
@@ -640,6 +642,11 @@ class GADataView(APIView):
                 {"error": "No data available. Trigger a sync first."},
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+        # Clear any dead "syncing" row (killed worker) so it can't wedge auto-sync.
+        from .sync_health import reap_stale_syncing
+
+        reap_stale_syncing(integration.ga_snapshots)
 
         # Auto-sync if snapshot is stale (>24h) and not currently syncing
         stale_threshold = timezone.now() - timedelta(hours=24)
@@ -1073,6 +1080,11 @@ class GSCDataView(APIView):
                 {"error": "No data available. Trigger a sync first."},
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+        # Clear any dead "syncing" row (killed worker) so it can't wedge auto-sync.
+        from .sync_health import reap_stale_syncing
+
+        reap_stale_syncing(integration.gsc_snapshots)
 
         # Auto-sync if snapshot is stale (>24h) and not currently syncing
         stale_threshold = timezone.now() - timedelta(hours=24)
@@ -1977,6 +1989,11 @@ class ShopifyDataView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        # Clear any dead "syncing" row (killed worker) so it can't wedge auto-sync.
+        from .sync_health import reap_stale_syncing
+
+        reap_stale_syncing(integration.shopify_snapshots)
+
         # Auto-sync if stale
         stale_threshold = timezone.now() - timedelta(hours=24)
         if (
@@ -2440,6 +2457,11 @@ class WordPressDataView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        # Clear any dead "syncing" row (killed worker) so it can't wedge auto-sync.
+        from .sync_health import reap_stale_syncing
+
+        reap_stale_syncing(integration.wordpress_snapshots)
+
         stale_threshold = timezone.now() - timedelta(hours=24)
         if (
             snapshot.created_at < stale_threshold
@@ -2618,6 +2640,11 @@ class WooCommerceDataView(APIView):
                 {"error": "No data available. Trigger a sync first."},
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+        # Clear any dead "syncing" row (killed worker) so it can't wedge auto-sync.
+        from .sync_health import reap_stale_syncing
+
+        reap_stale_syncing(integration.woocommerce_snapshots)
 
         stale_threshold = timezone.now() - timedelta(hours=24)
         if (

@@ -5,8 +5,8 @@ Goals:
   - Views can raise typed `AppError`s; the handler renders them.
   - Common upstream failures (requests timeouts, HTTPErrors) are caught
     here so individual views don't have to repeat try/except boilerplate.
-  - Every exception logs with request path + user email + view name so
-    we can debug from logs alone.
+  - Every exception logs with request path + a hashed user id + view name so
+    we can debug from logs alone without logging PII.
 
 Response shape (always a dict):
     {
@@ -18,6 +18,7 @@ Response shape (always a dict):
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 
@@ -123,14 +124,15 @@ def _request_context(context: dict[str, Any]) -> dict[str, Any]:
     if request is not None:
         extras["path"] = getattr(request, "path", None)
         extras["method"] = getattr(request, "method", None)
-        # Best-effort user email: most public endpoints pass email as a
-        # query param or in the body. Don't crash if absent.
+        # Best-effort user correlation. Endpoints pass email as a query param or
+        # in the body, but raw email is PII and must not hit logs — store a stable
+        # hash so errors can still be correlated to a user without leaking it.
         try:
             email = request.query_params.get("email") or (
                 request.data.get("email") if hasattr(request, "data") else None
             )
             if email:
-                extras["email"] = email
+                extras["user_hash"] = hashlib.sha256(email.strip().lower().encode()).hexdigest()[:12]
         except Exception:
             pass
     return extras

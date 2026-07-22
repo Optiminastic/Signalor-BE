@@ -761,6 +761,32 @@ class HealthCheckView(APIView):
         return Response(health_status, status=status.HTTP_200_OK)
 
 
+class WorkerHealthView(APIView):
+    """Readiness of the analysis worker — 503 when nothing is consuming.
+
+    Separate from ``/health/`` (web liveness) because a live web process with a
+    dead analysis worker is a distinct failure: the API answers fine but no run
+    can finish. Point an uptime monitor here to get alerted when the worker dies
+    or its RabbitMQ broker is unreachable.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request):
+        from .health import analysis_worker_health
+
+        worker = analysis_worker_health()
+        payload = {
+            "status": "healthy" if worker["ok"] else "unhealthy",
+            "service": "geo-be-analysis-worker",
+            "timestamp": timezone.now().isoformat(),
+            "worker": worker,
+        }
+        code = status.HTTP_200_OK if worker["ok"] else status.HTTP_503_SERVICE_UNAVAILABLE
+        return Response(payload, status=code)
+
+
 class OnboardingStartView(APIView):
     """
     POST /api/analyzer/onboarding-start/
@@ -931,35 +957,26 @@ class StartAnalysisView(APIView):
         )
 
 
-# The analysis pipeline runs in a background thread (no Celery), so a worker
-# restart — redeploy, crash, instance recycle — kills it mid-run and leaves the
-# AnalysisRun stuck in a non-terminal status forever, which the frontend polls
-# indefinitely. If a run hasn't advanced (updated_at) within this window, the
-# worker is gone; we mark it failed on the next poll so the UI recovers on its
-# own. A single-page analysis normally finishes in well under a minute.
-_TERMINAL_RUN_STATUSES = {AnalysisRun.Status.COMPLETE, AnalysisRun.Status.FAILED}
-# Two timeouts, because a run can sit in two very different "not done" states:
-#   • PENDING  → queued in RabbitMQ, waiting for a free worker. This is normal
-#     and can legitimately last minutes during a burst, so give it a long grace
-#     before declaring it dead (otherwise we false-fail valid queued jobs).
-#   • running (crawling/analyzing/scoring) → a worker picked it up and refreshes
-#     updated_at as it progresses; 5 min of silence means that worker died.
-_STALE_PENDING_TIMEOUT = timedelta(minutes=30)
-_STALE_RUNNING_TIMEOUT = timedelta(minutes=5)
-
-
 class AnalysisRunBySlugView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [PollingThrottle]
 
     def get(self, request, slug):
+        from django.db.models import Prefetch
+
         try:
+            # RecommendationSerializer.get_can_auto_fix() reads obj.analysis_run.url,
+            # so chain select_related to avoid one query per recommendation (this is
+            # the public /dashboard/<slug> path — mirror AnalysisRunDetailView).
+            recs_qs = Recommendation.objects.select_related("analysis_run").defer(
+                "analysis_run__llm_logs", "analysis_run__onboarding_prompts"
+            )
             run = (
                 AnalysisRun.objects.select_related("brand_visibility", "organization")
                 .prefetch_related(
                     "page_scores",
                     "competitors",  # remove this line to stop loading competitors
-                    "recommendations",
+                    Prefetch("recommendations", queryset=recs_qs),
                     "ai_probes",
                 )
                 .get(slug=slug)
@@ -970,22 +987,11 @@ class AnalysisRunBySlugView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # Self-heal orphaned runs whose background worker died (see note above).
-        # PENDING runs are still queued waiting for a worker, so they get the
-        # longer grace; only runs that actually started and went silent are
-        # failed at the short timeout.
-        if run.status not in _TERMINAL_RUN_STATUSES:
-            is_pending = run.status == AnalysisRun.Status.PENDING
-            timeout = _STALE_PENDING_TIMEOUT if is_pending else _STALE_RUNNING_TIMEOUT
-            if run.updated_at < timezone.now() - timeout:
-                run.status = AnalysisRun.Status.FAILED
-                if not run.error_message:
-                    mins = int(timeout.total_seconds() // 60)
-                    run.error_message = (
-                        f"Analysis stalled — no progress for over {mins} minutes, so the "
-                        "background worker likely restarted. Please re-run the analysis."
-                    )
-                run.save(update_fields=["status", "error_message", "updated_at"])
+        # Self-heal orphaned runs whose background worker died, so the frontend
+        # recovers instead of polling a dead run forever (see run_guard).
+        from .run_guard import maybe_fail_stale
+
+        maybe_fail_stale(run)
 
         serializer = AnalysisRunDetailSerializer(run)
         return Response(serializer.data)
@@ -1013,8 +1019,16 @@ class AnalysisRunListView(APIView):
         runs = runs.defer("llm_logs", "onboarding_prompts").order_by("-created_at")
         # Backstop against unbounded response growth (see apps.analyzer.pagination).
         from .pagination import bounded_slice
+        from .run_guard import maybe_fail_stale
 
-        serializer = AnalysisRunListSerializer(bounded_slice(request, runs), many=True)
+        page = list(bounded_slice(request, runs))
+        # The loading screen polls this endpoint, so heal orphaned runs here too
+        # (not just in the slug detail view) — otherwise a dead run reports its
+        # last progress forever and the bar never recovers.
+        for run in page:
+            maybe_fail_stale(run)
+
+        serializer = AnalysisRunListSerializer(page, many=True)
         return Response(serializer.data)
 
 

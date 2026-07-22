@@ -29,7 +29,13 @@ import requests
 from bs4 import BeautifulSoup
 from django.db import IntegrityError, close_old_connections
 
+from ..url_guard import SSRFValidationError, guarded_session
+
 logger = logging.getLogger("apps")
+
+# One SSRF-guarded session for all audit fetches — its adapter re-validates the
+# host on every request and redirect hop, blocking private/internal targets.
+_guarded = guarded_session()
 
 USER_AGENT = "SignalorAuditBot/1.0 (+https://signalor.ai/bots)"
 DEFAULT_TIMEOUT = 10
@@ -54,13 +60,13 @@ AI_BOTS = [
 
 def _http_get(url: str, timeout: int = DEFAULT_TIMEOUT) -> requests.Response | None:
     try:
-        return requests.get(
+        return _guarded.get(
             url,
             headers={"User-Agent": USER_AGENT, "Accept": "*/*"},
             timeout=timeout,
             allow_redirects=True,
         )
-    except requests.RequestException as exc:
+    except (requests.RequestException, SSRFValidationError) as exc:
         logger.debug("sitemap_audit: GET %s failed: %s", url, exc)
         return None
 
@@ -293,7 +299,7 @@ def _sum_resource_bytes(urls: list[str]) -> int:
 
     def head(u: str) -> int:
         try:
-            r = requests.head(
+            r = _guarded.head(
                 u,
                 headers={"User-Agent": USER_AGENT},
                 timeout=5,
@@ -345,14 +351,14 @@ def audit_page(url: str, robots_allowed: dict[str, bool] | None = None) -> dict[
 
     try:
         start = time.perf_counter()
-        resp = requests.get(
+        resp = _guarded.get(
             url,
             headers={"User-Agent": USER_AGENT, "Accept": "text/html,*/*"},
             timeout=DEFAULT_TIMEOUT,
             allow_redirects=True,
         )
         elapsed_ms = int((time.perf_counter() - start) * 1000)
-    except requests.RequestException as exc:
+    except (requests.RequestException, SSRFValidationError) as exc:
         out["error_message"] = str(exc)[:480]
         return out
 

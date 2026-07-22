@@ -1,5 +1,7 @@
 import logging
+from datetime import timedelta
 
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -15,6 +17,27 @@ from .tasks import start_visibility_task
 from core.throttling import ExpensiveThrottle, PollingThrottle
 
 logger = logging.getLogger("apps")
+
+# Self-heal orphaned checks whose worker died, so a poller doesn't wait forever
+# (same failure class as AnalysisRun). Running checks refresh updated_at as they
+# advance; PENDING ones may legitimately sit queued, so they get a longer grace.
+_STALE_RUNNING = timedelta(minutes=5)
+_STALE_PENDING = timedelta(minutes=30)
+_TERMINAL_STATUSES = {VisibilityCheck.Status.COMPLETE, VisibilityCheck.Status.FAILED}
+
+
+def _maybe_fail_stale(check: VisibilityCheck) -> None:
+    """Flip a silently-orphaned check to FAILED once it goes quiet past its timeout."""
+    if check.status in _TERMINAL_STATUSES:
+        return
+    is_pending = check.status == VisibilityCheck.Status.PENDING
+    timeout = _STALE_PENDING if is_pending else _STALE_RUNNING
+    if check.updated_at >= timezone.now() - timeout:
+        return
+    check.status = VisibilityCheck.Status.FAILED
+    if not check.error_message:
+        check.error_message = "Check stalled — the worker likely restarted. Please run it again."
+    check.save(update_fields=["status", "error_message", "updated_at"])
 
 
 class StartVisibilityCheckView(APIView):
@@ -91,6 +114,8 @@ class VisibilityCheckStatusView(APIView):
                 {"error": "Visibility check not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+        _maybe_fail_stale(check)
 
         return Response(
             {

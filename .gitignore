@@ -11,6 +11,7 @@ env/
 ENV/
 local.env
 producation.env
+production.env
 staging.env
 
 # Django

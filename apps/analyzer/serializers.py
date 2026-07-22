@@ -320,6 +320,8 @@ class StartAnalysisSerializer(serializers.Serializer):
     storefront_password = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
 
     def validate_url(self, value):
+        from apps.analyzer.url_guard import SSRFValidationError, validate_public_url
+
         value = value.strip()
         if not value.startswith(("http://", "https://")):
             value = f"https://{value}"
@@ -327,6 +329,14 @@ class StartAnalysisSerializer(serializers.Serializer):
             _url_validator(value)
         except DjangoValidationError as err:
             raise serializers.ValidationError("Enter a valid URL.") from err
+        # SSRF guard: reject private/loopback/link-local/metadata targets before
+        # this URL is ever stored on the run and fetched server-side.
+        try:
+            validate_public_url(value)
+        except SSRFValidationError as err:
+            raise serializers.ValidationError(
+                "That URL can't be analyzed — enter a public website address."
+            ) from err
         return value
 
     def validate_email(self, value):

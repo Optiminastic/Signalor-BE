@@ -115,12 +115,14 @@ from .views import (
     UserGamificationView,
     VisibilitySeriesView,
     WeeklyTestEmailView,
+    WorkerHealthView,
 )
 
 app_name = "analyzer"
 
 urlpatterns = [
     path("health/", HealthCheckView.as_view(), name="health-check"),
+    path("health/worker/", WorkerHealthView.as_view(), name="worker-health-check"),
     path("tools/domain-rating/", DomainRatingFreeView.as_view(), name="domain-rating-free"),
     path("onboarding-start/", OnboardingStartView.as_view(), name="onboarding-start"),
     path("analyze/", StartAnalysisView.as_view(), name="start-analysis"),

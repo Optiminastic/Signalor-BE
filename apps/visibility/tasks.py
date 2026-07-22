@@ -1,6 +1,8 @@
 import logging
 import threading
 
+from django.db import close_old_connections
+
 from .models import VisibilityCheck
 from .pipeline.google_check import check_google
 from .pipeline.reddit_check import check_reddit
@@ -16,6 +18,9 @@ def _update_status(check: VisibilityCheck, status: str, progress: int = 0):
 
 def run_visibility_check(check_id: int):
     """Full visibility check pipeline — runs sequentially to avoid rate limits."""
+    # Fresh DB connection for this daemon thread (a stale one would raise mid-run
+    # and leave the check wedged in a non-terminal status — see views._maybe_fail_stale).
+    close_old_connections()
     try:
         check = VisibilityCheck.objects.get(pk=check_id)
     except VisibilityCheck.DoesNotExist:

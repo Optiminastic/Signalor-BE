@@ -12,7 +12,11 @@ from django.test import TestCase
 from django.utils import timezone
 
 from apps.analyzer.models import AnalysisRun
-from apps.analyzer.run_guard import active_run_for
+from apps.analyzer.run_guard import (
+    STALE_RUNNING_TIMEOUT,
+    active_run_for,
+    maybe_fail_stale,
+)
 from apps.organizations.models import Organization
 
 OWNER = "owner@example.com"
@@ -63,3 +67,58 @@ class ActiveRunForTests(TestCase):
         )
         self._run(AnalysisRun.Status.CRAWLING)
         self.assertIsNone(active_run_for(other))
+
+
+class MaybeFailStaleTests(TestCase):
+    """A silently-orphaned run must self-heal to FAILED so the loading screen,
+    which polls the runs list, recovers instead of spinning on it forever.
+    """
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name="Acme", url="https://acme.example", owner_email=OWNER
+        )
+
+    def _run(self, status):
+        return AnalysisRun.objects.create(
+            organization=self.org,
+            url="https://acme.example",
+            email=OWNER,
+            run_type="single_page",
+            status=status,
+        )
+
+    def _age(self, run, delta):
+        # updated_at is auto_now, so bypass the ORM save hook to backdate it.
+        AnalysisRun.objects.filter(pk=run.pk).update(updated_at=timezone.now() - delta)
+        run.refresh_from_db()
+
+    def test_silent_running_run_is_failed(self):
+        run = self._run(AnalysisRun.Status.ANALYZING)
+        self._age(run, STALE_RUNNING_TIMEOUT + timedelta(minutes=1))
+        maybe_fail_stale(run)
+        run.refresh_from_db()
+        self.assertEqual(run.status, AnalysisRun.Status.FAILED)
+        self.assertTrue(run.error_message)
+
+    def test_fresh_running_run_is_left_alone(self):
+        run = self._run(AnalysisRun.Status.ANALYZING)
+        self._age(run, timedelta(seconds=30))
+        maybe_fail_stale(run)
+        run.refresh_from_db()
+        self.assertEqual(run.status, AnalysisRun.Status.ANALYZING)
+
+    def test_pending_run_gets_the_longer_grace(self):
+        # Past the running timeout but within the pending grace — must NOT fail.
+        run = self._run(AnalysisRun.Status.PENDING)
+        self._age(run, STALE_RUNNING_TIMEOUT + timedelta(minutes=1))
+        maybe_fail_stale(run)
+        run.refresh_from_db()
+        self.assertEqual(run.status, AnalysisRun.Status.PENDING)
+
+    def test_terminal_run_is_untouched(self):
+        run = self._run(AnalysisRun.Status.COMPLETE)
+        self._age(run, timedelta(hours=2))
+        maybe_fail_stale(run)
+        run.refresh_from_db()
+        self.assertEqual(run.status, AnalysisRun.Status.COMPLETE)

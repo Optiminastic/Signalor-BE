@@ -57,6 +57,11 @@ else:
         },
     }
 
+# Re-validate a pooled connection at request start. With persistent connections
+# (conn_max_age=600) on a provider that drops idle connections (Neon autosuspend),
+# this reconnects transparently instead of failing the first request after idle.
+DATABASES["default"]["CONN_HEALTH_CHECKS"] = True
+
 SECURE_SSL_REDIRECT = True
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True

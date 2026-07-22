@@ -34,6 +34,39 @@ IN_FLIGHT_STATUSES = (
 # past 45 min is definitively not still running.
 STALE_AFTER = timedelta(minutes=45)
 
+# Self-heal timeouts for orphaned runs whose background worker died. A run can be
+# stuck in two very different "not done" states:
+#   • PENDING  → still queued waiting for a worker; normal, give it a long grace.
+#   • running (crawling/analyzing/scoring) → a worker picked it up and refreshes
+#     updated_at as it progresses, so 5 min of silence means that worker is gone.
+STALE_PENDING_TIMEOUT = timedelta(minutes=30)
+STALE_RUNNING_TIMEOUT = timedelta(minutes=5)
+
+
+def maybe_fail_stale(run: AnalysisRun) -> AnalysisRun:
+    """Mark a silently-orphaned run FAILED so pollers stop waiting forever.
+
+    A background worker refreshes ``updated_at`` as it advances; once a non-terminal
+    run has been silent past its timeout, the worker has died (redeploy, crash,
+    instance recycle) and the run will never finish on its own. Terminal and
+    still-fresh runs are returned unchanged. Idempotent — safe to call on every poll.
+    """
+    if run.status in (AnalysisRun.Status.COMPLETE, AnalysisRun.Status.FAILED):
+        return run
+    is_pending = run.status == AnalysisRun.Status.PENDING
+    timeout = STALE_PENDING_TIMEOUT if is_pending else STALE_RUNNING_TIMEOUT
+    if run.updated_at >= timezone.now() - timeout:
+        return run
+    run.status = AnalysisRun.Status.FAILED
+    if not run.error_message:
+        mins = int(timeout.total_seconds() // 60)
+        run.error_message = (
+            f"Analysis stalled — no progress for over {mins} minutes, so the "
+            "background worker likely restarted. Please re-run the analysis."
+        )
+    run.save(update_fields=["status", "error_message", "updated_at"])
+    return run
+
 
 def active_run_for(organization) -> AnalysisRun | None:
     """The brand's currently-running analysis, or None.
