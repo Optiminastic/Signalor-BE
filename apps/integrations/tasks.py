@@ -6,6 +6,9 @@ Follows the same threading.Thread pattern as apps/analyzer/tasks.py.
 import logging
 import threading
 from datetime import date, timedelta
+from functools import wraps
+
+from django.db import close_old_connections
 
 from .models import (
     GADataSnapshot,
@@ -20,6 +23,23 @@ from .models import (
 logger = logging.getLogger("apps")
 
 
+def _in_worker_thread(fn):
+    """Give a daemon-thread task a fresh DB connection at entry and release it at
+    exit. Long-lived web/worker processes otherwise hand these threads a stale
+    connection, raising InterfaceError/OperationalError mid-sync — which leaves the
+    snapshot wedged in "syncing" (see apps/integrations/sync_health.py)."""
+
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        close_old_connections()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            close_old_connections()
+
+    return wrapper
+
+
 def start_ga4_sync(integration_id: int):
     """Spawn a daemon thread to sync GA4 data."""
     thread = threading.Thread(
@@ -31,6 +51,7 @@ def start_ga4_sync(integration_id: int):
     return thread
 
 
+@_in_worker_thread
 def _run_ga4_sync(integration_id: int):
     """Fetch GA4 data and store as a snapshot."""
     try:
@@ -89,6 +110,7 @@ def start_gsc_sync(integration_id: int):
     return thread
 
 
+@_in_worker_thread
 def _run_gsc_sync(integration_id: int):
     """Fetch Search Console data and store as a snapshot."""
     try:
@@ -149,6 +171,7 @@ def start_gsc_index_sync(integration_id: int):
     return thread
 
 
+@_in_worker_thread
 def _run_gsc_index_sync(integration_id: int):
     """Inspect every sitemap URL and cache the authoritative index status."""
     try:
@@ -201,6 +224,7 @@ def start_shopify_sync(integration_id: int):
     return thread
 
 
+@_in_worker_thread
 def _run_shopify_sync(integration_id: int):
     """Fetch Shopify data and store as a snapshot."""
     try:
@@ -257,6 +281,7 @@ def start_wordpress_sync(integration_id: int):
     return thread
 
 
+@_in_worker_thread
 def _run_wordpress_sync(integration_id: int):
     """Fetch WordPress data and store as a snapshot."""
     try:
@@ -313,6 +338,7 @@ def start_woocommerce_sync(integration_id: int):
     return thread
 
 
+@_in_worker_thread
 def _run_woocommerce_sync(integration_id: int):
     """Fetch WooCommerce data and store as a snapshot."""
     try:

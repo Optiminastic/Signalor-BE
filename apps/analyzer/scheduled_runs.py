@@ -70,8 +70,13 @@ def claim_due_schedule(schedule_id: int, *, now: datetime | None = None) -> Sche
             "last_run_at": now,
         }
 
-    # CAS: only the caller that still sees the old next_run_at wins the claim.
-    won = ScheduledAnalysis.objects.filter(pk=schedule_id, next_run_at=schedule.next_run_at).update(**updates)
+    # CAS: only the caller that still sees the old (next_run_at, is_active) wins.
+    # `is_active=True` is essential for ONCE schedules — their update flips
+    # is_active→False but does NOT change next_run_at, so a next_run_at-only
+    # predicate would let two overlapping workers both claim and double-run.
+    won = ScheduledAnalysis.objects.filter(
+        pk=schedule_id, next_run_at=schedule.next_run_at, is_active=True
+    ).update(**updates)
     if not won:
         logger.info("schedule %s already claimed by another worker; skipping", schedule_id)
         return None

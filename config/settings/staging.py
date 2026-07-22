@@ -13,7 +13,9 @@ SECRET_KEY = os.getenv("SECRET_KEY")
 if not SECRET_KEY:
     raise ValueError("SECRET_KEY environment variable must be set")
 
-ALLOWED_HOSTS = ["*"]
+# Explicit host allowlist from env (matches production). A wildcard here would
+# allow Host-header poisoning / cache-poisoning / spoofed reset links.
+ALLOWED_HOSTS = [h for h in os.getenv("ALLOWED_HOSTS", "").split(",") if h.strip()]
 
 # Prefer DATABASE_URL (Render Postgres add-ons, Neon, Supabase). Falls back
 # to the 5 DB_* env vars for self-managed Postgres setups.
@@ -42,6 +44,10 @@ else:
             },
         },
     }
+
+# Re-validate a pooled connection at request start so a Neon-dropped idle
+# connection reconnects transparently instead of failing the first request.
+DATABASES["default"]["CONN_HEALTH_CHECKS"] = True
 
 SECURE_SSL_REDIRECT = True
 SESSION_COOKIE_SECURE = True

@@ -63,6 +63,9 @@ class AnalysisRun(models.Model):
             # Dashboard run-list: filter(organization_id=...).order_by("-created_at").
             # The FK index alone can't satisfy the sort; this composite does.
             models.Index(fields=["organization", "-created_at"]),
+            # Email-scoped run-list (AnalysisRunListView): filter(email=...)
+            # .order_by("-created_at"). Mirrors the organization composite above.
+            models.Index(fields=["email", "-created_at"], name="idx_run_email_created"),
         ]
 
     def save(self, *args, **kwargs):
@@ -446,41 +449,48 @@ class UserGamification(models.Model):
         from django.utils import timezone
 
         with transaction.atomic():
-            self.total_points += points
-            self.current_level_points += points
-            self.points_this_week += points
-            self.points_this_month += points
-            self.total_actions_completed += 1
+            # Lock and reload this row so two concurrent action completions can't
+            # both read the same totals and lose one update — transaction.atomic()
+            # alone does NOT prevent a lost update under READ COMMITTED.
+            locked = type(self).objects.select_for_update().get(pk=self.pk)
+
+            locked.total_points += points
+            locked.current_level_points += points
+            locked.points_this_week += points
+            locked.points_this_month += points
+            locked.total_actions_completed += 1
 
             # Update streak
             today = timezone.now().date()
-            if self.last_action_date:
-                days_diff = (today - self.last_action_date).days
+            if locked.last_action_date:
+                days_diff = (today - locked.last_action_date).days
                 if days_diff == 1:
-                    self.current_streak += 1
+                    locked.current_streak += 1
                 elif days_diff > 1:
-                    self.current_streak = 1
+                    locked.current_streak = 1
             else:
-                self.current_streak = 1
+                locked.current_streak = 1
 
-            if self.current_streak > self.longest_streak:
-                self.longest_streak = self.current_streak
+            if locked.current_streak > locked.longest_streak:
+                locked.longest_streak = locked.current_streak
 
-            self.last_action_date = today
+            locked.last_action_date = today
 
             # Check for level up
             did_level_up = False
 
-            while self.current_level_points >= self._points_for_level(self.level):
-                self.current_level_points -= self._points_for_level(self.level)
-                if self.level < self.Level.LEGEND:
-                    self.level += 1
-                    self.points_to_next_level = self._points_for_level(self.level)
+            while locked.current_level_points >= self._points_for_level(locked.level):
+                locked.current_level_points -= self._points_for_level(locked.level)
+                if locked.level < self.Level.LEGEND:
+                    locked.level += 1
+                    locked.points_to_next_level = self._points_for_level(locked.level)
                     did_level_up = True
 
-            self.save()
+            locked.save()
 
-            return self.level, did_level_up
+        # Reflect the persisted state onto this instance for callers holding it.
+        self.refresh_from_db()
+        return locked.level, did_level_up
 
     def check_achievements(self) -> list[str]:
         """Check and award new achievements"""

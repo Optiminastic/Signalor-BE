@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from ..url_guard import SSRFValidationError, guarded_session
 from . import crawlee_crawl
 from .utils import extract_internal_links, extract_text
 
@@ -103,7 +104,9 @@ def crawl_page(url: str, storefront_password: str = "") -> CrawlResult:
     result.is_https = parsed.scheme == "https"
 
     # If storefront password provided, authenticate first (Shopify dev stores)
-    session = requests.Session()
+    # guarded_session blocks any fetch (incl. redirects) to a private/internal
+    # address — the URL is user-supplied, so this is our SSRF backstop.
+    session = guarded_session()
     if storefront_password:
         try:
             password_url = f"{parsed.scheme}://{parsed.netloc}/password"
@@ -174,6 +177,11 @@ def crawl_page(url: str, storefront_password: str = "") -> CrawlResult:
                 return result
             return result
 
+        except SSRFValidationError as exc:
+            # URL (or a redirect target) resolved to a private/internal address.
+            result.error = "This URL can't be analyzed — it resolves to a non-public address."
+            logger.warning("Blocked SSRF crawl for %s: %s", url, exc)
+            break
         except requests.Timeout:
             last_error = "Request timed out"
             logger.info("Crawl attempt %d/%d timed out for %s", attempt + 1, MAX_RETRIES + 1, url)
@@ -210,7 +218,7 @@ def crawl_page(url: str, storefront_password: str = "") -> CrawlResult:
 def check_file_exists(base_url: str, path: str, session: requests.Session | None = None) -> bool:
     parsed = urlparse(base_url)
     url = f"{parsed.scheme}://{parsed.netloc}/{path.lstrip('/')}"
-    http = session or requests
+    http = session or guarded_session()
     try:
         resp = http.head(
             url,
@@ -219,14 +227,14 @@ def check_file_exists(base_url: str, path: str, session: requests.Session | None
             allow_redirects=True,
         )
         return resp.status_code == 200
-    except requests.RequestException:
+    except (requests.RequestException, SSRFValidationError):
         return False
 
 
 def fetch_file_content(base_url: str, path: str, session: requests.Session | None = None) -> str:
     parsed = urlparse(base_url)
     url = f"{parsed.scheme}://{parsed.netloc}/{path.lstrip('/')}"
-    http = session or requests
+    http = session or guarded_session()
     try:
         resp = http.get(
             url,
@@ -247,7 +255,7 @@ def fetch_file_content(base_url: str, path: str, session: requests.Session | Non
                 if "text/html" in ct:
                     return ""
             return text
-    except requests.RequestException:
+    except (requests.RequestException, SSRFValidationError):
         pass
     return ""
 
@@ -304,7 +312,7 @@ def discover_site_pages(
     parsed = urlparse(base_url)
     origin = f"{parsed.scheme}://{parsed.netloc}"
     site_map = SiteMap(homepage=base_url)
-    http = session or requests.Session()
+    http = session or guarded_session()
 
     all_discovered: set[str] = set()
 
@@ -476,8 +484,9 @@ def _crawl_site_via_crawlee(
         return None
 
     # A shared session lets the technical scorer fetch robots.txt / sitemap.xml
-    # downstream (Crawlee doesn't return those).
-    session = requests.Session()
+    # downstream (Crawlee doesn't return those). Guarded against SSRF like the
+    # primary crawl session.
+    session = guarded_session()
 
     def _to_result(page: dict) -> CrawlResult | None:
         page_url = (page.get("url") or "").strip()
