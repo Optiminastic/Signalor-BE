@@ -15,7 +15,7 @@ them — they are one-off and self-limited by plan gates elsewhere.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.utils import timezone
 
@@ -66,6 +66,37 @@ def maybe_fail_stale(run: AnalysisRun) -> AnalysisRun:
         )
     run.save(update_fields=["status", "error_message", "updated_at"])
     return run
+
+
+# A completed analysis holds for 24h before another may start. The daily cadence
+# already reflects real GEO movement, and re-running sooner just burns LLM /
+# DataForSEO spend on data that has not changed. Keyed on the last COMPLETE run so
+# a failed or in-flight run never starts the clock — a failure stays retriable.
+ANALYSIS_COOLDOWN = timedelta(hours=24)
+
+
+def cooldown_until(organization) -> datetime | None:
+    """When the brand may next start an analysis, or None if it may start now.
+
+    A brand gets one completed analysis per 24h. Failed / in-flight runs don't
+    start the clock (a failure should be immediately retriable), and anonymous
+    free-tool scans have no organization, so they are never gated here.
+    """
+    if organization is None:
+        return None
+    last_complete = (
+        AnalysisRun.objects.filter(
+            organization=organization,
+            status=AnalysisRun.Status.COMPLETE,
+        )
+        .order_by("-created_at")
+        .values_list("created_at", flat=True)
+        .first()
+    )
+    if last_complete is None:
+        return None
+    ready_at = last_complete + ANALYSIS_COOLDOWN
+    return ready_at if ready_at > timezone.now() else None
 
 
 def active_run_for(organization) -> AnalysisRun | None:
