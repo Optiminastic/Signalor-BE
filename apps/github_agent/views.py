@@ -245,15 +245,22 @@ class GithubCallbackView(APIView):
 
     @staticmethod
     def _redirect(frontend: str, state: str, result: str):
+        from urllib.parse import urlencode
+
         from django.shortcuts import redirect
 
+        # Land every install on the self-closing /github/callback page: the popup
+        # closes itself and the opener (onboarding wizard / Integrations page /
+        # Fixes page) reacts to the connection status it's already polling. `next`
+        # is only used when this isn't a popup (a popup-blocked full redirect).
         if state.startswith("org_"):
-            target = f"{frontend}/onboarding/company-info?github={result}"
+            next_path = "/dashboard"
         elif state:
-            target = f"{frontend}/dashboard/{state}?github={result}"
+            next_path = f"/dashboard/{state}"
         else:
-            target = f"{frontend}/dashboard?github={result}"
-        return redirect(target)
+            next_path = "/dashboard"
+        query = urlencode({"status": result, "next": next_path})
+        return redirect(f"{frontend}/github/callback?{query}")
 
 
 class GithubDisconnectView(APIView):

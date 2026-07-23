@@ -38,7 +38,14 @@ RECOMMENDATION_RULES = {
         "priority": "high",
         "title": "Add an FAQ Section",
         "description": "No FAQ section detected. Princeton GEO research shows FAQ content directly maps to how LLMs extract answers. Pages with FAQ schema show 40% higher AI visibility.",
-        "action": "Add an FAQ section with Q&A pairs. Use <h2>FAQ</h2> or <h2>Frequently Asked Questions</h2> followed by question/answer pairs. Also add FAQPage schema markup.",
+        "action": (
+            "Add a real FAQ section with genuine question/answer pairs relevant to the brand, "
+            "and add FAQPage JSON-LD schema (@type FAQPage -> mainEntity of Question / "
+            "acceptedAnswer). IMPORTANT: if an FAQ section already exists on the page, do NOT "
+            "rename its heading or make cosmetic text edits - that does not fix this finding. "
+            "Instead add FAQPage JSON-LD schema reflecting the existing questions. If both a real "
+            "FAQ section and its FAQPage schema already exist, this is already fixed (cannot_fix)."
+        ),
         "impact_estimate": "Could improve your score by ~8 points (+40% AI visibility with schema)",
         "category": "content",
     },
