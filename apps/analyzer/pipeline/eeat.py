@@ -167,7 +167,6 @@ def _score_evidence(crawl: CrawlResult) -> tuple[float, dict]:
     soup = crawl.soup
     text = crawl.text
     text_lower = text.lower()
-    html_lower = crawl.html.lower()
     details = {}
     score = 0.0
 
@@ -201,9 +200,9 @@ def _score_evidence(crawl: CrawlResult) -> tuple[float, dict]:
 
     # 2b. Source diversity (5 pts)
     ext_domains = set()
-    for l in external_links:
+    for link in external_links:
         try:
-            ext_domains.add(urlparse(l).netloc)
+            ext_domains.add(urlparse(link).netloc)
         except Exception:
             pass
     details["source_diversity"] = len(ext_domains)
@@ -278,7 +277,6 @@ def _score_experience(crawl: CrawlResult) -> tuple[float, dict]:
     The first E in E-E-A-T.
     """
     text_lower = crawl.text.lower()
-    html_lower = crawl.html.lower()
     details = {}
     score = 0.0
 

@@ -334,7 +334,7 @@ def validate_schema(fetched: dict) -> tuple[str, list[dict], list[str], str]:
             if validator:
                 node_issues = validator(node)
                 issues.extend(node_issues)
-                for iss in node_issues:
+                if node_issues:
                     fix_targets.add(t)
 
     # No JSON-LD at all on what should be a product/article? That's a finding.
@@ -389,6 +389,7 @@ def validate_schema(fetched: dict) -> tuple[str, list[dict], list[str], str]:
 
 def run_schema_watch(watch_id: int) -> None:
     from django.utils import timezone as djtz
+
     from apps.analyzer.models import SchemaWatch, SchemaWatchPage
 
     try:

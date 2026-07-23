@@ -210,7 +210,7 @@ class PartnerCommissionAdmin(admin.ModelAdmin):
 
         created_payouts = 0
         with transaction.atomic():
-            for (partner_id, currency), commissions in by_partner.items():
+            for (_partner_id, currency), commissions in by_partner.items():
                 partner = commissions[0].partner
                 total = sum((c.commission_amount for c in commissions), start=type(commissions[0].commission_amount)("0"))
                 payout = PartnerPayout.objects.create(

@@ -18,11 +18,12 @@ Schedule via Windows Task Scheduler:
   Args:    manage.py recheck_prompts
   Start in: C:\\path\\to\\ranking-be
 """
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import timedelta
+
 from django.core.management.base import BaseCommand
 from django.utils import timezone
-from datetime import timedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import logging
 
 logger = logging.getLogger("apps")
 
@@ -56,7 +57,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        from apps.analyzer.models import PromptTrack, AnalysisRun
+        from apps.analyzer.models import AnalysisRun, PromptTrack
         from apps.analyzer.pipeline.prompt_tracker import recheck_track
 
         hours = options["hours"]

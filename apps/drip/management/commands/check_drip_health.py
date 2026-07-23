@@ -7,7 +7,7 @@ Usage:
     python manage.py check_drip_health --max-age-seconds 900
 """
 import sys
-from datetime import datetime, timedelta, timezone as dt_tz
+from datetime import UTC, datetime, timedelta
 
 from django.core.cache import cache
 from django.core.management.base import BaseCommand
@@ -41,8 +41,8 @@ class Command(BaseCommand):
             sys.exit(1)
 
         if last.tzinfo is None:
-            last = last.replace(tzinfo=dt_tz.utc)
-        now = datetime.now(dt_tz.utc)
+            last = last.replace(tzinfo=UTC)
+        now = datetime.now(UTC)
         age = now - last
 
         if age > timedelta(seconds=opts["max_age_seconds"]):

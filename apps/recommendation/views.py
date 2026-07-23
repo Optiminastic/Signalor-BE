@@ -5,15 +5,15 @@ from pathlib import Path
 
 from django.conf import settings
 from django.http import HttpResponse
+from rest_framework import status
 from rest_framework.parsers import JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework import status
 
 from .services.pdf_parser import extract_text_from_bytes, extract_text_from_path
-from .services.recommendation_engine import generate_recommendations
 from .services.pdf_renderer import render_recommendations_pdf
+from .services.recommendation_engine import generate_recommendations
 
 
 class RecommendationFromDiscoveryReportView(APIView):

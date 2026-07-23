@@ -7,6 +7,8 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.throttling import ExpensiveThrottle, PollingThrottle
+
 from .models import VisibilityCheck
 from .serializers import (
     StartVisibilityCheckSerializer,
@@ -14,7 +16,6 @@ from .serializers import (
     VisibilityCheckListSerializer,
 )
 from .tasks import start_visibility_task
-from core.throttling import ExpensiveThrottle, PollingThrottle
 
 logger = logging.getLogger("apps")
 

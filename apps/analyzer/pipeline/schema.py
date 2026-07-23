@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .crawler import CrawlResult
 from .utils import safe_score
@@ -245,7 +245,7 @@ def score_schema(crawl: CrawlResult) -> tuple[float, dict]:
                 details["findings"].append(f"incomplete_{schema_type.lower()}_schema")
 
     # dateModified freshness bonus (5 pts) — reward recently updated schemas
-    current_year = datetime.now(timezone.utc).year
+    current_year = datetime.now(UTC).year
     for obj in all_objects:
         date_modified = obj.get("dateModified", "") or obj.get("datePublished", "")
         if date_modified:

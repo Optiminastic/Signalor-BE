@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +26,7 @@ def _referee_discount_id() -> str:
     return os.getenv("DODO_REFEREE_DISCOUNT_ID", "").strip()
 
 
-def create_referee_discount(referee_email: str) -> Optional[str]:
+def create_referee_discount(referee_email: str) -> str | None:
     """Return the static referee discount ID for storage on the Referral row.
 
     No Dodo API call — the discount already exists in the Dodo dashboard. The

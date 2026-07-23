@@ -200,7 +200,7 @@ def _llm_web_mentions(
     }
 
     try:
-        from apps.analyzer.pipeline.llm import is_available, ask_llm
+        from apps.analyzer.pipeline.llm import ask_llm, is_available
 
         if not is_available():
             return 15.0, {**empty_details, "error": "No LLM available"}

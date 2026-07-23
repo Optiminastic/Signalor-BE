@@ -6,9 +6,7 @@ Question: "Would an AI TRUST this page enough to speak from it?"
 Score = (Intent Clarity × 0.30) + (Coverage Depth × 0.30) +
         (Information Density × 0.20) + (Structure & Flow × 0.20)
 """
-import json
 import logging
-import math
 import re
 from collections import Counter
 
@@ -80,11 +78,9 @@ def _score_intent_clarity(crawl: CrawlResult) -> tuple[float, dict]:
     Can an AI summarize this page in one clear sentence?
     Measures: clear topic, focused content, no confusion.
     """
-    text = crawl.text
     soup = crawl.soup
     details = {}
     score = 0.0
-    word_count = count_words(text)
 
     # 1a. Title clarity (8 pts)
     title_tag = soup.find("title")
@@ -162,7 +158,6 @@ def _score_coverage_depth(crawl: CrawlResult) -> tuple[float, dict]:
     Not word count — subtopic coverage, evidence, examples.
     """
     text = crawl.text
-    text_lower = text.lower()
     soup = crawl.soup
     details = {}
     score = 0.0
@@ -328,7 +323,6 @@ def _score_structure_flow(crawl: CrawlResult) -> tuple[float, dict]:
     Good structure helps AI parse and extract information.
     """
     text = crawl.text
-    text_lower = text.lower()
     soup = crawl.soup
     details = {}
     score = 0.0

@@ -316,7 +316,6 @@ def _score_ai_readability(crawl: CrawlResult) -> tuple[float, dict]:
 
     # 4c. JS dependency for content (5 pts) — penalty if content requires JS
     # Check: is there meaningful text in the raw HTML, or is it all JS-rendered?
-    noscript_fallback = soup.find("noscript")
     inline_scripts = len(soup.find_all("script", src=False))
 
     # If very little text but lots of JS → likely JS-rendered content
