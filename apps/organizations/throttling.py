@@ -14,21 +14,30 @@ from rest_framework.throttling import SimpleRateThrottle
 
 
 class OnboardEmailThrottle(SimpleRateThrottle):
-    """5 attempts / hour, keyed on the normalized email in the POST body.
+    """Keyed on the normalized email in the POST body, falling back to per-IP so a
+    missing field can't silently bypass it.
 
-    Falls back to per-IP if no email is supplied so a missing field can't
-    silently bypass the throttle.
+    The rate comes from the ``onboard_email`` scope in settings (base.py sets
+    ``5/hour`` for prod/staging; development.py sets it to ``None`` to disable
+    throttling in local dev). It is deliberately NOT hardcoded here — a class-level
+    ``rate`` would override the settings scope and re-enable the throttle in dev.
     """
 
     scope = "onboard_email"
-    rate = "5/hour"
 
     def get_cache_key(self, request, view):
+        from apps.accounts.subscription_utils import is_internal_email
+
         email = ""
         try:
             email = (request.data.get("email") or "").strip().lower()
         except Exception:
             email = ""
+        # Internal (@optiminastic) accounts are our own dev/test users — never
+        # throttle them, matching the "internal = unlimited" policy used across the
+        # plan gates. Returning None makes SimpleRateThrottle allow the request.
+        if email and is_internal_email(email):
+            return None
         if not email:
             ident = self.get_ident(request)
             return self.cache_format % {"scope": self.scope, "ident": f"ip:{ident}"}

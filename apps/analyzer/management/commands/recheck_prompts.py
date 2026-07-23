@@ -127,3 +127,18 @@ class Command(BaseCommand):
                 f"({errors} errors)."
             )
         )
+
+        # Fresh prompt results change which prompts are "lost", so rebuild the
+        # measured GEO-signal tasks for every run we just re-checked.
+        from apps.analyzer.services.geo_tasks import sync_geo_signal_tasks
+
+        runs = {t.analysis_run_id: t.analysis_run for t in tracks}
+        geo_total = 0
+        for run in runs.values():
+            try:
+                geo_total += sync_geo_signal_tasks(run)
+            except Exception as exc:  # best-effort; never fail the recheck job
+                self.stderr.write(f"  ✗ GEO task sync failed for run #{run.id}: {exc}")
+        self.stdout.write(
+            self.style.SUCCESS(f"Refreshed {geo_total} GEO-signal tasks across {len(runs)} run(s).")
+        )

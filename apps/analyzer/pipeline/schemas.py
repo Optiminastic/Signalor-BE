@@ -28,3 +28,42 @@ class MetaFix(BaseModel):
 
 class PromptList(RootModel[list[str]]):
     """A bare JSON array of prompt strings (brand-prompt generation)."""
+
+
+# ── Task enrichment (drafted, page-specific fix content) ──────────────────────
+
+
+class FaqPair(BaseModel):
+    """One drafted FAQ entry."""
+
+    question: str = Field(validation_alias=AliasChoices("question", "q"))
+    answer: str = Field(validation_alias=AliasChoices("answer", "a"))
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class FaqDraft(BaseModel):
+    """A set of drafted FAQ Q&A pairs grounded in the page + brand corpus."""
+
+    pairs: list[FaqPair] = Field(default_factory=list)
+
+
+class CitationItem(BaseModel):
+    """A claim on the page and a concrete, attributable source sentence for it."""
+
+    claim: str
+    source: str
+    sentence: str
+
+
+class CitationSuggestions(BaseModel):
+    """Concrete citation sentences the author can drop next to existing claims."""
+
+    items: list[CitationItem] = Field(default_factory=list)
+
+
+class ParagraphRewrite(BaseModel):
+    """A targeted rewrite of one weak paragraph from the page."""
+
+    original: str = Field(default="")
+    rewritten: str

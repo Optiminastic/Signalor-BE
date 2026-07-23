@@ -41,6 +41,12 @@ HAIKU_MODEL = os.getenv("OPENROUTER_HAIKU_MODEL", "").strip() or "anthropic/clau
 DEEPSEEK_MODEL = os.getenv("OPENROUTER_DEEPSEEK_MODEL", "deepseek/deepseek-chat")
 GROK_MODEL = os.getenv("OPENROUTER_GROK_MODEL", "x-ai/grok-3-mini")
 LLAMA_MODEL = os.getenv("OPENROUTER_LLAMA_MODEL", "meta-llama/llama-3.3-70b-instruct")
+# Kimi K2 (Moonshot) — a strong-but-cheap code/reasoning model, candidate for the
+# GitHub fix agent and blog generation to cut cost vs Sonnet/Opus. Served through
+# the same OpenRouter key; override the id via OPENROUTER_KIMI_MODEL. Additive:
+# nothing routes here until a call site opts in (preferred_provider="kimi" or via
+# the model_routing table). Verify the exact id on OpenRouter before promoting.
+KIMI_MODEL = os.getenv("OPENROUTER_KIMI_MODEL", "moonshotai/kimi-k2")
 
 MODELS = {
     "gpt": "openai/gpt-4o-mini",
@@ -52,6 +58,7 @@ MODELS = {
     "deepseek": DEEPSEEK_MODEL,
     "grok": GROK_MODEL,
     "llama": LLAMA_MODEL,
+    "kimi": KIMI_MODEL,
 }
 
 MODEL_LABELS = {
@@ -65,6 +72,7 @@ MODEL_LABELS = {
     DEEPSEEK_MODEL: "DeepSeek",
     GROK_MODEL: "Grok",
     LLAMA_MODEL: "Meta Llama",
+    KIMI_MODEL: "Kimi K2",
 }
 
 # Default rotation order

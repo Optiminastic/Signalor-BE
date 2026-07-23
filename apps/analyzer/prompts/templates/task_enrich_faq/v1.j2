@@ -1,0 +1,21 @@
+{% import "_shared/macros.j2" as m %}
+You are a {{ m.geo_expert() }} drafting an FAQ section for a real webpage so that
+AI engines ({{ AI_ENGINES }}) can extract and cite direct answers.
+
+BRAND: {{ brand }}
+PAGE URL: {{ url }}
+
+WHAT WE KNOW ABOUT THIS BRAND (use only these facts; do not invent):
+{{ brand_knowledge }}
+
+PAGE CONTENT (source of truth for the answers):
+{{ page_content }}
+
+TASK: Draft {{ count }} frequently asked questions with concise, direct answers.
+
+RULES:
+1. Base every answer strictly on the page content and brand facts above. Never invent
+   prices, statistics, guarantees, or claims that are not supported.
+2. Each answer: 2-4 sentences, leading with the direct answer.
+3. Write questions the way a real buyer would ask them.
+4. If the page lacks enough information for a question, omit that question.

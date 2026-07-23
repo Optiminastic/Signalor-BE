@@ -21,7 +21,10 @@ from .pipeline.crawler import CrawlResult, crawl_page
 from .pipeline.eeat import score_eeat
 from .pipeline.entity import score_entity
 from .pipeline.llm import get_collected_logs, start_log_collection
+from .pipeline.rec_aggregate import build_run_recommendations
 from .pipeline.recommendations import generate_recommendations
+from .services.geo_tasks import sync_geo_signal_tasks
+from .services.task_enrichment import enrich_recommendations
 from .pipeline.schema import score_schema
 from .pipeline.technical import score_technical
 
@@ -882,12 +885,40 @@ def run_single_page_analysis(run_id: int):
             "entity": entity_score_val,
             "ai_visibility": ai_vis_score,
         }
-        recs = generate_recommendations(pillar_details, pillar_scores=pillar_scores)
         # Fold in SiteOne technical-crawl findings as tasks (otherwise display-only).
-        if siteone_report is not None:
-            recs.extend(siteone_crawl.to_recommendations(siteone_report))
+        extra_recs = (
+            siteone_crawl.to_recommendations(siteone_report)
+            if siteone_report is not None
+            else []
+        )
+        # Shared orchestrator: runs the engine over the homepage + every additional
+        # page, grounds each task in real evidence, dedupes across pages, and caps.
+        recs = build_run_recommendations(
+            pillar_details,
+            page_scores_data,
+            pillar_scores,
+            industry=industry,
+            run_url=run.url,
+            extra_recs=extra_recs,
+        )
+        # Draft concrete, page-specific fix content for the top-ranked tasks
+        # (best-effort; leaves the static action as fallback on any failure).
+        try:
+            enrich_recommendations(run, recs, top_n=6)
+        except Exception:
+            logger.exception("Run %d: task enrichment failed", run_id)
         # one INSERT instead of one per recommendation (see note above).
         Recommendation.objects.bulk_create([Recommendation(analysis_run=run, **rec) for rec in recs])
+
+        # GEO-signal tasks from measured prompt/citation/competitor gaps. Prompts
+        # already fired in _save_probes_and_tracks above, so results are available.
+        # Best-effort: empty (returns 0) when no prompt data; never blocks the run.
+        try:
+            n_geo = sync_geo_signal_tasks(run, industry=industry)
+            if n_geo:
+                logger.info("Run %d: added %d GEO-signal tasks", run_id, n_geo)
+        except Exception:
+            logger.exception("Run %d: GEO-signal task generation failed", run_id)
 
         # Save brand visibility
         if brand_vis_result:
