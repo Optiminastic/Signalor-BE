@@ -475,6 +475,7 @@ class UserActionSerializer(serializers.ModelSerializer):
             "score_after",
             "score_improvement",
             "notes",
+            "verification_message",
             "created_at",
             "analysis_run",
             "recommendation",
@@ -487,6 +488,7 @@ class UserActionSerializer(serializers.ModelSerializer):
             "score_before",
             "score_after",
             "score_improvement",
+            "verification_message",
             "created_at",
         ]
 

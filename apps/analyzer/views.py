@@ -1395,8 +1395,9 @@ class UpdateUserActionView(APIView):
             elif new_status == UserAction.ActionStatus.COMPLETED:
                 if not action.completed_at:
                     action.completed_at = timezone.now()
-                # Award points for completion
-                gamification.add_points(action.points_value)
+                # No points on 'completed' — points are gated on live-site
+                # verification (see task_verify) so an unconfirmed "Mark complete"
+                # can't inflate the score. The user verifies to earn them.
 
             elif new_status == UserAction.ActionStatus.VERIFIED:
                 if not action.verified_at:
@@ -1409,8 +1410,8 @@ class UpdateUserActionView(APIView):
                         gamification.total_score_improvement += action.score_improvement
                         gamification.total_actions_verified += 1
                         gamification.save()
-                # Award bonus points for verification
-                gamification.add_points(action.points_value // 2)
+                # Points are earned only on verification.
+                gamification.add_points(action.points_value)
 
         # Update notes if provided
         if data.get("notes"):
@@ -1426,6 +1427,39 @@ class UpdateUserActionView(APIView):
                 "action": UserActionSerializer(action).data,
                 "gamification": UserGamificationSerializer(gamification).data,
                 "new_achievements": new_achievements,
+            }
+        )
+
+
+class VerifyActionView(APIView):
+    """POST actions/<id>/verify/ — re-crawl the live page and confirm the fix.
+
+    Trustworthy 'done': instead of taking the user's word (Mark complete), this
+    re-runs the specific finding's detector against the live site. On a pass the
+    task flips to VERIFIED; on a fail it stays put and returns why, so a cosmetic
+    or half-done change can't masquerade as resolved.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request, action_id):
+        try:
+            action = UserAction.objects.select_related("recommendation", "analysis_run").get(
+                pk=action_id
+            )
+        except UserAction.DoesNotExist:
+            return Response({"error": "Action not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        from .task_verify import verify_action
+
+        result = verify_action(action)
+        return Response(
+            {
+                "verified": bool(result.get("verified")),
+                "message": result.get("message", ""),
+                "status": action.status,
+                "verified_at": action.verified_at.isoformat() if action.verified_at else None,
             }
         )
 
