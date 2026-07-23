@@ -85,6 +85,13 @@ def _trigger_recrawl(job: GithubFixJob) -> None:
     job_id = job.id
     run_id = job.analysis_run_id
     pr_number = job.pr_number
+    finding_codes = list(job.finding_codes or [])
+
+    # Snapshot the tasks to verify BEFORE re-analysis: run_single_page_analysis
+    # bulk-recreates recommendations and can null the task→recommendation link.
+    from apps.analyzer.task_verify import action_targets_for_findings  # noqa: PLC0415
+
+    targets = action_targets_for_findings(run_id, finding_codes)
 
     def _work() -> None:
         from django.db import close_old_connections  # noqa: PLC0415
@@ -113,7 +120,16 @@ def _trigger_recrawl(job: GithubFixJob) -> None:
                     job_id,
                     pr_number,
                 )
+
+            # Best-effort: confirm the fixed tasks against the live page. A merge
+            # may not be deployed yet, in which case this fails and the daily
+            # recheck job (which runs after deploys) is the reliable net.
+            if run and targets:
+                from apps.analyzer.task_verify import verify_captured_targets  # noqa: PLC0415
+
+                close_old_connections()
+                verify_captured_targets(run.url, targets)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Could not record score_after for job %s: %s", job_id, exc)
+            logger.warning("Post-merge task verify failed for job %s: %s", job_id, exc)
 
     threading.Thread(target=_work, daemon=True).start()

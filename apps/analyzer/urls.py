@@ -113,6 +113,7 @@ from .views import (
     UserActionListView,
     # Gamification views
     UserGamificationView,
+    VerifyActionView,
     VisibilitySeriesView,
     WeeklyTestEmailView,
     WorkerHealthView,
@@ -386,6 +387,7 @@ urlpatterns = [
     path("actions/create/", CreateUserActionView.as_view(), name="action-create"),
     path("actions/sync/", SyncActionsView.as_view(), name="action-sync"),
     path("actions/<int:action_id>/assign/", AssignActionView.as_view(), name="action-assign"),
+    path("actions/<int:action_id>/verify/", VerifyActionView.as_view(), name="action-verify"),
     path("actions/<int:action_id>/", UpdateUserActionView.as_view(), name="action-update"),
     path("actions/crawl-essentials/", CrawlEssentialsStatusView.as_view(), name="crawl-essentials"),
     path(

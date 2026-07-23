@@ -358,6 +358,9 @@ class UserAction(models.Model):
     # Notes from user
     notes = models.TextField(blank=True, default="")
 
+    # Result of the last live re-crawl verification (why a fix did / didn't pass).
+    verification_message = models.TextField(blank=True, default="")
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

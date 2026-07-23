@@ -120,6 +120,9 @@ class Command(BaseCommand):
                 if st == "verified":
                     job_status = AutoFixJob.Status.VERIFIED
                     newly_done += 1
+                    # Propagate to the dashboard Tasks: mark the linked UserAction(s)
+                    # verified using this same re-crawl result — no extra crawl.
+                    self._verify_tasks(rec, result.get("message") or "")
                 elif st == "manual":
                     job_status = AutoFixJob.Status.MANUAL
                 else:
@@ -148,3 +151,15 @@ class Command(BaseCommand):
         # Re-rank the still-open recs and flag the top fix.
         reprioritize_run_recommendations(run)
         return checked, newly_done
+
+    def _verify_tasks(self, rec: Recommendation, message: str) -> None:
+        """Mark a verified recommendation's dashboard tasks VERIFIED (reuses this
+        crawl's result, so no extra network work)."""
+        from apps.analyzer.models import UserAction
+        from apps.analyzer.task_verify import mark_action_verified
+
+        for action in rec.user_actions.exclude(status=UserAction.ActionStatus.VERIFIED):
+            try:
+                mark_action_verified(action, message)
+            except Exception:
+                logger.exception("Task verify propagation failed (rec=%s action=%s)", rec.id, action.id)
