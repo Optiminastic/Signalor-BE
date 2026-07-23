@@ -1,5 +1,7 @@
 import logging
 
+from .impact import estimate_marginal_gain, format_impact_estimate
+
 logger = logging.getLogger("apps")
 
 RECOMMENDATION_RULES = {
@@ -1801,6 +1803,7 @@ def _default_difficulty(priority: str) -> str:
 def generate_recommendations(
     pillar_details: dict[str, dict],
     pillar_scores: dict[str, float] | None = None,
+    industry: str = "default",
 ) -> list[dict]:
     """
     Smart recommendation engine:
@@ -1810,6 +1813,9 @@ def generate_recommendations(
     4. Suppresses recs for high-scoring pillars (>70)
     5. Adds "why" context to each recommendation
     6. Caps total at MAX_RECOMMENDATIONS
+
+    ``industry`` selects the composite pillar weights used to compute each rec's
+    grounded ``impact_points`` / ``impact_estimate`` (see pipeline/impact.py).
     """
     scores = pillar_scores or {}
     candidates = []
@@ -1835,6 +1841,19 @@ def generate_recommendations(
                 rec["finding_code"] = finding
                 rec["impact_score"] = IMPACT_SCORES.get(finding, 10)
                 rec["fixable"] = finding not in MANUAL_FINDINGS
+
+                # Grounded marginal-impact estimate from real pillar/sub-dimension
+                # headroom. Replaces the fabricated static impact_estimate string.
+                gain = estimate_marginal_gain(
+                    finding,
+                    pillar_details,
+                    pillar_scores=scores,
+                    industry=industry,
+                    rule_pillar=pillar,
+                    fallback_impact=rec["impact_score"],
+                )
+                rec["impact_points"] = gain["composite_points"]
+                rec["impact_estimate"] = format_impact_estimate(gain)
 
                 # Priority engine: combine pillar weakness + impact + severity
                 pillar_urgency = 100 - pillar_score  # lower score = higher urgency
@@ -1925,7 +1944,14 @@ def reprioritize_run_recommendations(run) -> int:
     open_recs = [r for r in recs if r.id not in done_ids]
 
     def _score(r) -> float:
-        impact = IMPACT_SCORES.get(r.finding_code or r.finding_key or "", 50)
+        # Prefer the grounded marginal-impact estimate when present; fall back to the
+        # legacy static importance table for pre-existing rows with no impact_points.
+        # impact_points is composite-scale (~0-25); scale it to the 0-100 band the
+        # other terms use so the weighting stays balanced.
+        if getattr(r, "impact_points", 0) and r.impact_points > 0:
+            impact = min(100.0, r.impact_points * 5.0)
+        else:
+            impact = IMPACT_SCORES.get(r.finding_code or r.finding_key or "", 50)
         urgency = 100 - pillar_scores.get(r.pillar, 50)
         sev = _PRIORITY_SEVERITY.get(r.priority, 30)
         return impact * 0.4 + urgency * 0.4 + sev * 0.2 + age_boost

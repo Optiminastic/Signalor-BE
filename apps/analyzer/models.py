@@ -203,6 +203,7 @@ class Recommendation(models.Model):
     class Source(models.TextChoices):
         ANALYZER = "analyzer", "Analyzer"
         AI_INSIGHT = "ai_insight", "AI Insight"
+        GEO_SIGNAL = "geo_signal", "GEO Signal"
 
     analysis_run = models.ForeignKey(AnalysisRun, on_delete=models.CASCADE, related_name="recommendations")
     pillar = models.CharField(max_length=30)
@@ -222,8 +223,23 @@ class Recommendation(models.Model):
     estimated_minutes = models.IntegerField(default=0)
     # The finding key that triggered this recommendation (e.g. "no_h1", "no_citations")
     finding_key = models.CharField(max_length=80, blank=True, default="")
-    # Where this rec came from — "analyzer" (pipeline) or "ai_insight" (GA/GSC AI insights).
+    # Where this rec came from — "analyzer" (pipeline), "ai_insight" (GA/GSC AI
+    # insights), or "geo_signal" (measured prompt/citation/competitor gaps).
     source = models.CharField(max_length=20, choices=Source.choices, default=Source.ANALYZER, db_index=True)
+
+    # Grounded marginal-impact estimate (composite-score points a fix can recover),
+    # computed per page from real pillar/sub-dimension headroom (see pipeline/impact.py).
+    # Preferred over the legacy static IMPACT_SCORES for ranking when > 0.
+    impact_points = models.FloatField(default=0.0, db_index=True)
+    # Concrete per-page evidence backing this task (e.g. citation_count, word_count,
+    # top_repeated). Grounds the description instead of a generic template string.
+    evidence = models.JSONField(default=dict, blank=True)
+    # URLs this finding was detected on, after cross-page dedupe (one task, N pages).
+    affected_pages = models.JSONField(default=list, blank=True)
+    # LLM-drafted concrete fix content (FAQ Q&A, rewritten paragraph, citations).
+    # Shape: {type, data, prompt_version, model, content_hash, generated_at}. Empty
+    # dict means enrichment was skipped/failed and the static `action` is the fallback.
+    generated_content = models.JSONField(default=dict, blank=True)
 
     # ── Daily re-check / re-prioritize state ──────────────────────────────────
     # Last time the daily job re-verified this fix against the live site.

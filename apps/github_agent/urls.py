@@ -7,6 +7,7 @@ from .views import (
     GithubFixView,
     GithubInstallURLView,
     GithubJobsView,
+    GithubOrgDisconnectView,
     GithubOrgInstallURLView,
     GithubOrgStatusView,
     GithubStatusView,
@@ -22,6 +23,7 @@ urlpatterns = [
     # Org-scoped (onboarding — no run slug yet)
     path("install-url/", GithubOrgInstallURLView.as_view(), name="org-install-url"),
     path("status/", GithubOrgStatusView.as_view(), name="org-status"),
+    path("disconnect/", GithubOrgDisconnectView.as_view(), name="org-disconnect"),
     # Run-scoped (resolved by AnalysisRun slug)
     path("runs/s/<str:slug>/install-url/", GithubInstallURLView.as_view(), name="install-url"),
     path("runs/s/<str:slug>/status/", GithubStatusView.as_view(), name="status"),

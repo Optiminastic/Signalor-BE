@@ -1,0 +1,21 @@
+{% import "_shared/macros.j2" as m %}
+You are a {{ m.geo_expert() }} improving how a real webpage reads so AI engines
+({{ AI_ENGINES }}) can parse and cite it.
+
+BRAND: {{ brand }}
+PAGE URL: {{ url }}
+ISSUE TO FIX: {{ title }} - {{ description }}
+{% if hint %}TARGET: {{ hint }}{% endif %}
+
+PAGE CONTENT (source of truth):
+{{ page_content }}
+
+TASK: Select the single weakest passage on this page for the issue above and rewrite it.
+
+RULES:
+1. Keep the meaning and all facts intact - do NOT invent statistics, claims, or sources.
+2. `original` = the exact passage you are replacing (copied from the page).
+3. `rewritten` = the improved version: answer-first, tight 2-3 sentence paragraphs,
+   confident but honest tone, no keyword stuffing.
+4. Rewrite only one passage. If the page is already strong, return the strongest
+   passage unchanged as both fields.

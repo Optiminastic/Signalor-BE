@@ -155,6 +155,32 @@ class GithubOrgStatusView(APIView):
         )
 
 
+class GithubOrgDisconnectView(APIView):
+    """POST disconnect/?email= — unlink the org's GitHub App installation (onboarding).
+
+    Deactivates the active installation on our side so the user can reconnect a
+    different repo. It does NOT uninstall the App on GitHub — the user manages that
+    from GitHub; this just clears the SignalorAI link.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request):
+        email = request.query_params.get("email", "") or request.data.get("email", "")
+        org = _org_for_email(email)
+        if not org:
+            return Response(
+                {"error": "No organization for this email."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        inst = _active_installation_for_org(org.id)
+        if inst:
+            inst.is_active = False
+            inst.save(update_fields=["is_active", "updated_at"])
+        return Response({"disconnected": True})
+
+
 class GithubCallbackView(APIView):
     """GET callback/ — GitHub redirects here after the user installs the App."""
 
@@ -170,24 +196,33 @@ class GithubCallbackView(APIView):
         if not installation_id:
             return self._redirect(frontend, state, "error")
 
+        # This is GitHub redirecting a browser here, so ANY failure (bad GitHub
+        # API call, a state that references an org this environment doesn't have —
+        # e.g. a localhost onboarding hitting the prod callback — a DB error) must
+        # bounce back to the frontend with an error flag, never a raw 500.
         try:
-            installation_id = int(installation_id)
-            repos = auth.list_installation_repos(installation_id)
-        except (ValueError, TypeError) as exc:
-            logger.error("GitHub callback failed: %s", exc)
+            self._link_installation(int(installation_id), state)
+        except Exception:
+            logger.exception(
+                "GitHub callback failed (installation_id=%s, state=%s)", installation_id, state
+            )
             return self._redirect(frontend, state, "error")
+        return self._redirect(frontend, state, "connected")
 
+    @staticmethod
+    def _link_installation(installation_id: int, state: str) -> None:
+        repos = auth.list_installation_repos(installation_id)
         repo_names = [r.get("full_name", "") for r in repos if r.get("full_name")]
-        primary = repo_names[0] if repo_names else ""
         owner = repos[0].get("owner", {}) if repos else {}
         default_branch = repos[0].get("default_branch", "main") if repos else "main"
 
         # Resolve which org/run this install belongs to from the state.
         if state.startswith("org_"):
-            try:
-                org_id = int(state[4:])
-            except (ValueError, TypeError):
-                org_id = None
+            org_id = int(state[4:])
+            # Guard the FK: an org id that isn't in THIS database (dev/prod
+            # mismatch) would otherwise fail the insert with a dangling FK 500.
+            if not Organization.objects.filter(pk=org_id).exists():
+                raise ValueError(f"onboarding org {org_id} not found in this environment")
             connect_slug = ""
         else:
             run = _get_run(state) if state else None
@@ -201,13 +236,12 @@ class GithubCallbackView(APIView):
                 "connect_slug": connect_slug,
                 "account_login": owner.get("login", ""),
                 "account_type": owner.get("type", ""),
-                "repo_full_name": primary,
+                "repo_full_name": repo_names[0] if repo_names else "",
                 "repositories": repo_names,
                 "default_branch": default_branch,
                 "is_active": True,
             },
         )
-        return self._redirect(frontend, state, "connected")
 
     @staticmethod
     def _redirect(frontend: str, state: str, result: str):

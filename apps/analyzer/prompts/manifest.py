@@ -23,4 +23,9 @@ MANIFEST: dict[str, str] = {
     "geo_product_desc": "v1",
     # Evaluation (Epic 6): the LLM-as-judge prompt
     "judge_eval": "v1",
+    # Task enrichment (apps/analyzer/services/task_enrichment.py) — drafts concrete,
+    # page-specific fix content for the top-ranked tasks.
+    "task_enrich_faq": "v1",
+    "task_enrich_citations": "v1",
+    "task_enrich_rewrite": "v1",
 }
