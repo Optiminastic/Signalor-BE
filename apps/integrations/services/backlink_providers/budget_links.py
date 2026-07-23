@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import secrets
-from typing import Iterable
+from collections.abc import Iterable
 
 from django.conf import settings
 

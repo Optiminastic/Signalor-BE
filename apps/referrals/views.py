@@ -6,7 +6,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Referral, ReferralCode, ReferralReward
+from .models import Referral, ReferralReward
 from .services import get_or_create_code, link_referee
 
 

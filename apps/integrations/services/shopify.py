@@ -1,11 +1,11 @@
 """Shopify REST Admin API integration service (OAuth + data sync)."""
+import hashlib
+import hmac
 import json
 import logging
 import os
 from datetime import date, timedelta
 from decimal import Decimal
-import hashlib
-import hmac
 from urllib.parse import parse_qsl, urlencode
 
 import requests
@@ -244,7 +244,7 @@ def validate_shopify_connection(shop_domain: str, access_token: str) -> dict:
     try:
         resp = requests.get(url, headers=headers, timeout=15)
     except requests.RequestException as e:
-        raise ValueError(f"Could not reach Shopify: {e}")
+        raise ValueError(f"Could not reach Shopify: {e}") from e
 
     if resp.status_code == 401:
         raise ValueError("Invalid access token. Check your Custom App credentials.")

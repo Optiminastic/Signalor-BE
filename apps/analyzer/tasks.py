@@ -23,10 +23,10 @@ from .pipeline.entity import score_entity
 from .pipeline.llm import get_collected_logs, start_log_collection
 from .pipeline.rec_aggregate import build_run_recommendations
 from .pipeline.recommendations import generate_recommendations
-from .services.geo_tasks import sync_geo_signal_tasks
-from .services.task_enrichment import enrich_recommendations
 from .pipeline.schema import score_schema
 from .pipeline.technical import score_technical
+from .services.geo_tasks import sync_geo_signal_tasks
+from .services.task_enrichment import enrich_recommendations
 
 logger = logging.getLogger("apps")
 

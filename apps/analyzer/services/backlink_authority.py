@@ -27,7 +27,6 @@ import requests
 from django.utils import timezone
 
 from apps.analyzer.models import (
-    AnalysisRun,
     BacklinkSnapshot,
     PromptCitation,
     PromptTrack,

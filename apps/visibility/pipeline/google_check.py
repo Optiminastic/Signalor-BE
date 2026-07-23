@@ -10,7 +10,7 @@ import json
 import logging
 import os
 import re
-from urllib.parse import urlparse, quote_plus
+from urllib.parse import urlparse
 
 import requests
 
@@ -201,7 +201,7 @@ def _llm_google_check(brand_name: str, brand_url: str, domain: str) -> tuple[flo
     }
 
     try:
-        from apps.analyzer.pipeline.llm import is_available, ask_llm
+        from apps.analyzer.pipeline.llm import ask_llm, is_available
 
         if not is_available():
             return 20.0, {**details, "error": "No LLM available"}

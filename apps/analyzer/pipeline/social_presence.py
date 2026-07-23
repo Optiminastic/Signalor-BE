@@ -13,7 +13,7 @@ import math
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlparse, unquote
+from urllib.parse import unquote, urlparse
 
 import requests
 

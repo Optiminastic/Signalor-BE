@@ -22,12 +22,11 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
-from typing import Optional
 
 from django.utils import timezone
 
-from .models import Referral, ReferralCode, ReferralReward
 from .dodo_discounts import create_referee_discount
+from .models import Referral, ReferralCode, ReferralReward
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +36,7 @@ def get_or_create_code(email: str) -> ReferralCode:
     return ReferralCode.for_email(email)
 
 
-def link_referee(code: str, referee_email: str) -> Optional[Referral]:
+def link_referee(code: str, referee_email: str) -> Referral | None:
     """Called at sign-up when ?ref=CODE is present. Idempotent."""
     code = (code or "").strip().upper()
     if not code or not referee_email:
@@ -149,7 +148,7 @@ def tier_percent_for(count: int) -> int:
     return 0
 
 
-def on_referrer_renewal(referrer_email: str, webhook_data: Optional[dict] = None) -> None:
+def on_referrer_renewal(referrer_email: str, webhook_data: dict | None = None) -> None:
     """Webhook hook: the referrer's renewal invoice was processed.
 
     Counts queued PENDING ReferralRewards, derives the tier %, and issues a

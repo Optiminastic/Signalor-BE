@@ -5,9 +5,9 @@ import os
 import urllib.error
 import urllib.request
 
+from django.conf import settings
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
-from django.conf import settings
 
 logger = logging.getLogger("apps")
 

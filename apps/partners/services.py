@@ -16,7 +16,6 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 from decimal import Decimal
-from typing import Optional
 
 from django.utils import timezone
 
@@ -29,7 +28,7 @@ def set_attribution(
     email: str,
     code: str,
     landing_path: str = "",
-) -> Optional[PartnerAttribution]:
+) -> PartnerAttribution | None:
     """Lock in last-click attribution for ``email`` to the partner with ``code``.
 
     Returns the attribution row, or None if the code is invalid / partner is
@@ -72,7 +71,7 @@ def set_attribution(
     return attribution
 
 
-def get_active_attribution(email: str) -> Optional[PartnerAttribution]:
+def get_active_attribution(email: str) -> PartnerAttribution | None:
     """Return the active attribution row for ``email`` or None.
 
     "Active" = exists, not expired, partner is not terminated. Paused partners
@@ -95,7 +94,7 @@ def get_active_attribution(email: str) -> Optional[PartnerAttribution]:
     return attribution
 
 
-def cancel_commission_for_refund(payment_id: str) -> Optional[PartnerCommission]:
+def cancel_commission_for_refund(payment_id: str) -> PartnerCommission | None:
     """Mark a PENDING commission as CANCELLED when Dodo refunds its payment.
 
     A PAID commission is never reversed — once you've actually wired the money
@@ -133,7 +132,7 @@ def record_commission(
     gross_amount: Decimal,
     post_discount_amount: Decimal,
     currency: str = "USD",
-) -> Optional[PartnerCommission]:
+) -> PartnerCommission | None:
     """Create a PENDING commission row if ``referee_email`` is attributed.
 
     Idempotent on ``payment_id`` thanks to the model's UniqueConstraint.

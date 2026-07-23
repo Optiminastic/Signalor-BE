@@ -40,7 +40,7 @@ class ReferralCode(models.Model):
         return f"{self.code} → {self.owner_email}"
 
     @classmethod
-    def for_email(cls, email: str) -> "ReferralCode":
+    def for_email(cls, email: str) -> ReferralCode:
         """Get-or-create a code for `email`, retrying on rare code collisions."""
         existing = cls.objects.filter(owner_email=email).first()
         if existing:

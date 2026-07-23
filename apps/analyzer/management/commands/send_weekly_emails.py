@@ -7,10 +7,10 @@ import logging
 import urllib.parse
 
 from django.core.management.base import BaseCommand
-from django.db.models import Case, When, IntegerField, Max
+from django.db.models import Case, IntegerField, Max, When
 
-from apps.analyzer.models import AnalysisRun, SitemapAudit
 from apps.analyzer.email_utils import send_weekly_email
+from apps.analyzer.models import AnalysisRun, SitemapAudit
 
 logger = logging.getLogger("apps")
 
@@ -18,7 +18,7 @@ logger = logging.getLogger("apps")
 def _domain(url: str) -> str:
     try:
         u = url if url.startswith("http") else f"https://{url}"
-        return urllib.parse.urlparse(u).netloc.lstrip("www.")
+        return urllib.parse.urlparse(u).netloc.removeprefix("www.")
     except Exception:
         return url
 
