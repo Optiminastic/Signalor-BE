@@ -1376,7 +1376,7 @@ class DeleteAccountView(APIView):
         from apps.referrals.models import Referral, ReferralCode, ReferralReward
         from apps.visibility.models import VisibilityCheck
 
-        from .models import User
+        from .models import AccountProfile, AgencyMembership, User
 
         # Stable anonymized email for financial-trail rows (Partner.email is
         # unique, so we need a deterministic non-colliding placeholder).
@@ -1426,6 +1426,22 @@ class DeleteAccountView(APIView):
 
                 counts["visibility_checks"], _ = VisibilityCheck.objects.filter(email=email).delete()
 
+                # GitHub agent rows — delete through the ORM *before* their org/run
+                # so a stale DB-level FK constraint on github_agent_* (observed as an
+                # IntegrityError in this environment) can't block the org/run cascade.
+                from apps.github_agent.models import (  # noqa: PLC0415
+                    GithubFixJob,
+                    GithubInstallation,
+                )
+
+                counts["github_fix_jobs"], _ = GithubFixJob.objects.filter(
+                    models.Q(analysis_run__email=email)
+                    | models.Q(installation__organization__owner_email=email)
+                ).delete()
+                counts["github_installations"], _ = GithubInstallation.objects.filter(
+                    organization__owner_email=email
+                ).delete()
+
                 # Analysis runs cascade to PromptTrack, Recommendation, Competitor,
                 # AutoFixJob, SchemaWatch, RankAudit, ChatMessage, etc.
                 counts["analysis_runs"], _ = AnalysisRun.objects.filter(email=email).delete()
@@ -1440,15 +1456,27 @@ class DeleteAccountView(APIView):
                 # otherwise raise MultipleObjectsReturned and roll back the whole delete.
                 counts["subscription"], _ = Subscription.objects.filter(email=email).delete()
 
+                # Email-keyed identity rows (no FK, so they don't block — but leaving
+                # them orphans the account's profile and any agency memberships,
+                # including teams this owner ran).
+                counts["account_profile"], _ = AccountProfile.objects.filter(email=email).delete()
+                counts["agency_memberships"], _ = AgencyMembership.objects.filter(
+                    models.Q(agency_email=email) | models.Q(member_email=email)
+                ).delete()
+
                 # The User row itself — without this the account silently restores
                 # on next sign-in. This was the original bug.
                 counts["user"], _ = User.objects.filter(email=email).delete()
-        except Exception:
-            # A blocking/linked record (e.g. an unhandled PROTECT FK) must not read
-            # as a mystery — log the full cause and return an actionable message.
+        except Exception as exc:
+            # Log the full cause, and return the exception detail so a blocking
+            # record is diagnosable from the response (this is the caller deleting
+            # their own account, behind a typed confirmation).
             logger.exception("Account delete failed for %s (partial counts: %s)", email, counts)
             return Response(
-                {"error": "Could not delete the account — a linked record blocked it."},
+                {
+                    "error": "Could not delete the account. Please contact support.",
+                    "detail": f"{type(exc).__name__}: {exc}"[:600],
+                },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
