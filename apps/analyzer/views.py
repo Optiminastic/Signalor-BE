@@ -930,6 +930,24 @@ class StartAnalysisView(APIView):
         elif email:
             org = Organization.objects.filter(owner_email=email).first()
 
+        # 24h cooldown: one completed analysis per brand per day. A cheap gate on
+        # top of the in-flight guard above — re-running unchanged data just burns
+        # LLM / DataForSEO spend. Skipped for anonymous free-tool scans (no org).
+        from .run_guard import cooldown_until
+
+        ready_at = cooldown_until(org)
+        if ready_at is not None:
+            return Response(
+                {
+                    "error": (
+                        "This brand was analyzed in the last 24 hours. "
+                        "A new analysis can run once per day."
+                    ),
+                    "next_allowed_at": ready_at.isoformat(),
+                },
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
         run = AnalysisRun.objects.create(
             organization=org,
             url=data["url"],
