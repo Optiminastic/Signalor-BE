@@ -256,6 +256,53 @@ class Recommendation(models.Model):
         return f"[{self.priority}] {self.title}"
 
 
+class TaskSatisfaction(models.Model):
+    """Cross-run memory of which (page, finding) pairs are already satisfied.
+
+    One upserted row per (organization, page_url, finding_code). ``content_hash``
+    is the page's visible-text hash when the pair was last confirmed done — a
+    content change invalidates the entry so a genuine regression can resurface.
+
+    Written by the satisfaction gate, the daily recheck, auto-fix verification,
+    and user "mark done"; read by the gate to suppress already-done tasks without
+    re-verifying unchanged pages. Only meaningful for runs with an organization
+    (persistent brands); anonymous free-tool runs don't use it.
+    """
+
+    class Source(models.TextChoices):
+        HEURISTIC = "heuristic", "Heuristic"
+        LLM = "llm", "LLM"
+        AUTOFIX = "autofix", "Auto-fix"
+        RECHECK = "recheck", "Daily recheck"
+        USER = "user", "User"
+
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="task_satisfactions",
+    )
+    page_url = models.CharField(max_length=2048)
+    finding_code = models.CharField(max_length=80, db_index=True)
+    content_hash = models.CharField(max_length=64, blank=True, default="")
+    source = models.CharField(max_length=20, choices=Source.choices, default=Source.HEURISTIC)
+    confidence = models.FloatField(default=1.0)
+    evidence = models.JSONField(default=dict, blank=True)
+    verified_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "page_url", "finding_code"],
+                name="uniq_task_satisfaction",
+            ),
+        ]
+
+    def __str__(self):
+        return f"TaskSatisfaction[{self.finding_code}] {self.page_url}"
+
+
 class BrandVisibility(models.Model):
     analysis_run = models.OneToOneField(
         AnalysisRun, on_delete=models.CASCADE, related_name="brand_visibility"

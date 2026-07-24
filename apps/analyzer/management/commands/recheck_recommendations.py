@@ -27,12 +27,15 @@ from django.utils import timezone
 
 from apps.analyzer.models import AnalysisRun, AutoFixJob, Recommendation
 from apps.analyzer.pipeline.recommendations import reprioritize_run_recommendations
+from apps.analyzer.pipeline.satisfaction import page_content_hash
 from apps.analyzer.pipeline.verify import SKIP_RECRAWL
 from apps.analyzer.recommendation_verify import (
+    _fetch_html,
     begin_html_cache,
     end_html_cache,
     verify_recommendation_fix,
 )
+from apps.analyzer.services.satisfaction_ledger import record_satisfied
 
 logger = logging.getLogger("apps")
 
@@ -109,6 +112,15 @@ class Command(BaseCommand):
         now = timezone.now()
 
         begin_html_cache()
+        # Hash the run's page once (cached fetch) so verified fixes can be recorded
+        # in the satisfaction ledger keyed by current content.
+        run_hash = ""
+        if run.organization_id:
+            try:
+                _, _soup = _fetch_html(run)
+                run_hash = page_content_hash(_soup) if _soup else ""
+            except Exception:
+                run_hash = ""
         try:
             for rec in open_recs:
                 try:
@@ -123,6 +135,16 @@ class Command(BaseCommand):
                     # Propagate to the dashboard Tasks: mark the linked UserAction(s)
                     # verified using this same re-crawl result — no extra crawl.
                     self._verify_tasks(rec, result.get("message") or "")
+                    # Cross-run memory: record so a future analysis suppresses this
+                    # task while the page content is unchanged.
+                    if run.organization_id:
+                        record_satisfied(
+                            organization_id=run.organization_id,
+                            page_url=run.url,
+                            finding_code=(rec.finding_code or rec.finding_key or ""),
+                            content_hash=run_hash,
+                            source="recheck",
+                        )
                 elif st == "manual":
                     job_status = AutoFixJob.Status.MANUAL
                 else:
