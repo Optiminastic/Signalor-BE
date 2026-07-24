@@ -23,9 +23,11 @@ from .pipeline.entity import score_entity
 from .pipeline.llm import get_collected_logs, start_log_collection
 from .pipeline.rec_aggregate import build_run_recommendations
 from .pipeline.recommendations import generate_recommendations
+from .pipeline.satisfaction import PageSignals
 from .pipeline.schema import score_schema
 from .pipeline.technical import score_technical
 from .services.geo_tasks import sync_geo_signal_tasks
+from .services.satisfaction_ledger import apply_gate
 from .services.task_enrichment import enrich_recommendations
 
 logger = logging.getLogger("apps")
@@ -901,6 +903,25 @@ def run_single_page_analysis(run_id: int):
             run_url=run.url,
             extra_recs=extra_recs,
         )
+        # Satisfaction gate: drop any task a multi-signal check proves is already
+        # done on every affected page, so "already-fixed" items never surface.
+        # Suppress-only + runs on the crawl already in memory (no extra fetch).
+        try:
+            page_signals = {}
+            for _c in [crawl, *additional_crawls]:
+                _ps = PageSignals.from_crawl(_c)
+                if _ps is not None:
+                    page_signals[_ps.url] = _ps
+            recs, _suppressed = apply_gate(run, recs, page_signals)
+            if _suppressed:
+                logger.info(
+                    "Run %d: satisfaction gate suppressed %d already-done task(s): %s",
+                    run_id,
+                    len(_suppressed),
+                    sorted({r.get("finding_code") for r in _suppressed}),
+                )
+        except Exception:
+            logger.exception("Run %d: satisfaction gate failed", run_id)
         # Draft concrete, page-specific fix content for the top-ranked tasks
         # (best-effort; leaves the static action as fallback on any failure).
         try:

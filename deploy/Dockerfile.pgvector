@@ -1,0 +1,37 @@
+# Postgres 16 (Alpine/musl) + pgvector — the production database image.
+#
+# WHY THIS EXISTS: the backend REQUIRES the pgvector extension. Migrations
+# organizations.0008_brandcorpuschunk / 0009_corpus_hnsw_index run
+# `CREATE EXTENSION vector` and build HNSW indexes over embedding columns
+# (BrandCorpusChunk.embedding, LLMResponseCache.prompt_embedding). Plain
+# `postgres:16-alpine` has no pgvector, so ANY query that touches those tables
+# fails with `OperationalError: could not access file "$libdir/vector"` — this
+# includes semantic-cache reads/writes, corpus RAG, and even simple row DELETEs
+# that must maintain the HNSW index (e.g. account deletion cascading through
+# BrandCorpusChunk). This image is committed so a `git pull` redeploy can never
+# silently revert the DB to a non-pgvector image again.
+#
+# MUST STAY ALPINE / musl: the prod data dir was initdb'd under musl with
+# datcollate=en_US.utf8. A glibc base (e.g. pgvector/pgvector:pg16) changes
+# collation ordering and risks corrupting existing text indexes — a glibc move
+# would require a dump/restore. Keep the base musl.
+#
+# pgvector is compiled from source against this image's own Postgres (via PGXS),
+# with the LLVM toolchain the base image was built with (clang19 / llvm19).
+FROM postgres:16-alpine
+
+ARG PGVECTOR_VERSION=v0.8.0
+
+RUN set -eux; \
+    apk add --no-cache --virtual .build-deps \
+        build-base \
+        clang19 \
+        llvm19-dev \
+        git; \
+    git clone --branch "${PGVECTOR_VERSION}" --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector; \
+    cd /tmp/pgvector; \
+    make; \
+    make install; \
+    cd /; \
+    rm -rf /tmp/pgvector; \
+    apk del .build-deps

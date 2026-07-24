@@ -45,7 +45,17 @@ x-app: &app
 
 services:
   db:
-    image: postgres:16-alpine
+    # Postgres 16 + pgvector, built from ./Dockerfile.pgvector. pgvector is
+    # REQUIRED (organizations.0008/0009 CREATE EXTENSION vector + HNSW indexes);
+    # plain postgres:16-alpine breaks EVERY vector op — semantic cache, corpus
+    # RAG, and even row deletes that maintain the HNSW index (e.g. account
+    # deletion → "could not access file $libdir/vector"). Committed so a redeploy
+    # can't silently revert to a non-pgvector image. MUST stay Alpine/musl
+    # (collation). See deploy/Dockerfile.pgvector + project_prod_pgvector.
+    build:
+      context: .
+      dockerfile: Dockerfile.pgvector
+    image: signalor/postgres-pgvector:16-alpine
     restart: unless-stopped
     # POSTGRES_* come from stack.env (injected as container env). We do NOT use
     # ${DB_*} here: compose-file interpolation reads the shell / default .env

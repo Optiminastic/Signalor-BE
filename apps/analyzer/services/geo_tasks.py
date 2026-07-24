@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 
 from apps.analyzer.pipeline.aggregator import get_weights
+from apps.analyzer.pipeline.offpage_presence import brand_present_on_domain
 
 logger = logging.getLogger("apps")
 
@@ -32,6 +33,27 @@ CODE_COMPETITOR_PILLAR_GAP = "geo_competitor_pillar_gap"
 # How many tasks to emit per category, highest-signal first.
 _MAX_LOST_PROMPTS = 3
 _MAX_CITATION_GAPS = 2
+
+# Open content / social / Q&A platforms are NOT actionable "get a placement here"
+# targets — any established brand is already present (Vercel is all over Medium and
+# YouTube), and "get mentioned on medium.com" is a vague non-task. A citation-gap
+# task only makes sense for a discrete third-party authority (a publication, a
+# directory, a docs/review site) the brand could realistically be added to. These
+# are excluded from the citation-gap generator.
+_PLATFORM_DOMAINS = frozenset({
+    "medium.com", "youtube.com", "youtu.be", "reddit.com", "github.com",
+    "gitlab.com", "stackoverflow.com", "stackexchange.com", "quora.com",
+    "dev.to", "hashnode.com", "substack.com", "twitter.com", "x.com",
+    "facebook.com", "linkedin.com", "instagram.com", "tiktok.com",
+    "pinterest.com", "threads.net", "wikipedia.org", "wikimedia.org",
+    "wordpress.com", "blogspot.com", "tumblr.com", "news.ycombinator.com",
+})
+
+
+def _is_platform_domain(domain: str) -> bool:
+    """True for open content/social platforms that aren't a discrete placement target."""
+    d = (domain or "").lower().lstrip(".")
+    return any(d == p or d.endswith("." + p) for p in _PLATFORM_DOMAINS)
 
 
 def _impact_points(pillar: str, severity: float, industry: str) -> float:
@@ -91,7 +113,10 @@ def generate_geo_signal_tasks(run, industry: str = "default") -> list[dict]:
                     continue
                 if c.is_competitor and c.domain:
                     competitor_domains[c.domain] = competitor_domains.get(c.domain, 0) + 1
-                elif c.domain:
+                elif c.domain and not _is_platform_domain(c.domain):
+                    # Skip open platforms (medium/youtube/reddit/…) — "get mentioned
+                    # there" is not a discrete, verifiable task and any real brand is
+                    # already present.
                     gap_domains[c.domain] = gap_domains.get(c.domain, 0) + 1
 
     total = len(tracks)
@@ -143,11 +168,20 @@ def generate_geo_signal_tasks(run, industry: str = "default") -> list[dict]:
         tasks.append(task)
 
     # ── 3. Recurring citation-domain gaps (get mentioned there) ──
-    recurring = sorted(
+    # Consider more candidates than we emit, so brand-presence suppression doesn't
+    # leave the section empty. For each, verify per-brand: if the brand is ALREADY
+    # on that domain (Vercel on TechCrunch), it's not a gap — skip it.
+    brand_name = (run.brand_name or "").strip()
+    candidates = sorted(
         ((d, n) for d, n in gap_domains.items() if n >= 2),
         key=lambda kv: -kv[1],
-    )[:_MAX_CITATION_GAPS]
-    for domain, count in recurring:
+    )[:6]
+    emitted = 0
+    for domain, count in candidates:
+        if emitted >= _MAX_CITATION_GAPS:
+            break
+        if brand_present_on_domain(brand_name, domain, industry=industry) is True:
+            continue  # already present for THIS brand → not a real gap
         task = _base(CODE_CITATION_GAP, "entity", "medium")
         task.update({
             "title": f"Get mentioned on {domain}",
@@ -164,6 +198,7 @@ def generate_geo_signal_tasks(run, industry: str = "default") -> list[dict]:
             "impact_points": _impact_points("entity", 0.5, industry),
         })
         tasks.append(task)
+        emitted += 1
 
     # ── 4. Competitor pillar gap ──
     pillar_gap_task = _competitor_pillar_gap_task(run, industry)

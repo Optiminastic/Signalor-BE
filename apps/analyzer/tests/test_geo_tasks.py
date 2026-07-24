@@ -1,5 +1,7 @@
 """Tests for the GEO-signal task generator (services/geo_tasks.py)."""
 
+from unittest.mock import patch
+
 from django.test import TestCase
 
 from apps.analyzer.models import (
@@ -12,6 +14,7 @@ from apps.analyzer.models import (
     Recommendation,
 )
 from apps.analyzer.services.geo_tasks import (
+    CODE_CITATION_GAP,
     CODE_COMPETITOR_CITED,
     CODE_COMPETITOR_PILLAR_GAP,
     CODE_PROMPT_LOST,
@@ -65,6 +68,40 @@ class GeoTaskGenerationTests(TestCase):
         comp = [t for t in tasks if t["finding_code"] == CODE_COMPETITOR_CITED]
         self.assertEqual(len(comp), 1)
         self.assertIn("rival.com", comp[0]["evidence"]["competitor_domains"])
+
+    def _lost_with_gap_domain(self, domain: str) -> None:
+        track = PromptTrack.objects.create(analysis_run=self.run, prompt_text="best framework")
+        for engine in (PromptResult.Engine.CHATGPT, PromptResult.Engine.GEMINI):
+            res = PromptResult.objects.create(
+                prompt_track=track, engine=engine, brand_mentioned=False,
+            )
+            PromptCitation.objects.create(
+                prompt_result=res, url=f"https://{domain}/x", domain=domain,
+                is_competitor=False, is_brand=False,
+            )
+
+    def test_platform_domains_excluded_from_citation_gap(self):
+        # Vercel is obviously all over Medium — "get mentioned on medium.com" is junk.
+        self._lost_with_gap_domain("medium.com")
+        self._lost_with_gap_domain("youtube.com")
+        tasks = generate_geo_signal_tasks(self.run)
+        self.assertFalse(any(t["finding_code"] == CODE_CITATION_GAP for t in tasks))
+
+    def test_authority_domain_still_produces_citation_gap(self):
+        self._lost_with_gap_domain("techcrunch.com")
+        # Presence unknown (no Serper) → keep the task.
+        with patch("apps.analyzer.services.geo_tasks.brand_present_on_domain", return_value=None):
+            tasks = generate_geo_signal_tasks(self.run)
+        gaps = [t for t in tasks if t["finding_code"] == CODE_CITATION_GAP]
+        self.assertEqual(len(gaps), 1)
+        self.assertIn("techcrunch.com", gaps[0]["title"])
+
+    def test_citation_gap_suppressed_when_brand_already_present(self):
+        # The general, per-brand fix: brand already on the domain → not a gap.
+        self._lost_with_gap_domain("techcrunch.com")
+        with patch("apps.analyzer.services.geo_tasks.brand_present_on_domain", return_value=True):
+            tasks = generate_geo_signal_tasks(self.run)
+        self.assertFalse(any(t["finding_code"] == CODE_CITATION_GAP for t in tasks))
 
     def test_competitor_pillar_gap_task(self):
         PageScore.objects.create(analysis_run=self.run, composite_score=40.0)
