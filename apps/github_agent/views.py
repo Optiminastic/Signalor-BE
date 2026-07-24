@@ -181,6 +181,42 @@ class GithubOrgDisconnectView(APIView):
         return Response({"disconnected": True})
 
 
+class GithubOrgSelectRepoView(APIView):
+    """POST select-repo/?email= {repo_full_name} — choose which granted repo
+    SignalorAI targets for auto-fix PRs.
+
+    When the App is installed on "all repositories" (or several), we can't guess
+    which one to use — this lets the user pick from the repos the install actually
+    granted. The chosen repo must be one of them (never trust the client's value).
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def post(self, request):
+        email = request.query_params.get("email", "") or request.data.get("email", "")
+        repo = (request.data.get("repo_full_name") or "").strip()
+        org = _org_for_email(email)
+        if not org:
+            return Response(
+                {"error": "No organization for this email."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        inst = _active_installation_for_org(org.id)
+        if not inst:
+            return Response(
+                {"error": "No GitHub connection for this organization."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if repo not in (inst.repositories or []):
+            return Response(
+                {"error": "That repository isn't part of this GitHub installation."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        inst.repo_full_name = repo
+        inst.save(update_fields=["repo_full_name", "updated_at"])
+        return Response({"repo_full_name": inst.repo_full_name})
+
+
 class GithubCallbackView(APIView):
     """GET callback/ — GitHub redirects here after the user installs the App."""
 
