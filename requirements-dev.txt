@@ -7,3 +7,5 @@
 -r requirements.txt
 ruff==0.15.12
 pre-commit==4.6.0
+# Migration safety gate (see .github/workflows/ci.yml → migrations job).
+django-migration-linter==6.0.0

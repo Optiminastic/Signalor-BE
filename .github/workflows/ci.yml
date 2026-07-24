@@ -42,3 +42,62 @@ jobs:
         env:
           SECRET_KEY: ci-test-secret-not-used-in-prod
           DJANGO_SETTINGS_MODULE: config.settings.test
+
+  migrations:
+    name: Migration safety (backend)
+    # PR-only: it diffs against the base branch to lint ONLY the migrations added
+    # on this branch (the 126 historical ones are never re-checked).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # pgvector image so the pgvector migrations and Postgres-specific lock
+        # checks resolve exactly as they would in prod.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: signalor_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so `origin/<base>` is available for the migration diff.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install django-migration-linter==6.0.0
+
+      - name: Lint new migrations
+        # Only migrations added since the base branch are analysed. Blocks the
+        # unambiguous breakers — dropping/renaming a column or table, adding a
+        # UNIQUE constraint, rewriting a column type, non-reversible data
+        # migrations. The index-lock-timing checks (CREATE/DROP INDEX, REINDEX)
+        # and NOT_NULL-with-default are excluded: at this scale they are noise
+        # (adding a column with a constant default is metadata-only on PG11+).
+        # Re-enable them and adopt AddIndexConcurrently once tables get large.
+        run: |
+          python manage.py lintmigrations \
+            "origin/${{ github.base_ref }}" \
+            --exclude-migration-tests NOT_NULL CREATE_INDEX CREATE_INDEX_EXCLUSIVE DROP_INDEX REINDEX \
+            --warnings-as-errors \
+            --no-cache \
+            --ignore-sqlmigrate-errors
+        env:
+          SECRET_KEY: ci-migration-lint-not-used-in-prod
+          DJANGO_SETTINGS_MODULE: config.settings.ci_migrations
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/signalor_ci
