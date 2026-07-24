@@ -1,0 +1,67 @@
+name: Evals
+
+# Prompt-quality regression gate. Runs the LLM-as-judge over the golden cases in
+# apps/analyzer/evals/cases/. Kept OUT of the main CI workflow on purpose: it
+# calls a real model (costs money, non-deterministic), so it runs only when a
+# prompt/judge changes, nightly, or on demand — not on every push.
+#
+# Requires repo secrets OPENROUTER_API_KEY (and optionally GOOGLE_API_KEY). Until
+# OPENROUTER_API_KEY is set the job self-skips and stays green, so it never blocks
+# merges before it is configured.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/analyzer/prompts/**"
+      - "apps/analyzer/evals/**"
+      - "apps/analyzer/pipeline/judge.py"
+      - "apps/analyzer/pipeline/structured.py"
+  schedule:
+    - cron: "0 6 * * *" # nightly 06:00 UTC
+  workflow_dispatch: {}
+
+concurrency:
+  group: evals-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evals:
+    name: Prompt evals (LLM-as-judge)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Guard — require an OpenRouter key
+        id: guard
+        run: |
+          if [ -z "${OPENROUTER_API_KEY}" ]; then
+            echo "::notice::OPENROUTER_API_KEY not set — skipping evals. Add it under Settings → Secrets and variables → Actions to enable this gate."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      - name: Run prompt evals
+        if: steps.guard.outputs.run == 'true'
+        # --no-persist: judge only, no PromptEvalLog rows written. Exits non-zero
+        # if any golden case scores below its faithfulness/relevance/format
+        # threshold, failing the check.
+        run: python manage.py eval_prompts --no-persist
+        env:
+          SECRET_KEY: ci-evals-not-used-in-prod
+          DJANGO_SETTINGS_MODULE: config.settings.test
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}

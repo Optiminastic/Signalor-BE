@@ -882,6 +882,7 @@ def _select_competitors_from_web_candidates_llm(
             f"You are selecting DIRECT competitors for '{brand_name}' from a web-retrieved shortlist.\n\n"
             f"IMPORTANT: You must choose competitors ONLY from the provided candidate list.\n\n"
             f"Brand profile:\n"
+            f"- What it does: {understanding.get('one_liner', '')}\n"
             f"- Product category: {understanding.get('product_category', '')}\n"
             f"- Industry: {understanding.get('industry', '')}\n"
             f"- Business model: {understanding.get('business_model', '')}\n"
@@ -889,6 +890,9 @@ def _select_competitors_from_web_candidates_llm(
             f"- Geography: {_geography_constraint(primary_country, is_global)}\n"
             f"- Revenue band: {brand_revenue or 'unknown'}\n"
             f"- Source brand marketplace: {'yes' if is_marketplace else 'no'}\n\n"
+            f"Only pick candidates that solve the SAME core problem for the same buyer. Exclude "
+            f"adjacent-category tools that solve a related-but-different job (e.g. general SEO or "
+            f"AI content-writing tools when the brand is about AI-answer / LLM citation visibility).\n\n"
             f"Candidates:\n{candidates_block}\n\n"
             f"Return ONLY a JSON array (max 5), each object containing:\n"
             f"- name\n- url\n- industry\n- tier\n- target_market\n- geography\n- pricing_model\n"
@@ -1036,9 +1040,16 @@ def _discover_competitors_llm(
             if web_candidates
             else "No live web candidates fetched."
         )
+        # Anchor on the brand's actual job-to-be-done so results don't drift into
+        # adjacent categories (e.g. generic SEO / AI-writing tools for a brand that
+        # is really about AI-answer / LLM citation visibility).
+        core_problem = understanding.get("one_liner", "") if understanding else ""
+        problem_anchor = (
+            f" — companies that solve the SAME core problem: {core_problem}" if core_problem else ""
+        )
         prompt = (
             f"You are a senior competitive intelligence analyst.\n\n"
-            f"Find exactly 5 DIRECT competitors for '{brand_name}'.\n\n"
+            f"Find exactly 5 DIRECT competitors for '{brand_name}'{problem_anchor}.\n\n"
             f"Brand profile:\n{understanding_block}\n\n"
             f"{model_line}\n"
             f"{country_source_line}\n"
@@ -1046,7 +1057,11 @@ def _discover_competitors_llm(
             f"Additional site signals:\n{compact_context}\n\n"
             f"Live web candidate domains (internet-retrieved):\n{web_candidates_block}\n\n"
             f"HARD REQUIREMENTS — every competitor MUST satisfy ALL of these:\n"
-            f"1. Same industry and same specific product/service category\n"
+            f"1. Solves the SAME core problem / job-to-be-done for the same buyer, in the same "
+            f"specific product category — not merely the same broad industry. A tool in an "
+            f"ADJACENT category (e.g. general SEO rank tracking, keyword research, or AI "
+            f"content/copywriting when this brand is about AI-answer / LLM citation visibility) "
+            f"is NOT a direct competitor and must be excluded.\n"
             f"2. Same or closely substitutable business model for the same buyer intent "
             f"({understanding.get('business_model', 'same') or 'same'})\n"
             f"3. Same customer segment ({customer_segment or 'same as brand'})\n"
@@ -1061,6 +1076,8 @@ def _discover_competitors_llm(
             f"- The brand itself or its parent/subsidiaries\n"
             f"- {_geography_exclusion(primary_country, is_global)}\n"
             f"{exclusion_line}\n"
+            f"- Adjacent-category tools that solve a related-but-different problem than the brand "
+            f"(same buyer, different job)\n"
             f"- Enterprise giants when the brand is small/bootstrap (and vice versa)\n\n"
             f"Return ONLY a JSON array. Each object must have:\n"
             f"- name (string)\n"
