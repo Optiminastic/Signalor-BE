@@ -43,26 +43,38 @@ class EvidenceTests(SimpleTestCase):
 
 
 class DedupeTests(SimpleTestCase):
-    def test_same_finding_across_pages_collapses_to_one(self):
+    def test_same_finding_collapses_richest_evidence_survives(self):
+        # Same priority → the instance with the richer evidence wins.
         recs = [
-            {"finding_code": "no_publish_date", "pillar": "eeat", "impact_points": 1.0,
+            {"finding_code": "no_publish_date", "pillar": "eeat", "priority": "medium",
              "evidence": {}, "_page_url": "https://x.com/a"},
-            {"finding_code": "no_publish_date", "pillar": "eeat", "impact_points": 2.0,
+            {"finding_code": "no_publish_date", "pillar": "eeat", "priority": "medium",
              "evidence": {"publish_date": False}, "_page_url": "https://x.com/b"},
-            {"finding_code": "no_publish_date", "pillar": "eeat", "impact_points": 0.5,
+            {"finding_code": "no_publish_date", "pillar": "eeat", "priority": "medium",
              "evidence": {}, "_page_url": "https://x.com/c"},
         ]
         out = dedupe_recommendations(recs)
         self.assertEqual(len(out), 1)
-        self.assertEqual(out[0]["impact_points"], 2.0)  # strongest survives
+        self.assertEqual(out[0]["evidence"], {"publish_date": False})  # richest survives
         self.assertEqual(out[0]["affected_pages"],
                          ["https://x.com/a", "https://x.com/b", "https://x.com/c"])
         self.assertNotIn("_page_url", out[0])  # transient tag removed
 
+    def test_higher_priority_survives_dedupe(self):
+        recs = [
+            {"finding_code": "no_h1", "pillar": "content", "priority": "medium",
+             "evidence": {}, "_page_url": "u1"},
+            {"finding_code": "no_h1", "pillar": "content", "priority": "critical",
+             "evidence": {}, "_page_url": "u2"},
+        ]
+        out = dedupe_recommendations(recs)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["priority"], "critical")  # severity wins
+
     def test_different_findings_are_preserved(self):
         recs = [
-            {"finding_code": "no_h1", "pillar": "content", "impact_points": 1.0, "_page_url": "u1"},
-            {"finding_code": "no_faq_section", "pillar": "content", "impact_points": 1.0, "_page_url": "u1"},
+            {"finding_code": "no_h1", "pillar": "content", "priority": "high", "_page_url": "u1"},
+            {"finding_code": "no_faq_section", "pillar": "content", "priority": "high", "_page_url": "u1"},
         ]
         out = dedupe_recommendations(recs)
         self.assertEqual(len(out), 2)
@@ -96,7 +108,6 @@ class BuildTests(SimpleTestCase):
         rec = citation_recs[0]
         self.assertGreaterEqual(len(rec["affected_pages"]), 1)
         self.assertIn("This page has", rec["description"])
-        self.assertGreater(rec["impact_points"], 0.0)
         # Clean model-kwargs only (no transient keys that would break Recommendation()).
         self.assertNotIn("_page_url", rec)
         self.assertNotIn("affected_count", rec)

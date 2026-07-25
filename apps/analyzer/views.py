@@ -5689,6 +5689,50 @@ class DomainRatingFreeView(APIView):
             )
 
 
+class BrandDomainAuthorityView(APIView):
+    """GET /api/analyzer/runs/s/<slug>/domain-authority/
+
+    Domain authority for the run's brand — a 0-100 Domain Rating plus (when Ahrefs
+    is configured) backlinks and linking websites. Prefers Ahrefs, falls back to
+    the free Open PageRank DR. Degrades to a null payload (never errors the
+    dashboard) when both upstreams are unavailable. Cached per domain for 7 days.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        from apps.integrations.services.openpagerank import (
+            OpenPageRankError,
+            OpenPageRankNotConfigured,
+        )
+
+        from .services.domain_authority import get_for_domain
+        from .services.domain_rating import InvalidDomain
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        org = getattr(run, "organization", None)
+        domain = (getattr(org, "url", "") or run.url or "").strip()
+
+        try:
+            return Response(get_for_domain(domain))
+        except (InvalidDomain, OpenPageRankNotConfigured, OpenPageRankError) as exc:
+            # Authority is a best-effort widget — never 500 the dashboard for it.
+            logger.info("Domain authority unavailable for run %s: %s", slug, exc)
+            return Response(
+                {
+                    "domain": domain,
+                    "domain_rating": None,
+                    "global_rank": None,
+                    "backlinks": None,
+                    "linking_websites": None,
+                    "source": None,
+                    "fetched_at": None,
+                }
+            )
+
+
 class ContentRewriteElementView(APIView):
     """POST /api/analyzer/runs/s/<slug>/content/rewrite-element/
 

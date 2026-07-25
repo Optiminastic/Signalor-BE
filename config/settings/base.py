@@ -331,6 +331,13 @@ DATAFORSEO_PASSWORD = os.getenv("DATAFORSEO_PASSWORD", "")
 # public Domain Rating tool. Free key from domcop.com/openpagerank.
 OPENPAGERANK_API_KEY = os.getenv("OPENPAGERANK_API_KEY", "")
 
+# Ahrefs API v3 (PAID, consumes API units) — real Domain Rating + backlink stats
+# for the dashboard "Domain Authority" card. Optional: when the token is unset the
+# card falls back to the free Open PageRank DR (no backlinks). Token from an Ahrefs
+# API subscription (ahrefs.com/api).
+AHREFS_API_TOKEN = os.getenv("AHREFS_API_TOKEN", "")
+AHREFS_API_BASE_URL = os.getenv("AHREFS_API_BASE_URL", "https://api.ahrefs.com/v3")
+
 # Scraping-API fallback for the crawler. When a direct crawl is hard-blocked
 # (e.g. 403 from a Cloudflare/WAF against our datacenter IPs), the crawler
 # re-fetches via this API from residential IPs. Disabled (no behavior change)

@@ -42,6 +42,7 @@ from .views import (
     BlogPublishNetworkView,
     BlogSourcesView,
     BlogTitleIdeasView,
+    BrandDomainAuthorityView,
     BulkCreateUserActionView,
     CitationSourcesView,
     CitationTrendView,
@@ -219,6 +220,11 @@ urlpatterns = [
         "runs/s/<str:slug>/domain-analytics/",
         DomainAnalyticsView.as_view(),
         name="domain-analytics",
+    ),
+    path(
+        "runs/s/<str:slug>/domain-authority/",
+        BrandDomainAuthorityView.as_view(),
+        name="domain-authority",
     ),
     path(
         "runs/s/<str:slug>/overview-insights/",

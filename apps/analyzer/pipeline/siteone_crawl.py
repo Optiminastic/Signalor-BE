@@ -448,9 +448,6 @@ def to_recommendations(report: SiteOneReport, *, max_recs: int = 8) -> list[dict
                         "title": (reason[:1].upper() + reason[1:])[:255],
                         "description": reason,
                         "action": fix,
-                        "impact_estimate": (
-                            f"Could recover ~{d.points:g} pts of technical quality" if d.points else ""
-                        ),
                         "finding_code": code,
                         "why": f"Flagged by the SiteOne technical crawl ({cat.name}).",
                         "steps": [],

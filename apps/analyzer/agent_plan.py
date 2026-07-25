@@ -80,7 +80,9 @@ def _action_dict(action: UserAction) -> dict:
         "priority": rec.priority if rec else "medium",
         "rank": rec.daily_priority_rank if rec else 0,
         "is_top_fix": rec.is_top_fix if rec else False,
-        "impact": action.points_value,
+        # Real measured GEO-score lift once the task is verified (else null). No
+        # fabricated estimate; ranking is by priority + weakest pillar.
+        "measured_lift": action.score_improvement,
         "effort": {
             "difficulty": rec.difficulty if rec else "",
             "minutes": rec.estimated_minutes if rec else 0,
@@ -90,22 +92,7 @@ def _action_dict(action: UserAction) -> dict:
     }
 
 
-def _projected_score(run, open_actions: list[UserAction]) -> float | None:
-    """The composite GEO score the run would reach if every open task were done.
-
-    Grounded in each recommendation's ``impact_points`` — the headroom-clamped
-    composite-score gain a fix recovers (see pipeline/impact.py). Summed over the
-    open tasks and capped at 100, so it's a real projection, not a guess.
-    """
-    if run.composite_score is None:
-        return None
-    gain = sum(
-        (a.recommendation.impact_points or 0.0) for a in open_actions if a.recommendation
-    )
-    return round(min(100.0, run.composite_score + gain), 1)
-
-
-def _brief(run, projected_score: float | None) -> dict:
+def _brief(run) -> dict:
     org = run.organization
     next_at = None
     if org:
@@ -117,7 +104,6 @@ def _brief(run, projected_score: float | None) -> dict:
         "website": (org.url if org else "") or run.url,
         "brand_name": run.brand_name or (org.name if org else ""),
         "score": round(run.composite_score, 1) if run.composite_score is not None else None,
-        "projected_score": projected_score,
         "last_analyzed_at": run.created_at,
         "next_analysis_at": next_at,
     }
@@ -161,7 +147,7 @@ def build_agent_plan(run, owner_email: str, *, today: date) -> dict:
     return {
         "generated_for": today.isoformat(),
         "run_slug": run.slug,
-        "brief": _brief(run, _projected_score(run, open_actions)),
+        "brief": _brief(run),
         "top_fix": top_fix,
         "groups": [{"pillar": name, "actions": items} for name, items in ordered_groups],
         "counts": {

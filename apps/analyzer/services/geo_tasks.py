@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 
-from apps.analyzer.pipeline.aggregator import get_weights
 from apps.analyzer.pipeline.offpage_presence import brand_present_on_domain
 
 logger = logging.getLogger("apps")
@@ -54,12 +53,6 @@ def _is_platform_domain(domain: str) -> bool:
     """True for open content/social platforms that aren't a discrete placement target."""
     d = (domain or "").lower().lstrip(".")
     return any(d == p or d.endswith("." + p) for p in _PLATFORM_DOMAINS)
-
-
-def _impact_points(pillar: str, severity: float, industry: str) -> float:
-    """A grounded composite hint: pillar weight x observed severity (0..1)."""
-    weight = get_weights(industry).get(pillar, 0.0)
-    return round(weight * 100.0 * max(0.0, min(1.0, severity)), 2)
 
 
 def _base(finding_code: str, pillar: str, priority: str) -> dict:
@@ -139,9 +132,7 @@ def generate_geo_signal_tasks(run, industry: str = "default") -> list[dict]:
                 "FAQ, cite authoritative sources, and mark it up with FAQPage/Article schema. "
                 "Then re-check visibility for this prompt."
             ),
-            "impact_estimate": f"Cited in 0/{total} results for this prompt across {len(engines)} engine(s)",
             "evidence": {"prompt": prompt, "engines": engines, "brand_mentions": 0},
-            "impact_points": _impact_points("ai_visibility", 0.9, industry),
         })
         tasks.append(task)
 
@@ -161,9 +152,7 @@ def generate_geo_signal_tasks(run, industry: str = "default") -> list[dict]:
                 "schema, third-party mentions), then close the gap on your equivalent pages and "
                 "earn mentions on the same high-authority sources."
             ),
-            "impact_estimate": f"{len(competitor_domains)} competitor domain(s) cited across your lost prompts",
             "evidence": {"competitor_domains": dict(top)},
-            "impact_points": _impact_points("ai_visibility", 0.7, industry),
         })
         tasks.append(task)
 
@@ -193,9 +182,7 @@ def generate_geo_signal_tasks(run, industry: str = "default") -> list[dict]:
                 f"Pursue a legitimate mention on {domain} - a listing, guest contribution, review, "
                 f"or editorial mention as appropriate for that source. AI re-indexes these regularly."
             ),
-            "impact_estimate": f"{domain} cited {count}x across your lost prompts; brand cited 0x",
             "evidence": {"domain": domain, "citations": count},
-            "impact_points": _impact_points("entity", 0.5, industry),
         })
         tasks.append(task)
         emitted += 1
@@ -241,10 +228,8 @@ def _competitor_pillar_gap_task(run, industry: str) -> dict | None:
             "schema). Complete the on-page fixes in your task list, then re-analyse to confirm the "
             "gap has closed."
         ),
-        "impact_estimate": f"{gap:.0f}-point AI-readiness gap vs {top.name}",
         "evidence": {"competitor": top.name, "competitor_score": round(float(top.composite_score), 1),
                      "brand_score": round(float(ps.composite_score), 1), "gap": round(gap, 1)},
-        "impact_points": _impact_points("ai_visibility", min(1.0, gap / 40.0), industry),
     })
     return task
 

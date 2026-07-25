@@ -117,6 +117,19 @@ def _get_org_or_400(email):
     )
 
 
+# Allowed analytics date-range windows (days). Bounds live GA4/GSC fetches so a
+# crafted ?days= can't hammer the upstream quota; absent/invalid ⇒ cached snapshot.
+_ALLOWED_RANGE_DAYS = {7, 14, 30, 90}
+
+
+def _requested_days(request) -> int:
+    """The explicit analytics window from ?days=, or 0 to use the cached snapshot."""
+    raw = (request.query_params.get("days") or "").strip()
+    if raw.isdigit() and int(raw) in _ALLOWED_RANGE_DAYS:
+        return int(raw)
+    return 0
+
+
 def _append_query_params(url: str, extra: dict[str, str]) -> str:
     """Add query keys only if not already present (preserve Shopify install signatures)."""
     parts = urlparse(url)
@@ -632,6 +645,29 @@ class GADataView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        # Explicit date range → live fetch for that window (the cached snapshot is
+        # a fixed 30-day window). Bounded to keep GA4 quota/latency in check.
+        days = _requested_days(request)
+        if days:
+            try:
+                from datetime import date
+
+                from .services.ga4 import fetch_ga4_data
+
+                data = fetch_ga4_data(integration, days=days)
+                end = date.today()
+                return Response(
+                    {
+                        **data,
+                        "date_start": (end - timedelta(days=days)).isoformat(),
+                        "date_end": end.isoformat(),
+                        "sync_status": "complete",
+                    }
+                )
+            except Exception as exc:
+                logger.warning("GA live range fetch failed (days=%s): %s", days, exc)
+                # Fall through to the cached snapshot rather than erroring the tab.
+
         # Cleanup: delete snapshots older than 90 days
         cutoff = timezone.now() - timedelta(days=90)
         integration.ga_snapshots.filter(created_at__lt=cutoff).delete()
@@ -1069,6 +1105,19 @@ class GSCDataView(APIView):
                 {"error": "Search Console not connected."},
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+        # Explicit date range → live fetch for that window (the cached snapshot is
+        # a fixed 28-day window). Bounded to keep GSC quota/latency in check.
+        days = _requested_days(request)
+        if days:
+            try:
+                from .services.gsc import fetch_gsc_data
+
+                data = fetch_gsc_data(integration, days=days)
+                return Response({**data, "sync_status": "complete"})
+            except Exception as exc:
+                logger.warning("GSC live range fetch failed (days=%s): %s", days, exc)
+                # Fall through to the cached snapshot rather than erroring the tab.
 
         # Cleanup: delete snapshots older than 90 days
         cutoff = timezone.now() - timedelta(days=90)
