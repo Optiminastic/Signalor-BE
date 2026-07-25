@@ -127,6 +127,21 @@ def list_gsc_sites(integration: Integration) -> list[dict]:
     )
     if resp.status_code != 200:
         logger.error("GSC list sites failed: %s %s", resp.status_code, resp.text)
+        body = resp.text or ""
+        # A disabled API is a Google Cloud project config gap, not a bad
+        # connection — say so, so users stop reconnecting in circles.
+        if resp.status_code == 403 and (
+            "SERVICE_DISABLED" in body or "has not been used in project" in body
+        ):
+            raise ValueError(
+                "The Google Search Console API is disabled for this project. Enable "
+                "'Search Console API' in Google Cloud, wait ~2 minutes, then retry."
+            )
+        if resp.status_code in (401, 403):
+            raise ValueError(
+                "Google denied access to Search Console. Reconnect and grant the "
+                "Search Console permission."
+            )
         raise ValueError(f"Failed to list Search Console sites (HTTP {resp.status_code}).")
 
     entries = resp.json().get("siteEntry", []) or []

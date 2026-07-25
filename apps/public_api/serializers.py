@@ -86,7 +86,6 @@ class PublicRecommendationSerializer(serializers.ModelSerializer):
             "title",
             "description",
             "action",
-            "impact_estimate",
             "why",
             "category",
         ]

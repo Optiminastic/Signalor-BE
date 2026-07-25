@@ -227,10 +227,6 @@ class Recommendation(models.Model):
     # insights), or "geo_signal" (measured prompt/citation/competitor gaps).
     source = models.CharField(max_length=20, choices=Source.choices, default=Source.ANALYZER, db_index=True)
 
-    # Grounded marginal-impact estimate (composite-score points a fix can recover),
-    # computed per page from real pillar/sub-dimension headroom (see pipeline/impact.py).
-    # Preferred over the legacy static IMPACT_SCORES for ranking when > 0.
-    impact_points = models.FloatField(default=0.0, db_index=True)
     # Concrete per-page evidence backing this task (e.g. citation_count, word_count,
     # top_repeated). Grounds the description instead of a generic template string.
     evidence = models.JSONField(default=dict, blank=True)

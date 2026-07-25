@@ -116,7 +116,6 @@ Return ONLY a JSON object with this EXACT shape (no prose, no markdown fences):
       "action": "The concrete change to make.",
       "pillar": "content | schema | eeat | technical | entity | ai_visibility | analytics",
       "priority": "critical | high | medium | low",
-      "impact_estimate": "e.g. '+5-10% organic CTR'",
       "why": "One short line on the expected outcome.",
       "steps": ["2 to 5 concrete sub-steps"]
     }}
@@ -200,7 +199,6 @@ def _normalize(data: dict, signals: dict) -> dict[str, Any]:
                 "action": _str(t.get("action"), 1000),
                 "pillar": pillar if pillar in _VALID_PILLARS else "technical",
                 "priority": priority if priority in _VALID_PRIORITIES else "medium",
-                "impact_estimate": _str(t.get("impact_estimate"), 100),
                 "why": _str(t.get("why"), 200),
                 "steps": _str_list(t.get("steps"), max_items=5, max_len=300),
             }
@@ -240,7 +238,6 @@ def _persist_tasks(run: AnalysisRun, tasks: list[dict]) -> None:
                 title=t["title"][:255],
                 description=t["description"],
                 action=t["action"],
-                impact_estimate=t["impact_estimate"],
                 category="analytics",
                 why=t["why"],
                 steps=t["steps"],

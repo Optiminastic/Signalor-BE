@@ -27,8 +27,8 @@ def _run():
     return SimpleNamespace(url="https://brand.com", brand_name="Brand", content_hash="abc123")
 
 
-def _rec(code, impact=5.0, **extra):
-    return {"finding_code": code, "impact_points": impact, "generated_content": {}, **extra}
+def _rec(code, priority="high", **extra):
+    return {"finding_code": code, "priority": priority, "generated_content": {}, **extra}
 
 
 class DispatchTests(SimpleTestCase):
@@ -80,15 +80,15 @@ class DispatchTests(SimpleTestCase):
             enrich_recommendations(_run(), recs)
         self.assertEqual(recs[0]["generated_content"], {})  # static action stands
 
-    def test_top_n_cap_enriches_only_highest_impact(self):
+    def test_top_n_cap_enriches_only_highest_priority(self):
         recs = [
-            _rec("no_faq_section", impact=9.0),
-            _rec("no_faqpage_schema", impact=1.0),
+            _rec("no_faq_section", priority="critical"),
+            _rec("no_faqpage_schema", priority="low"),
         ]
         draft = FaqDraft(pairs=[FaqPair(question="Q?", answer="A.")])
         with patch(_ASK, return_value=draft):
             enrich_recommendations(_run(), recs, top_n=1)
-        # Only the highest-impact FAQ task was enriched.
+        # Only the highest-priority FAQ task was enriched.
         by_code = {r["finding_code"]: r for r in recs}
         self.assertTrue(by_code["no_faq_section"]["generated_content"])
         self.assertEqual(by_code["no_faqpage_schema"]["generated_content"], {})

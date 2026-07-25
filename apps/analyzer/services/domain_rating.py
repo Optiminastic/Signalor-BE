@@ -36,7 +36,7 @@ class InvalidDomain(ValueError):
     """Raised when the supplied domain is empty or malformed — view returns 400."""
 
 
-def _normalize(domain: str) -> str:
+def normalize_domain(domain: str) -> str:
     """Strip scheme, www., and any path/query so we're left with a bare host."""
     d = (domain or "").strip().lower()
     for prefix in ("https://", "http://"):
@@ -45,6 +45,15 @@ def _normalize(domain: str) -> str:
     if d.startswith("www."):
         d = d[4:]
     return d.rstrip("/").split("/")[0]
+
+
+# Back-compat alias for existing callers within this module.
+_normalize = normalize_domain
+
+
+def is_valid_domain(domain: str) -> bool:
+    """True when ``domain`` is a well-formed bare hostname (post-normalize)."""
+    return bool(domain and _DOMAIN_RE.match(domain))
 
 
 def _dr(page_rank_decimal: float | None) -> int:

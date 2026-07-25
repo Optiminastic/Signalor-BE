@@ -83,6 +83,7 @@ def _run_ga4_sync(integration_id: int):
         snapshot.top_pages = data["top_pages"]
         snapshot.traffic_sources = data["traffic_sources"]
         snapshot.daily_trend = data["daily_trend"]
+        snapshot.countries = data["countries"]
         snapshot.sync_status = "complete"
         snapshot.save()
 

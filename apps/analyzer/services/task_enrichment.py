@@ -12,7 +12,7 @@ Design:
   ``organizations.services.retrieval.build_knowledge_block`` (RAG brand corpus).
 - Best-effort and fail-soft: any failure/refusal leaves ``generated_content = {}``
   and the static ``action`` remains the guaranteed fallback. Never raises.
-- Cost-bounded: only the top-N recs (by ``impact_points``) are enriched, and a
+- Cost-bounded: only the top-N recs (by priority) are enriched, and a
   content-hash guard skips regeneration when the page is unchanged.
 - Off the request path: called from the analysis worker phase.
 """
@@ -145,9 +145,10 @@ def enrich_recommendations(run, recs: list[dict], *, top_n: int = 6) -> None:
     """
     page_hash = _content_hash(getattr(run, "content_hash", "") or run.url)
 
-    # Rank by grounded impact; only enrich the codes we have a drafter for.
+    # Enrich the highest-priority tasks we have a drafter for.
+    _sev = {"critical": 3, "high": 2, "medium": 1}
     enrichable = [r for r in recs if _dispatch(r.get("finding_code", ""))[1] is not None]
-    enrichable.sort(key=lambda r: -r.get("impact_points", 0.0))
+    enrichable.sort(key=lambda r: -_sev.get(r.get("priority", "low"), 0))
     targets = enrichable[:top_n]
     if not targets:
         return

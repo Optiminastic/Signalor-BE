@@ -1,7 +1,5 @@
 import logging
 
-from .impact import estimate_marginal_gain, format_impact_estimate
-
 logger = logging.getLogger("apps")
 
 RECOMMENDATION_RULES = {
@@ -12,7 +10,6 @@ RECOMMENDATION_RULES = {
         "title": "Add an H1 Tag",
         "description": "Your page is missing an H1 tag. This is the first thing AI models look at to understand your page topic.",
         "action": "Add a single H1 tag wrapping your page title: <h1>Your Page Title</h1>. Ensure it clearly describes the page content.",
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "content",
     },
     "multiple_h1": {
@@ -21,7 +18,6 @@ RECOMMENDATION_RULES = {
         "title": "Use Only One H1 Tag",
         "description": "Your page has multiple H1 tags. AI models expect a single, clear page title.",
         "action": "Keep only one H1 tag for your main page title. Convert other H1 tags to H2 or H3.",
-        "impact_estimate": "Could improve your score by ~3 points",
         "category": "content",
     },
     "broken_heading_hierarchy": {
@@ -30,7 +26,6 @@ RECOMMENDATION_RULES = {
         "title": "Fix Heading Hierarchy",
         "description": "Your heading tags skip levels (e.g., H1 -> H3). AI models use heading hierarchy to understand content structure.",
         "action": "Ensure headings follow a logical order: H1 -> H2 -> H3. Never skip levels.",
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "content",
     },
     "no_faq_section": {
@@ -46,7 +41,6 @@ RECOMMENDATION_RULES = {
             "Instead add FAQPage JSON-LD schema reflecting the existing questions. If both a real "
             "FAQ section and its FAQPage schema already exist, this is already fixed (cannot_fix)."
         ),
-        "impact_estimate": "Could improve your score by ~8 points (+40% AI visibility with schema)",
         "category": "content",
     },
     "no_lists": {
@@ -55,7 +49,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Structured Lists",
         "description": "No bullet or numbered lists found. Lists help AI models parse and cite specific items.",
         "action": "Add <ul> or <ol> lists to present key points, features, or steps in your content.",
-        "impact_estimate": "Could improve your score by ~4 points",
         "category": "content",
     },
     "no_answer_first": {
@@ -64,7 +57,6 @@ RECOMMENDATION_RULES = {
         "title": "Use Answer-First Format",
         "description": "Your content doesn't start with a direct answer. AI models prefer content that leads with a clear, concise answer before expanding on details.",
         "action": "Restructure your opening paragraph to directly answer the main question your page addresses. Start with 'X is...' or 'The answer is...' before diving into details. This is what AI models extract first.",
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "content",
     },
     "few_internal_links": {
@@ -73,7 +65,6 @@ RECOMMENDATION_RULES = {
         "title": "Add More Internal Links",
         "description": "Fewer than 3 internal links found. Internal links help AI models understand your site structure and content relationships.",
         "action": "Add at least 3 internal links to related pages on your site within your content.",
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "content",
     },
 
@@ -86,7 +77,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Authoritative Citations (Research: +40% Visibility)",
         "description": "No citations or references found. The Princeton GEO study found that adding authoritative citations provides the HIGHEST visibility boost of all methods — up to 40%. AI systems strongly prefer well-researched content with credible sources.",
         "action": "Add 3-5 citations per major section. Use formats like:\n- 'According to a 2024 Stanford study, AI tools improve productivity by 55% (Chen et al., 2024)'\n- 'Research from McKinsey shows that...'\n- 'As published in Nature...'\nAlso consider adding a References/Sources section at the end.",
-        "impact_estimate": "Could improve your score by ~12 points (highest-impact GEO method)",
         "category": "content",
     },
 
@@ -97,7 +87,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Statistics and Data Points (Research: +37% Visibility)",
         "description": "No statistics or quantitative data found. The Princeton study shows statistics addition provides a 37% visibility boost — the second most effective GEO method. AI systems prioritize factual, verifiable information.",
         "action": "Include specific numbers throughout your content:\n- '67% of Fortune 500 companies now use AI chatbots'\n- 'Revenue increased by $2.3 million in Q3 2024'\n- 'The average response time improved from 4.2s to 0.8s'\nAlways cite the source of statistics for maximum credibility.",
-        "impact_estimate": "Could improve your score by ~10 points (2nd highest-impact GEO method)",
         "category": "content",
     },
 
@@ -108,7 +97,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Expert Quotes with Attribution (Research: +30% Visibility)",
         "description": "No expert quotes detected. Adding properly attributed quotes from recognized experts boosts AI visibility by up to 30%. Quotes provide extractable, citable content that AI models prefer.",
         "action": "Add 1-3 expert quotes with proper attribution:\n- '\"AI will be the great equalizer for small businesses,\" predicts Sam Altman, CEO of OpenAI.'\n- Use <blockquote> tags for longer quotes\n- Include the expert's title/credentials for maximum E-E-A-T impact",
-        "impact_estimate": "Could improve your score by ~8 points",
         "category": "content",
     },
 
@@ -119,7 +107,6 @@ RECOMMENDATION_RULES = {
         "title": "Strengthen Authoritative Tone (Research: +25% Visibility)",
         "description": "Your content uses hedging or uncertain language instead of confident, authoritative writing. The Princeton study found authoritative tone boosts visibility by 25%. AI models assess content quality partly through linguistic signals of authority.",
         "action": "Replace uncertain language with confident statements:\n- AVOID: 'This might help with SEO, I think'\n- USE: 'This strategy demonstrably improves SEO performance'\n- AVOID: 'Maybe you should consider...'\n- USE: 'Based on our analysis of 10,000 websites, implementing structured data increases organic traffic by 30%'\nBack up confident claims with data.",
-        "impact_estimate": "Could improve your score by ~8 points",
         "category": "content",
     },
 
@@ -130,7 +117,6 @@ RECOMMENDATION_RULES = {
         "title": "Improve Readability (Research: +20% Visibility)",
         "description": "Your content readability is outside the optimal range. The Princeton study shows easy-to-understand content gets a 20% visibility boost. AI aims to provide helpful answers to users of all knowledge levels.",
         "action": "Aim for 8th-12th grade reading level (Flesch-Kincaid):\n- Use shorter sentences (15-20 words average)\n- Replace jargon with plain language, or explain it: 'RAG (Retrieval-Augmented Generation) works like a research assistant'\n- Use bullet points for complex lists\n- Break long paragraphs into 2-3 sentences each",
-        "impact_estimate": "Could improve your score by ~7 points",
         "category": "content",
     },
 
@@ -141,7 +127,6 @@ RECOMMENDATION_RULES = {
         "title": "Include Domain-Specific Terminology (Research: +18% Visibility)",
         "description": "No technical terms or domain-specific terminology detected. Including appropriate technical terms signals expertise and helps AI match your content to specialized queries (+18% visibility boost).",
         "action": "Include domain-specific terms with definitions:\n- 'Core Web Vitals: LCP (Largest Contentful Paint), CLS (Cumulative Layout Shift)'\n- Define acronyms on first use: 'Retrieval-Augmented Generation (RAG)'\n- Use industry-standard terminology naturally throughout\n- Balance: use technical terms but explain them for accessibility",
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "content",
     },
 
@@ -152,7 +137,6 @@ RECOMMENDATION_RULES = {
         "title": "Increase Vocabulary Diversity (Research: +15% Visibility)",
         "description": "Your content has low vocabulary diversity (repetitive word usage). Diverse vocabulary indicates depth of knowledge and makes content more distinguishable to AI models (+15% visibility).",
         "action": "Improve vocabulary variety:\n- Use synonyms instead of repeating the same terms\n- Vary your sentence structures\n- Include contextual variations (e.g., 'AI', 'artificial intelligence', 'machine learning systems')\n- Use industry-specific jargon mixed with plain language",
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "content",
     },
 
@@ -163,7 +147,6 @@ RECOMMENDATION_RULES = {
         "title": "Expand Content Length",
         "description": "Your page has thin content (<800 words). Thin content rarely gets cited by AI models. The Princeton study shows comprehensive, fluent content gets 15-30% more AI visibility.",
         "action": "Expand your content to 1,500+ words. Cover the topic comprehensively with:\n- Multiple sections with clear headings\n- Examples and case studies\n- Statistics and citations\n- FAQ section at the end",
-        "impact_estimate": "Could improve your score by ~2 points (also unlocks other GEO methods)",
         "category": "content",
     },
     "poor_paragraph_structure": {
@@ -172,7 +155,6 @@ RECOMMENDATION_RULES = {
         "title": "Improve Paragraph Structure",
         "description": "Paragraphs are too long or too short. The Princeton study recommends 2-3 sentences per paragraph for optimal AI readability.",
         "action": "Break long paragraphs into focused chunks of 20-80 words each. Each paragraph should cover one idea with a clear topic sentence.",
-        "impact_estimate": "Could improve your score by ~2 points",
         "category": "content",
     },
 
@@ -183,7 +165,6 @@ RECOMMENDATION_RULES = {
         "title": "Remove Keyword Stuffing (Research: -10% Visibility Penalty)",
         "description": "Keyword stuffing detected! Unlike traditional SEO, the Princeton study found keyword stuffing ACTIVELY DECREASES AI visibility by 10%. This is one of the few methods that actually hurts your score.",
         "action": "Remove repetitive keyword usage:\n- BAD: 'SEO optimization for SEO is the best SEO strategy. Our SEO experts provide SEO services.'\n- GOOD: 'Search engine optimization is essential for online visibility. Our experts help businesses improve their search rankings through strategic content development.'\nWrite naturally and use synonyms.",
-        "impact_estimate": "Removing stuffing could recover ~5 points and prevent visibility penalty",
         "category": "content",
     },
 
@@ -194,7 +175,6 @@ RECOMMENDATION_RULES = {
         "title": "Add JSON-LD Structured Data",
         "description": "No structured data markup found. Schema markup is essential for AI to understand your content type.",
         "action": 'Add structured data using JSON-LD. At minimum, include Organization schema: <script type="application/ld+json">{"@context":"https://schema.org","@type":"Organization","name":"Your Company","url":"https://yoursite.com"}</script>',
-        "impact_estimate": "Could improve your score by ~25 points",
         "category": "schema",
     },
     "no_faqpage_schema": {
@@ -203,7 +183,6 @@ RECOMMENDATION_RULES = {
         "title": "Add FAQPage Schema (+40% AI Visibility)",
         "description": "No FAQPage schema found. The Princeton study specifically highlights FAQPage schema as providing up to 40% higher AI visibility.",
         "action": 'Add FAQPage schema markup to your FAQ section: {"@type":"FAQPage","mainEntity":[{"@type":"Question","name":"...","acceptedAnswer":{"@type":"Answer","text":"..."}}]}',
-        "impact_estimate": "Could improve your score by ~15 points (+40% AI visibility)",
         "category": "schema",
     },
     "no_article_schema": {
@@ -212,7 +191,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Article Schema",
         "description": "No Article/BlogPosting schema found. Article schema helps AI understand your content's authorship and topic.",
         "action": 'Add Article schema: {"@type":"Article","headline":"...","author":{"@type":"Person","name":"..."},"datePublished":"...","publisher":{"@type":"Organization","name":"..."}}',
-        "impact_estimate": "Could improve your score by ~15 points",
         "category": "schema",
     },
     "no_organization_schema": {
@@ -221,7 +199,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Organization Schema",
         "description": "No Organization schema found. This is critical for AI brand recognition.",
         "action": 'Add Organization schema with name, url, logo, and sameAs (social profiles).',
-        "impact_estimate": "Could improve your score by ~15 points",
         "category": "schema",
     },
     "invalid_jsonld_structure": {
@@ -230,7 +207,6 @@ RECOMMENDATION_RULES = {
         "title": "Fix JSON-LD Structure",
         "description": "Your JSON-LD markup has structural issues (missing @context).",
         "action": 'Ensure all JSON-LD blocks include "@context": "https://schema.org" at the top level.',
-        "impact_estimate": "Could improve your score by ~15 points",
         "category": "schema",
     },
     "incomplete_article_schema": {
@@ -239,7 +215,6 @@ RECOMMENDATION_RULES = {
         "title": "Complete Article Schema Properties",
         "description": "Your Article schema is missing required properties (headline, author, datePublished). Incomplete schemas score lower.",
         "action": "Add missing properties: headline (title), author (Person with name), datePublished (ISO date), and optionally image, publisher, dateModified.",
-        "impact_estimate": "Could improve your score by ~8 points",
         "category": "schema",
     },
     "incomplete_organization_schema": {
@@ -248,7 +223,6 @@ RECOMMENDATION_RULES = {
         "title": "Complete Organization Schema Properties",
         "description": "Your Organization schema is missing key properties. Add logo, sameAs (social links), description, and contactPoint.",
         "action": 'Fill in: {"name":"...","url":"...","logo":"...","sameAs":["linkedin","twitter"],"description":"...","contactPoint":{"@type":"ContactPoint","telephone":"...","contactType":"customer service"}}',
-        "impact_estimate": "Could improve your score by ~8 points",
         "category": "schema",
     },
     "incomplete_faqpage_schema": {
@@ -257,7 +231,6 @@ RECOMMENDATION_RULES = {
         "title": "Complete FAQPage Schema Properties",
         "description": "Your FAQPage schema is missing the mainEntity array with Question/Answer pairs.",
         "action": 'Add mainEntity with Q&A pairs: {"@type":"FAQPage","mainEntity":[{"@type":"Question","name":"How does X work?","acceptedAnswer":{"@type":"Answer","text":"X works by..."}}]}',
-        "impact_estimate": "Could improve your score by ~8 points",
         "category": "schema",
     },
     "incomplete_product_schema": {
@@ -266,7 +239,6 @@ RECOMMENDATION_RULES = {
         "title": "Complete Product Schema Properties",
         "description": "Your Product schema is missing key properties like description, offers, or reviews.",
         "action": "Add description, image, offers (with price/currency), brand, and aggregateRating to your Product schema.",
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "schema",
     },
     "incomplete_blogposting_schema": {
@@ -275,7 +247,6 @@ RECOMMENDATION_RULES = {
         "title": "Complete BlogPosting Schema Properties",
         "description": "Your BlogPosting schema is missing required properties (headline, author, datePublished).",
         "action": "Add headline, author (Person), datePublished, and optionally image, publisher, dateModified.",
-        "impact_estimate": "Could improve your score by ~8 points",
         "category": "schema",
     },
     "incomplete_newsarticle_schema": {
@@ -284,7 +255,6 @@ RECOMMENDATION_RULES = {
         "title": "Complete NewsArticle Schema Properties",
         "description": "Your NewsArticle schema is missing required properties.",
         "action": "Add headline, author, datePublished, and publisher to your NewsArticle schema.",
-        "impact_estimate": "Could improve your score by ~8 points",
         "category": "schema",
     },
     "incomplete_howto_schema": {
@@ -293,7 +263,6 @@ RECOMMENDATION_RULES = {
         "title": "Complete HowTo Schema Properties",
         "description": "Your HowTo schema is missing the step property with actual instructions.",
         "action": 'Add step array: {"@type":"HowTo","name":"...","step":[{"@type":"HowToStep","text":"Step 1..."}]}',
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "schema",
     },
 
@@ -310,7 +279,6 @@ RECOMMENDATION_RULES = {
                   "STEP 3 — If you have Article schema, add the author property:\n"
                   '"author": {"@type": "Person", "name": "[Your Name]", "jobTitle": "[Your Title]", "url": "https://yoursite.com/about"}\n\n'
                   "PRO TIP: Use your real name and title — AI models cross-reference author names across the web to verify expertise.",
-        "impact_estimate": "Could improve your score by ~15 points",
         "category": "eeat",
     },
     "no_author_bio": {
@@ -330,7 +298,6 @@ RECOMMENDATION_RULES = {
                   '  </div>\n'
                   '</div>\n\n'
                   "STEP 2 — Place it at the bottom of your article, above the comments section.",
-        "impact_estimate": "Could improve your score by ~10 points",
         "category": "eeat",
     },
     "no_publish_date": {
@@ -339,7 +306,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Publish Date",
         "description": "No publish date found. AI models prefer fresh, dated content.",
         "action": 'Add <time datetime="2025-01-15">January 15, 2025</time> and article:published_time meta tag.',
-        "impact_estimate": "Could improve your score by ~3 points",
         "category": "eeat",
     },
     "no_updated_date": {
@@ -348,7 +314,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Last Updated Date",
         "description": "No update date found. Freshness signals matter for AI content ranking.",
         "action": 'Add article:modified_time meta tag and visible "Last updated: [date]" on the page.',
-        "impact_estimate": "Could improve your score by ~2 points",
         "category": "eeat",
     },
     "few_external_citations": {
@@ -357,7 +322,6 @@ RECOMMENDATION_RULES = {
         "title": "Add External Citations",
         "description": "Fewer than 3 external citations. The Princeton GEO study found citations provide up to 40% visibility boost.",
         "action": "Add 3+ citations linking to authoritative external sources (research papers, industry reports, .gov, .edu domains).",
-        "impact_estimate": "Could improve your score by ~10 points",
         "category": "eeat",
     },
     "no_trust_links": {
@@ -366,7 +330,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Authoritative Source Links",
         "description": "No links to high-trust domains (.gov, .edu, Wikipedia, major publications).",
         "action": "Add links to authoritative sources like .gov, .edu, Wikipedia, Nature, PubMed, or major publications to support claims.",
-        "impact_estimate": "Could improve your score by ~10 points",
         "category": "eeat",
     },
     "low_source_diversity": {
@@ -375,7 +338,6 @@ RECOMMENDATION_RULES = {
         "title": "Diversify External Sources",
         "description": "External links come from fewer than 3 different domains.",
         "action": "Link to at least 3-5 different authoritative domains to demonstrate research breadth.",
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "eeat",
     },
     "no_about_page": {
@@ -384,7 +346,6 @@ RECOMMENDATION_RULES = {
         "title": "Add About Page Link",
         "description": "No link to an About page found. Transparency about who runs the site is a core trust signal.",
         "action": "Add an About page explaining your organization, team, mission, and qualifications. Link it from navigation or footer.",
-        "impact_estimate": "Could improve your score by ~3 points",
         "category": "eeat",
     },
     "no_first_hand_experience": {
@@ -408,7 +369,6 @@ RECOMMENDATION_RULES = {
                   "We've tested every recommendation on live projects.</p>\n"
                   "</div>\n\n"
                   "PRO TIP: Screenshots, original data tables, and 'lessons learned' sections are the strongest experience signals for AI.",
-        "impact_estimate": "Could improve your score by ~10 points",
         "category": "eeat",
     },
     "no_expertise_indicators": {
@@ -417,7 +377,6 @@ RECOMMENDATION_RULES = {
         "title": "Demonstrate Deeper Expertise",
         "description": "Content lacks depth signals that show genuine expertise.",
         "action": "Add expert-level details: explain WHY things work, include pro tips, address common mistakes, use specific examples and data points.",
-        "impact_estimate": "Could improve your score by ~10 points",
         "category": "eeat",
     },
     "low_authority": {
@@ -426,7 +385,6 @@ RECOMMENDATION_RULES = {
         "title": "Build Content Authority",
         "description": "Your content doesn't demonstrate strong authoritativeness in its topic area.",
         "action": "Cite authoritative sources, reference industry standards, include data/statistics, mention partnerships or recognitions.",
-        "impact_estimate": "Could improve your score by ~15 points",
         "category": "eeat",
     },
     "low_trust_signals": {
@@ -435,7 +393,6 @@ RECOMMENDATION_RULES = {
         "title": "Improve Trustworthiness Signals",
         "description": "Your content lacks trust indicators that AI models look for before citing a source.",
         "action": "Add: editorial/fact-check policy, disclosure statements, contact info, clear sourcing for claims, corrections policy.",
-        "impact_estimate": "Could improve your score by ~15 points",
         "category": "eeat",
     },
 
@@ -466,7 +423,6 @@ RECOMMENDATION_RULES = {
                   "STEP 3 — Verify:\n"
                   "• Visit https://yoursite.com/llms.txt in your browser\n"
                   "• It should display as plain text",
-        "impact_estimate": "Could improve your score by ~20 points (2-minute fix)",
         "category": "technical",
     },
     "ai_bots_blocked": {
@@ -492,7 +448,6 @@ RECOMMENDATION_RULES = {
                   "Allow: /\n\n"
                   "STEP 3 — Remove any Disallow rules that block these bots\n\n"
                   "PRO TIP: If you use Cloudflare, check Security > Bots to ensure AI bots aren't blocked at the WAF level.",
-        "impact_estimate": "Critical — could recover ~20 points immediately",
         "category": "technical",
     },
     "no_sitemap": {
@@ -501,7 +456,6 @@ RECOMMENDATION_RULES = {
         "title": "Add sitemap.xml",
         "description": "No sitemap.xml found. AI crawlers use sitemaps to discover content.",
         "action": "Add a sitemap.xml to your domain root. Most CMS platforms generate these automatically.",
-        "impact_estimate": "Could improve your score by ~10 points",
         "category": "technical",
     },
     "crawl_failed": {
@@ -510,7 +464,6 @@ RECOMMENDATION_RULES = {
         "title": "Fix Page Accessibility — Crawler Blocked",
         "description": "The crawler could not access your page. This means AI models (ChatGPT, Gemini, Perplexity) also cannot read your content. Your technical score is severely capped until this is resolved.",
         "action": "STEP 1 — Check if your page returns a 200 OK status code.\nSTEP 2 — Ensure your server doesn't block bot user agents.\nSTEP 3 — Check for Cloudflare/firewall bot protection that may be blocking crawlers.\nSTEP 4 — Verify robots.txt isn't blocking the page path.\nSTEP 5 — Test with: curl -A 'Mozilla/5.0' your-url",
-        "impact_estimate": "Critical — your page is invisible to AI. Fixing this could improve your score by ~50+ points",
         "category": "technical",
     },
     "meta_noindex": {
@@ -519,7 +472,6 @@ RECOMMENDATION_RULES = {
         "title": "Remove noindex Meta Tag",
         "description": "Your page has a noindex meta tag, preventing AI models from indexing it.",
         "action": 'Remove <meta name="robots" content="noindex"> or change to content="index, follow".',
-        "impact_estimate": "Could improve your score by ~10 points",
         "category": "technical",
     },
     "no_https": {
@@ -528,7 +480,6 @@ RECOMMENDATION_RULES = {
         "title": "Enable HTTPS",
         "description": "Your site does not use HTTPS. Secure connections are a trust signal.",
         "action": "Install an SSL certificate and redirect HTTP to HTTPS.",
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "technical",
     },
     "slow_load_time": {
@@ -537,7 +488,6 @@ RECOMMENDATION_RULES = {
         "title": "Improve Page Load Speed",
         "description": "Your page takes over 5 seconds to load. Fast pages are prioritized by AI crawlers.",
         "action": "Optimize images, enable compression, use a CDN, and minimize JavaScript.",
-        "impact_estimate": "Could improve your score by ~15 points",
         "category": "technical",
     },
     "no_viewport": {
@@ -546,7 +496,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Viewport Meta Tag",
         "description": "No viewport meta tag found. This affects mobile-friendliness.",
         "action": 'Add <meta name="viewport" content="width=device-width, initial-scale=1"> to your <head>.',
-        "impact_estimate": "Could improve your score by ~10 points",
         "category": "technical",
     },
     "no_canonical": {
@@ -555,7 +504,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Canonical Tag",
         "description": "No canonical URL tag found. Helps prevent duplicate content issues.",
         "action": 'Add <link rel="canonical" href="https://yoursite.com/page-url"> to your <head>.',
-        "impact_estimate": "Could improve your score by ~10 points",
         "category": "technical",
     },
 
@@ -581,7 +529,6 @@ RECOMMENDATION_RULES = {
                   "• Issue press releases for milestones\n\n"
                   "STEP 4 — Post on Reddit (see other recommendations)\n\n"
                   "PRO TIP: AI models update knowledge every few weeks. Changes you make today can appear in AI responses within 2-4 weeks.",
-        "impact_estimate": "Could improve entity + AI visibility score by ~20 points",
         "category": "entity",
     },
     "no_social_profiles": {
@@ -602,7 +549,6 @@ RECOMMENDATION_RULES = {
                   '  "https://github.com/yourbrand"\n'
                   ']\n\n'
                   "PRO TIP: LinkedIn and GitHub carry the most weight for B2B/SaaS brands.",
-        "impact_estimate": "Could improve your score by ~10 points",
         "category": "entity",
     },
     "no_wikipedia_presence": {
@@ -623,7 +569,6 @@ RECOMMENDATION_RULES = {
                   "• Do NOT write it yourself (conflict of interest)\n"
                   "• Hire an experienced Wikipedia editor\n\n"
                   "PRO TIP: Even a Wikidata entry (much easier than Wikipedia) helps AI models recognize your brand as a real entity.",
-        "impact_estimate": "Could improve your score by ~25 points (long-term strategy)",
         "category": "entity",
     },
 
@@ -646,7 +591,6 @@ RECOMMENDATION_RULES = {
                   "• Reply to every comment within 24 hours\n"
                   "• Add more context and data when asked\n\n"
                   "PRO TIP: Answer questions in relevant threads where your product/expertise is a natural fit. This builds organic mentions that AI models pick up.",
-        "impact_estimate": "Could improve entity score by ~10 points + ongoing AI citations",
         "category": "entity",
     },
 
@@ -669,7 +613,6 @@ RECOMMENDATION_RULES = {
                   "• Interlink all pages in the cluster\n"
                   "• Cover the topic comprehensively\n\n"
                   "PRO TIP: Google AI Overviews heavily favor content from sites with strong E-E-A-T signals. Fix your E-E-A-T issues first.",
-        "impact_estimate": "Could improve AI visibility score by ~10 points",
         "category": "ai_visibility",
     },
     "no_reddit_ai_presence": {
@@ -694,7 +637,6 @@ RECOMMENDATION_RULES = {
                   "• Share industry insights monthly\n"
                   "• AI models re-index Reddit frequently\n\n"
                   "PRO TIP: A single popular Reddit thread mentioning your brand can appear in AI responses for months.",
-        "impact_estimate": "Could improve AI visibility score by ~10 points",
         "category": "ai_visibility",
     },
     "weak_brand_site": {
@@ -715,7 +657,6 @@ RECOMMENDATION_RULES = {
                   "• Explain what you do, who you serve, and why you're different\n"
                   "• Include testimonials or case studies\n\n"
                   "PRO TIP: AI models check for these pages to verify you're a legitimate entity. Missing them = lower trust = fewer citations.",
-        "impact_estimate": "Could improve AI visibility score by ~5 points",
         "category": "ai_visibility",
     },
 
@@ -726,7 +667,6 @@ RECOMMENDATION_RULES = {
         "title": "Your Site Blocks Automated Access (HTTP 403)",
         "description": "Your server returned a 403 Forbidden error, which means it blocks automated requests. If your site blocks our crawler, it likely blocks AI crawlers (GPTBot, ClaudeBot, PerplexityBot) too — meaning AI search engines cannot index your content.",
         "action": "Check your server configuration, CDN (Cloudflare, AWS WAF), or hosting provider settings. Ensure legitimate bots are allowed. Add specific allow rules for AI crawlers in your firewall/WAF settings.",
-        "impact_estimate": "Critical — AI engines cannot see your content at all",
         "category": "technical",
     },
     "crawl_timeout": {
@@ -735,7 +675,6 @@ RECOMMENDATION_RULES = {
         "title": "Your Site Is Too Slow to Crawl",
         "description": "Your page took too long to respond (>15 seconds). AI crawlers have strict timeouts — if your site is this slow, AI search engines will skip it entirely.",
         "action": "Investigate server performance: check hosting plan, enable caching, optimize database queries, use a CDN. Aim for <3 second response time.",
-        "impact_estimate": "Critical — slow sites get skipped by AI crawlers",
         "category": "technical",
     },
 
@@ -747,7 +686,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Product Schema with Price & Availability",
         "description": "No Product schema found on what appears to be a product page. AI shopping assistants (ChatGPT, Gemini, Perplexity) rely on Product schema to recommend products. Without it, your products are invisible to AI-powered shopping.",
         "action": 'Add Product schema with name, description, image, price, availability, brand, and reviews. Example:\n{"@type":"Product","name":"Your Product","description":"...","image":"...","offers":{"@type":"Offer","price":"29.99","priceCurrency":"GBP","availability":"https://schema.org/InStock"},"brand":{"@type":"Brand","name":"Your Brand"},"aggregateRating":{"@type":"AggregateRating","ratingValue":"4.8","reviewCount":"124"}}',
-        "impact_estimate": "Could improve your score by ~20 points — critical for D2C brands",
         "category": "schema",
     },
     "no_review_schema": {
@@ -756,7 +694,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Review / Rating Schema",
         "description": "No AggregateRating or Review schema found. AI assistants prioritize products with visible ratings. '4.8 stars from 200+ reviews' is exactly the kind of data AI cites when recommending products.",
         "action": 'Add AggregateRating to your Product schema:\n"aggregateRating": {"@type": "AggregateRating", "ratingValue": "4.8", "bestRating": "5", "reviewCount": "203"}\nAlso add individual Review entries for your best reviews.',
-        "impact_estimate": "Could improve your score by ~10 points",
         "category": "schema",
     },
     "no_breadcrumb_schema": {
@@ -765,7 +702,6 @@ RECOMMENDATION_RULES = {
         "title": "Add BreadcrumbList Schema",
         "description": "No breadcrumb schema found. Breadcrumbs help AI understand your site hierarchy — Home > Category > Product. This improves how AI navigates and recommends pages from your site.",
         "action": 'Add BreadcrumbList schema:\n{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Home","item":"https://yoursite.com"},{"@type":"ListItem","position":2,"name":"Category","item":"https://yoursite.com/category"},{"@type":"ListItem","position":3,"name":"Product Name"}]}',
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "schema",
     },
     "no_shipping_info": {
@@ -774,7 +710,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Shipping & Delivery Information",
         "description": "No shipping or delivery details found. AI shopping assistants always check for shipping info before recommending products. 'Free shipping over £50' or '2-day delivery' are key signals.",
         "action": "Add a visible shipping section on your product pages and a dedicated /shipping page. Include: delivery timeframes, free shipping thresholds, international availability, and return window.",
-        "impact_estimate": "Could improve your score by ~8 points — AI assistants cite shipping details",
         "category": "content",
     },
     "no_returns_policy": {
@@ -783,7 +718,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Returns & Refund Policy",
         "description": "No returns/refund policy found. AI engines check for return policies as a trust signal before recommending D2C brands. A clear returns policy = higher trust = more AI citations.",
         "action": "Create a /returns or /refund-policy page. Include: return window (e.g., 30 days), conditions, refund process, and contact method. Link it from your footer and product pages.",
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "eeat",
     },
     "no_customer_reviews": {
@@ -792,7 +726,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Customer Reviews / Testimonials",
         "description": "No customer reviews or testimonials detected. AI models heavily weight social proof when recommending D2C brands. Pages with real customer reviews are cited 3x more by AI assistants.",
         "action": "STEP 1 — Add 5-10 real customer reviews to your page with name, date, and star rating.\nSTEP 2 — Use a reviews widget (Judge.me, Trustpilot, Yotpo) or add them manually.\nSTEP 3 — Add Review schema markup for each review.\nSTEP 4 — Include specific details: 'This moisturizer cleared my acne in 2 weeks' is better than 'Great product!'",
-        "impact_estimate": "Could improve your score by ~15 points — strongest D2C trust signal",
         "category": "eeat",
     },
     "no_brand_story": {
@@ -801,7 +734,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Brand Story / Origin Content",
         "description": "No brand story or 'About Us' narrative found. AI engines distinguish brands by their story. 'Founded in 2020 by two dermatologists who...' creates a memorable identity that AI cites.",
         "action": "Add a compelling About section with: founding story, mission, team credentials, what makes you different, and specific numbers ('helped 50,000+ customers').",
-        "impact_estimate": "Could improve your score by ~8 points",
         "category": "eeat",
     },
     "no_comparison_content": {
@@ -810,7 +742,6 @@ RECOMMENDATION_RULES = {
         "title": "Create 'Brand vs Competitor' Comparison Content",
         "description": "No comparison content found. AI assistants heavily cite comparison pages when users ask 'What's the best X?' or 'Brand A vs Brand B'. D2C brands with comparison content appear in AI results 40% more.",
         "action": "STEP 1 — Create a comparison page: '[Your Brand] vs [Top Competitor]'.\nSTEP 2 — Include a feature comparison table with checkmarks.\nSTEP 3 — Be honest — acknowledge competitor strengths while highlighting your advantages.\nSTEP 4 — Add specific data: pricing, ingredients, ratings, delivery speed.",
-        "impact_estimate": "Could improve your AI visibility by ~12 points",
         "category": "content",
     },
     "no_ingredients_list": {
@@ -819,7 +750,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Full Ingredients / Materials List",
         "description": "No ingredients or materials list found. For beauty, food, supplements, and fashion D2C brands, AI assistants frequently cite ingredient lists when users ask 'Is X safe?' or 'What's in X?'",
         "action": "Add a complete ingredients/materials section on each product page. For food/beauty: list every ingredient. For fashion: list materials and sourcing. For tech: list specifications.",
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "content",
     },
     "no_use_cases": {
@@ -828,7 +758,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Use Cases / 'Who Is This For?' Section",
         "description": "No use case content detected. AI assistants match products to users based on use cases. 'Best for sensitive skin' or 'Ideal for remote teams' helps AI recommend your product for the right queries.",
         "action": "Add a 'Who Is This For?' section listing 3-5 ideal customer profiles with specific scenarios. Use headings like 'Best for [use case]' — these map directly to AI search queries.",
-        "impact_estimate": "Could improve your score by ~8 points",
         "category": "content",
     },
     "no_how_to_use": {
@@ -837,7 +766,6 @@ RECOMMENDATION_RULES = {
         "title": "Add 'How to Use' Guide",
         "description": "No usage instructions found. AI models cite 'how to use' content when users ask about product application. This is especially important for beauty, supplements, and tech products.",
         "action": "Add a step-by-step 'How to Use' section with clear instructions, dosage (if applicable), and tips. Add HowTo schema markup for extra AI visibility.",
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "content",
     },
     "no_pricing_transparency": {
@@ -846,7 +774,6 @@ RECOMMENDATION_RULES = {
         "title": "Make Pricing Visible and Transparent",
         "description": "Product pricing not clearly visible. AI shopping assistants need clear pricing to recommend products. Pages where price is hidden behind logins or 'contact us' get deprioritized.",
         "action": "Display prices clearly on all product pages. Include: base price, any subscription discounts, bundle pricing, and currency. Add price to your Product schema's offers.price field.",
-        "impact_estimate": "Could improve your score by ~8 points — AI assistants always cite price",
         "category": "content",
     },
     "no_trust_badges": {
@@ -855,7 +782,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Trust Badges & Certifications",
         "description": "No trust badges, certifications, or security indicators found. AI engines look for trust signals: 'FDA approved', 'Certified B Corp', 'SSL secured', 'Money-back guarantee'. These boost AI confidence.",
         "action": "Add visible trust badges: payment security (Visa/Mastercard/PayPal), certifications (organic, cruelty-free, FDA), guarantees (30-day money-back), and awards. Place them near the buy button and in the footer.",
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "eeat",
     },
     "no_social_proof_numbers": {
@@ -864,7 +790,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Social Proof Numbers",
         "description": "No social proof metrics found. AI assistants love specific numbers: '50,000+ happy customers', 'Rated 4.9/5 on Trustpilot', 'Featured in Vogue and GQ'. These are exactly what AI cites.",
         "action": "Add prominently: customer count, review score, press mentions, social followers, and units sold. Use specific numbers, not vague claims. Place them above the fold.",
-        "impact_estimate": "Could improve your score by ~10 points",
         "category": "content",
     },
     "no_video_content": {
@@ -873,7 +798,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Video Content or Demo",
         "description": "No video content detected. Product demos and explainer videos increase time on page and provide rich content that AI can reference. Google's AI Overview frequently surfaces pages with video.",
         "action": "Add a product demo video, unboxing, or tutorial. Embed from YouTube (AI indexes YouTube content). Add VideoObject schema markup with name, description, and thumbnailUrl.",
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "content",
     },
     "no_sustainability_info": {
@@ -882,7 +806,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Sustainability / Ethical Sourcing Info",
         "description": "No sustainability or ethical sourcing content found. AI assistants increasingly answer queries like 'Is X brand sustainable?' or 'eco-friendly alternatives to...'. D2C brands with sustainability content get cited in these responses.",
         "action": "Add a sustainability section or page covering: materials sourcing, manufacturing practices, packaging, carbon footprint initiatives, and certifications. Be specific with data.",
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "eeat",
     },
     "no_bundle_offers": {
@@ -891,7 +814,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Bundle / Subscription Options",
         "description": "No bundle deals or subscription options visible. AI shopping assistants often recommend bundles and subscriptions when users ask for 'best value' or 'cheapest way to buy X'.",
         "action": "Create bundle pages showing savings: 'Buy 3, Save 20%'. If applicable, offer subscriptions: 'Subscribe & Save 15% — cancel anytime'. Make savings percentages prominent.",
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "content",
     },
     "thin_product_description": {
@@ -900,7 +822,6 @@ RECOMMENDATION_RULES = {
         "title": "Expand Product Description (Min 300 Words)",
         "description": "Product description is too thin (<150 words). AI models cannot recommend products they don't understand. Short descriptions get skipped. Aim for 300-500 words covering benefits, features, use cases, and differentiators.",
         "action": "STEP 1 — Write a compelling opening that answers 'What is this and who is it for?'\nSTEP 2 — List 5+ benefits (not just features).\nSTEP 3 — Add a 'What makes this different?' section.\nSTEP 4 — Include specific data: dimensions, weight, ingredients, materials.\nSTEP 5 — End with a use case: 'Perfect for [scenario].'",
-        "impact_estimate": "Could improve your score by ~15 points — thin descriptions = invisible to AI",
         "category": "content",
     },
     "no_structured_specs": {
@@ -909,7 +830,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Structured Product Specifications",
         "description": "No structured specs table found. AI assistants pull specifications when answering 'What are the specs of X?' or comparison queries. A clean specs table is highly citable.",
         "action": "Add a specifications table with: dimensions, weight, materials, color options, warranty, compatibility. Use an HTML <table> or definition list (<dl>) for structured data.",
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "content",
     },
     "no_local_business_schema": {
@@ -918,7 +838,6 @@ RECOMMENDATION_RULES = {
         "title": "Add LocalBusiness Schema (If Applicable)",
         "description": "No LocalBusiness schema found. If you have a physical location, showroom, or warehouse, adding LocalBusiness schema helps AI map your brand to location-based queries.",
         "action": 'Add LocalBusiness schema:\n{"@type":"LocalBusiness","name":"Your Brand","address":{"@type":"PostalAddress","streetAddress":"...","addressLocality":"London","postalCode":"...","addressCountry":"GB"},"telephone":"+44...","openingHours":"Mo-Fr 09:00-17:00"}',
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "schema",
     },
     "no_meta_description": {
@@ -927,7 +846,6 @@ RECOMMENDATION_RULES = {
         "title": "Add a Compelling Meta Description",
         "description": "No meta description found. AI engines use meta descriptions as a summary when deciding whether to cite your page. A missing meta description means AI generates its own (often poorly).",
         "action": 'Add a unique meta description (150-160 chars) that summarizes the page value:\n<meta name="description" content="Award-winning organic skincare loved by 50,000+ customers. Free shipping over £30. Shop our dermatologist-approved range.">\nInclude: key benefit, social proof number, and call to action.',
-        "impact_estimate": "Could improve your score by ~8 points",
         "category": "technical",
     },
     "no_og_tags": {
@@ -936,7 +854,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Open Graph Tags for Social Sharing",
         "description": "No Open Graph (og:) tags found. When your pages are shared on social media or referenced by AI, og:title, og:description, and og:image provide the preview. Missing OG tags = ugly previews = fewer clicks.",
         "action": 'Add to your <head>:\n<meta property="og:title" content="Your Page Title">\n<meta property="og:description" content="Your page summary">\n<meta property="og:image" content="https://yoursite.com/image.jpg">\n<meta property="og:type" content="product">',
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "technical",
     },
     "no_contact_page": {
@@ -945,7 +862,6 @@ RECOMMENDATION_RULES = {
         "title": "Add Contact Information",
         "description": "No contact page or contact information detected. AI engines verify brand legitimacy by checking for contact info. A brand without visible contact details appears less trustworthy.",
         "action": "Add a /contact page with: email address, phone number (if applicable), physical address, contact form, and response time expectation. Link from the footer on every page.",
-        "impact_estimate": "Could improve your score by ~5 points",
         "category": "eeat",
     },
     "no_privacy_policy": {
@@ -954,110 +870,12 @@ RECOMMENDATION_RULES = {
         "title": "Add Privacy Policy Page",
         "description": "No privacy policy found. AI trust signals include legal compliance pages. A missing privacy policy is a red flag for AI systems evaluating brand trustworthiness.",
         "action": "Create a /privacy-policy page covering: data collection, usage, cookies, third parties, and user rights. Link from footer. Use a privacy policy generator if needed.",
-        "impact_estimate": "Could improve your score by ~3 points",
         "category": "eeat",
     },
 }
 
 PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
-# Numeric impact scores for smart ranking (higher = more impactful)
-# Based on Princeton GEO research effectiveness data + pillar weight
-IMPACT_SCORES = {
-    # Content — Princeton research ranked methods
-    "no_citations": 95,         # +40% visibility — highest impact
-    "no_statistics": 90,        # +37% visibility
-    "keyword_stuffing": 88,     # -10% penalty — actively hurts
-    "no_expert_quotes": 75,     # +30% visibility
-    "weak_authoritative_tone": 70,  # +25% visibility
-    "poor_readability": 60,     # +20% visibility
-    "no_technical_terms": 50,   # +18% visibility
-    "low_vocabulary_diversity": 45,  # +15% visibility
-    "no_faq_section": 72,       # FAQ + schema = +40% AI visibility
-    "no_answer_first": 65,      # Direct answers get cited more
-    "low_word_count": 55,       # Thin content rarely cited
-    "no_h1": 40,
-    "multiple_h1": 20,
-    "broken_heading_hierarchy": 25,
-    "no_lists": 15,
-    "poor_paragraph_structure": 15,
-    "few_internal_links": 15,
-    # Schema
-    "no_jsonld": 85,            # No schema at all — critical
-    "no_faqpage_schema": 70,    # +40% AI visibility per research
-    "no_article_schema": 55,
-    "no_organization_schema": 55,
-    "invalid_jsonld_structure": 40,
-    "incomplete_article_schema": 30,
-    "incomplete_organization_schema": 30,
-    "incomplete_faqpage_schema": 30,
-    "incomplete_product_schema": 20,
-    "incomplete_blogposting_schema": 25,
-    "incomplete_newsarticle_schema": 25,
-    "incomplete_howto_schema": 20,
-    # E-E-A-T (boosted — actionable pillar)
-    "no_citations_eeat": 88,    # Overlaps with content citations
-    "few_external_citations": 82,
-    "no_trust_links": 78,
-    "no_first_hand_experience": 76,
-    "low_authority": 74,
-    "low_trust_signals": 74,
-    "no_author": 72,
-    "no_about_page": 65,
-    "no_author_bio": 55,
-    "no_expertise_indicators": 60,
-    "low_source_diversity": 45,
-    "no_publish_date": 35,
-    "no_updated_date": 25,
-    # Technical (boosted — actionable pillar, instant fixes)
-    "crawl_failed": 100,        # Page inaccessible = everything fails
-    "ai_bots_blocked": 97,      # Blocking AI = zero visibility
-    "meta_noindex": 95,         # Blocking indexing = zero visibility
-    "no_llms_txt": 80,          # Quick win — create a file
-    "no_https": 70,
-    "slow_load_time": 60,
-    "no_sitemap": 50,
-    "no_viewport": 35,
-    "no_canonical": 35,
-    # Entity (boosted — actionable pillar)
-    "brand_not_in_ai": 78,
-    "no_wikipedia_presence": 62,
-    "no_social_profiles": 40,
-    # Community presence (entity sub-actions)
-    "no_reddit_presence": 68,   # Reddit indexed by AI heavily
-    # AI Visibility — Web Presence
-    "not_in_google_ai": 82,     # Google AI Overview is #1 discovery
-    "no_reddit_ai_presence": 72, # Reddit feeds AI responses
-    "weak_brand_site": 48,       # Brand site quality matters
-    # Crawl failures
-    "crawl_blocked_403": 98,    # Can't be indexed at all
-    "crawl_timeout": 96,        # Too slow for any crawler
-    # D2C / E-Commerce specific
-    "no_product_schema": 88,    # Critical for shopping AI
-    "no_review_schema": 72,     # Reviews = trust signal
-    "no_breadcrumb_schema": 30, # Site hierarchy
-    "no_shipping_info": 68,     # AI cites shipping details
-    "no_returns_policy": 55,    # Trust signal
-    "no_customer_reviews": 85,  # Strongest D2C trust signal
-    "no_brand_story": 60,       # Brand identity
-    "no_comparison_content": 78, # AI loves comparisons
-    "no_ingredients_list": 35,  # Niche but important
-    "no_use_cases": 65,         # Maps to AI queries
-    "no_how_to_use": 40,        # Usage content
-    "no_pricing_transparency": 70, # AI needs prices
-    "no_trust_badges": 42,      # Certifications
-    "no_social_proof_numbers": 75, # AI cites numbers
-    "no_video_content": 35,     # Rich content
-    "no_sustainability_info": 30, # Growing trend
-    "no_bundle_offers": 32,     # Value queries
-    "thin_product_description": 82, # Thin = invisible
-    "no_structured_specs": 38,  # Specification queries
-    "no_local_business_schema": 25, # Local queries
-    "no_meta_description": 65,  # AI summary source
-    "no_og_tags": 28,           # Social sharing
-    "no_contact_page": 55,      # Trust signal
-    "no_privacy_policy": 20,    # Legal compliance
-}
 
 MAX_RECOMMENDATIONS = 12
 MAX_PER_PILLAR = 3
@@ -1815,14 +1633,14 @@ def generate_recommendations(
     """
     Smart recommendation engine:
     1. Filters off-page actions
-    2. Sorts by pillar weakness (lowest score first) + impact
+    2. Sorts by pillar weakness (lowest score first) + priority severity — honest
+       ordering only; no fabricated impact number
     3. Caps at MAX_PER_PILLAR per pillar
     4. Suppresses recs for high-scoring pillars (>70)
     5. Adds "why" context to each recommendation
     6. Caps total at MAX_RECOMMENDATIONS
 
-    ``industry`` selects the composite pillar weights used to compute each rec's
-    grounded ``impact_points`` / ``impact_estimate`` (see pipeline/impact.py).
+    ``industry`` is accepted for signature compatibility with callers.
     """
     scores = pillar_scores or {}
     candidates = []
@@ -1846,29 +1664,17 @@ def generate_recommendations(
 
                 rec = dict(rule)
                 rec["finding_code"] = finding
-                rec["impact_score"] = IMPACT_SCORES.get(finding, 10)
                 rec["fixable"] = finding not in MANUAL_FINDINGS
 
-                # Grounded marginal-impact estimate from real pillar/sub-dimension
-                # headroom. Replaces the fabricated static impact_estimate string.
-                gain = estimate_marginal_gain(
-                    finding,
-                    pillar_details,
-                    pillar_scores=scores,
-                    industry=industry,
-                    rule_pillar=pillar,
-                    fallback_impact=rec["impact_score"],
-                )
-                rec["impact_points"] = gain["composite_points"]
-                rec["impact_estimate"] = format_impact_estimate(gain)
-
-                # Priority engine: combine pillar weakness + impact + severity
+                # Honest ranking: weakest pillar first, then severity. No fabricated
+                # "points" — real impact is only known once a fix is measured.
                 pillar_urgency = 100 - pillar_score  # lower score = higher urgency
-                rec["_sort_score"] = (
-                    pillar_urgency * 0.4 +
-                    rec["impact_score"] * 0.4 +
-                    (100 if rec["priority"] == "critical" else 60 if rec["priority"] == "high" else 30) * 0.2
+                priority_severity = (
+                    100 if rec["priority"] == "critical"
+                    else 60 if rec["priority"] == "high"
+                    else 30
                 )
+                rec["_sort_score"] = pillar_urgency * 0.6 + priority_severity * 0.4
 
                 # Add "why this matters"
                 rec["why"] = PILLAR_WHY.get(pillar, "")
@@ -1900,7 +1706,6 @@ def generate_recommendations(
 
     # Clean internal / non-model fields before DB create()
     for rec in top:
-        rec.pop("impact_score", None)
         rec.pop("_sort_score", None)
         rec.pop("fixable", None)
 
@@ -1951,17 +1756,11 @@ def reprioritize_run_recommendations(run) -> int:
     open_recs = [r for r in recs if r.id not in done_ids]
 
     def _score(r) -> float:
-        # Prefer the grounded marginal-impact estimate when present; fall back to the
-        # legacy static importance table for pre-existing rows with no impact_points.
-        # impact_points is composite-scale (~0-25); scale it to the 0-100 band the
-        # other terms use so the weighting stays balanced.
-        if getattr(r, "impact_points", 0) and r.impact_points > 0:
-            impact = min(100.0, r.impact_points * 5.0)
-        else:
-            impact = IMPACT_SCORES.get(r.finding_code or r.finding_key or "", 50)
+        # Honest re-rank: weakest pillar first + severity + a small age boost so a
+        # long-open fix floats up. No fabricated impact number.
         urgency = 100 - pillar_scores.get(r.pillar, 50)
         sev = _PRIORITY_SEVERITY.get(r.priority, 30)
-        return impact * 0.4 + urgency * 0.4 + sev * 0.2 + age_boost
+        return urgency * 0.55 + sev * 0.45 + age_boost
 
     open_recs.sort(key=_score, reverse=True)
     rank_map = {r.id: i + 1 for i, r in enumerate(open_recs)}

@@ -59,8 +59,8 @@ class GeoTaskGenerationTests(TestCase):
         t = lost[0]
         self.assertIn("best project tool for agencies", t["evidence"]["prompt"])
         self.assertEqual(t["source"], Recommendation.Source.GEO_SIGNAL)
-        self.assertGreater(t["impact_points"], 0.0)
-        self.assertNotIn("%", t["impact_estimate"])
+        self.assertEqual(t["priority"], "high")
+        self.assertNotIn("impact_points", t)  # no fabricated metric
 
     def test_competitor_citation_task(self):
         self._lost_prompt("best crm software", competitor_domain="rival.com")
