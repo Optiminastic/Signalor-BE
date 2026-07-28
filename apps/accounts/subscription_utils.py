@@ -275,18 +275,23 @@ def is_agency(email: str | None) -> bool:
 def effective_max_projects(email: str | None) -> int:
     """max_projects after applying account type.
 
-    A brand IS a project, and Individual accounts are single-brand by design —
-    so they are always capped at exactly one, regardless of plan or internal
-    status. Agencies are the multi-brand tier: this is the single seam that
-    unlocks multiple projects for them (and where a later per-brand-billing
-    phase will swap the constant for a count of active per-brand subscriptions).
+    A brand IS a project, and paying Individual accounts are single-brand by
+    design — so they are capped at exactly one, regardless of plan. Agencies are
+    the multi-brand tier: this is the single seam that unlocks multiple projects
+    for them (and where a later per-brand-billing phase will swap the constant
+    for a count of active per-brand subscriptions).
+
+    Internal accounts are exempt from the individual cap. ``is_internal_email``
+    grants business-tier access with no payment, and the team's own workspaces
+    hold several test/demo brands — a hard cap of one there is the "Max
+    (Internal)" account being unable to add a second brand.
     """
-    if not is_agency(email):
-        return 1
-    # Agency: internal accounts get the full ceiling; paid agencies get the
-    # interim AGENCY_MAX_PROJECTS ceiling (never below their plan's base).
     if is_internal_email(email):
         return AGENCY_MAX_PROJECTS
+    if not is_agency(email):
+        return 1
+    # Paid agencies get the interim AGENCY_MAX_PROJECTS ceiling (never below
+    # their plan's base).
     return max(get_plan_limits(email)["max_projects"], AGENCY_MAX_PROJECTS)
 
 
@@ -325,9 +330,14 @@ def project_limit_reached(email: str | None) -> tuple[bool, str]:
 
     count = Organization.objects.filter(owner_email=em).count()
 
+    # Internal accounts bypass every project cap, individual or agency — see
+    # effective_max_projects for why the individual cap does not apply to them.
+    if is_internal_email(email):
+        return False, ""
+
     # Individual accounts are single-brand by design (a brand IS a project).
-    # This is a product invariant, so it is enforced even for internal emails
-    # and even when the plan-limit toggle is off — unlike the billing caps below.
+    # This is a product invariant, so it is enforced even when the plan-limit
+    # toggle is off — unlike the billing caps below.
     if not is_agency(email):
         if count >= 1:
             return True, (
@@ -336,10 +346,8 @@ def project_limit_reached(email: str | None) -> tuple[bool, str]:
             )
         return False, ""
 
-    # Agencies: honour the internal bypass and the plan-limit enforcement toggle,
-    # then compare against the effective (multi-brand) cap.
-    if is_internal_email(email):
-        return False, ""
+    # Agencies: honour the plan-limit enforcement toggle, then compare against
+    # the effective (multi-brand) cap.
     if not is_plan_limits_enforcement_enabled():
         return False, ""
 

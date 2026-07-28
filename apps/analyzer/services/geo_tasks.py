@@ -72,6 +72,133 @@ def _base(finding_code: str, pillar: str, priority: str) -> dict:
     }
 
 
+# ── Detailed, real "how to do it" step guides for the manual GEO tasks ──────────
+# These are off-site / strategic tasks the code agent cannot auto-fix, so the value
+# is a concrete playbook. Shape matches STEP_META in pipeline/recommendations.py:
+# a list of {n, title, detail, xp}. Kept as data (no LLM) so steps are accurate.
+
+
+def _citation_gap_steps(domain: str, count: int) -> list[dict]:
+    """Outreach playbook to earn a legitimate mention/placement on ``domain``."""
+    return [
+        {"n": 1, "title": f"Decide the realistic placement type on {domain}",
+         "detail": (
+             f"Open {domain} and look at how it presents brands like yours. Pick the path that "
+             f"fits: a directory/tool listing, a guest contribution, a product review, or an "
+             f"editorial mention. Look for a 'Submit', 'Write for us', 'Add your tool', or "
+             f"'Contact' link, or the category page your brand belongs on."), "xp": 5},
+        {"n": 2, "title": "Find the right contact or submission route",
+         "detail": (
+             "Locate the exact submission form, or the editor/author who writes the pieces AI "
+             "cites. Get a real person's email (Hunter.io, the site's LinkedIn, or the article "
+             "byline) rather than a generic inbox - personalized outreach converts far better."), "xp": 10},
+        {"n": 3, "title": "Prepare a specific, valuable pitch",
+         "detail": (
+             "Write a short pitch: who you are, the concrete value you add (a data-backed guest "
+             "post idea, a tool listing with the right category, or why your product merits a "
+             "review), and 1-2 proof points (customers, traffic, unique data). Avoid generic "
+             "'please feature us' asks."), "xp": 10},
+        {"n": 4, "title": "Submit or send it",
+         "detail": (
+             f"Send the personalized pitch or complete {domain}'s official submission. For a "
+             f"listing, fill the full profile - logo, a description using your target terms, the "
+             f"right category, and a link to your site. For editorial, attach an outline or draft."), "xp": 10},
+        {"n": 5, "title": "Follow up and deliver",
+         "detail": (
+             "Follow up once after ~5-7 business days if there's no reply. When accepted, deliver "
+             "promptly and confirm the published page includes your brand name and a link to your "
+             "site."), "xp": 10},
+        {"n": 6, "title": "Verify it's live and re-check visibility",
+         "detail": (
+             f"Confirm the page is public and indexable (not behind a login). AI engines re-crawl "
+             f"{domain} regularly, so re-run this prompt's visibility check in a few weeks - you "
+             f"should start being cited once the mention is indexed."), "xp": 15},
+    ]
+
+
+def _prompt_lost_steps(prompt: str, engine_list: str) -> list[dict]:
+    """Playbook to win a tracked query the brand is not cited for."""
+    return [
+        {"n": 1, "title": "Pin down the intent behind the query",
+         "detail": (
+             f"Re-read the exact prompt and list what someone asking it on {engine_list} really "
+             f"wants - a definition, a comparison, a how-to, or a recommendation. AI cites "
+             f"whatever answers that intent most directly and completely."), "xp": 10},
+        {"n": 2, "title": "Choose or create the page that should own it",
+         "detail": (
+             "Pick one existing page to strengthen, or create a dedicated page whose sole focus is "
+             "answering this query. One focused page beats a paragraph buried in a general page."), "xp": 10},
+        {"n": 3, "title": "Lead with a direct answer",
+         "detail": (
+             "Put a self-contained 2-3 sentence answer to the exact query in the first paragraph, "
+             "before any preamble. AI engines extract the opening lines as the answer."), "xp": 15},
+        {"n": 4, "title": "Add extractable structure and sources",
+         "detail": (
+             "Add an FAQ using the query and close variants as questions, a comparison table if "
+             "relevant, bullet lists, and clear H2/H3 headings. Cite 2-3 authoritative sources "
+             "inline to back your claims."), "xp": 15},
+        {"n": 5, "title": "Mark it up with schema",
+         "detail": (
+             "Add FAQPage and/or Article JSON-LD so engines can parse the Q&A and metadata. The "
+             "schema tasks in your list can be applied automatically with Fix with AI."), "xp": 10},
+        {"n": 6, "title": "Publish, index, and re-check",
+         "detail": (
+             "Publish, submit the URL in Google Search Console to request indexing, then re-run "
+             "this prompt's tracking in 1-2 weeks to confirm you are now cited."), "xp": 15},
+    ]
+
+
+def _competitor_cited_steps(names: str) -> list[dict]:
+    """Playbook to close the citation gap with competitors AI recommends."""
+    return [
+        {"n": 1, "title": "See exactly where they win",
+         "detail": (
+             f"Open the prompts where you're absent and note which competitor pages AI cites "
+             f"(e.g. {names}). Open those exact pages."), "xp": 5},
+        {"n": 2, "title": "Reverse-engineer why they're cited",
+         "detail": (
+             "For each, list what they have that you don't: depth, original data/statistics, "
+             "comparison tables, reviews, schema, and third-party mentions. Turn it into a short "
+             "gap list."), "xp": 10},
+        {"n": 3, "title": "Upgrade your equivalent page",
+         "detail": (
+             "On your matching page, close each gap - add the missing depth, a comparison that "
+             "includes your brand, real data, an FAQ, and schema - so it becomes the most complete "
+             "answer for that query."), "xp": 15},
+        {"n": 4, "title": "Earn the same third-party signals",
+         "detail": (
+             "Pursue mentions/listings on the same high-authority sources that cite the "
+             "competitor (see your 'Get mentioned on…' tasks). Shared citation sources are the "
+             "fastest lever."), "xp": 15},
+        {"n": 5, "title": "Re-analyze and track",
+         "detail": (
+             "Re-run analysis and re-check the affected prompts after ~2 weeks to confirm you're "
+             "gaining citations against them."), "xp": 10},
+    ]
+
+
+def _competitor_pillar_gap_steps(competitor_name: str) -> list[dict]:
+    """Playbook to close an AI-readiness score gap with a competitor."""
+    return [
+        {"n": 1, "title": "See where the gap is widest",
+         "detail": (
+             f"Open Competitors → {competitor_name} and compare pillar scores (content, schema, "
+             f"E-E-A-T, technical). Note the 2-3 pillars where they most out-score you."), "xp": 10},
+        {"n": 2, "title": "Work the highest-gap pillar first",
+         "detail": (
+             "Filter your task list to that pillar and complete its fixes. Content depth, E-E-A-T "
+             "signals, and schema usually move the score the most."), "xp": 15},
+        {"n": 3, "title": "Use Fix with AI for the quick wins",
+         "detail": (
+             "Many on-page and schema fixes can be applied automatically from your task list - do "
+             "those first for fast, reliable gains."), "xp": 10},
+        {"n": 4, "title": "Re-analyze to confirm",
+         "detail": (
+             f"After completing the pillar's fixes, re-run analysis and confirm your composite "
+             f"score rose and the gap to {competitor_name} narrowed, then move to the next pillar."), "xp": 15},
+    ]
+
+
 def generate_geo_signal_tasks(run, industry: str = "default") -> list[dict]:
     """Build GEO-signal recommendation dicts from a run's measured prompt data.
 
@@ -132,6 +259,7 @@ def generate_geo_signal_tasks(run, industry: str = "default") -> list[dict]:
                 "FAQ, cite authoritative sources, and mark it up with FAQPage/Article schema. "
                 "Then re-check visibility for this prompt."
             ),
+            "steps": _prompt_lost_steps(prompt, engine_list),
             "evidence": {"prompt": prompt, "engines": engines, "brand_mentions": 0},
         })
         tasks.append(task)
@@ -152,6 +280,7 @@ def generate_geo_signal_tasks(run, industry: str = "default") -> list[dict]:
                 "schema, third-party mentions), then close the gap on your equivalent pages and "
                 "earn mentions on the same high-authority sources."
             ),
+            "steps": _competitor_cited_steps(names),
             "evidence": {"competitor_domains": dict(top)},
         })
         tasks.append(task)
@@ -182,6 +311,7 @@ def generate_geo_signal_tasks(run, industry: str = "default") -> list[dict]:
                 f"Pursue a legitimate mention on {domain} - a listing, guest contribution, review, "
                 f"or editorial mention as appropriate for that source. AI re-indexes these regularly."
             ),
+            "steps": _citation_gap_steps(domain, count),
             "evidence": {"domain": domain, "citations": count},
         })
         tasks.append(task)
@@ -228,6 +358,7 @@ def _competitor_pillar_gap_task(run, industry: str) -> dict | None:
             "schema). Complete the on-page fixes in your task list, then re-analyse to confirm the "
             "gap has closed."
         ),
+        "steps": _competitor_pillar_gap_steps(top.name),
         "evidence": {"competitor": top.name, "competitor_score": round(float(top.composite_score), 1),
                      "brand_score": round(float(ps.composite_score), 1), "gap": round(gap, 1)},
     })
