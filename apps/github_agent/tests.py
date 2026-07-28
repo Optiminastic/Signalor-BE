@@ -4,7 +4,7 @@ pure (no DB), so these run as SimpleTestCase. Webhook signature verification
 only reads a setting, also no DB.
 """
 
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from .services import agent, fixable, fixers, webhook
 from .services.repo_profile import _profile_from_tree
@@ -382,3 +382,65 @@ class SandboxTests(SimpleTestCase):
         out, note = sandbox.verify_and_repair(None, {}, None, res, [])
         self.assertEqual(out.edits, [])
         self.assertEqual(note, "")
+
+
+class OrgScopingTests(TestCase):
+    """Brand scoping for the org-level GitHub endpoints.
+
+    Regression cover for "the repo is connected on GitHub but the brand shows
+    Connect": every org-scoped view resolved the brand from the email alone, so
+    an account with several brands always got one of them — and because
+    ``Organization.Meta.ordering`` is ``["-created_at"]`` while integrations'
+    ``_get_org_or_400`` sorts by ``id``, the two modules disagreed about WHICH.
+    """
+
+    def setUp(self):
+        from apps.organizations.models import Organization
+
+        self.email = "owner@example.com"
+        self.first = Organization.objects.create(
+            name="First", url="https://first.com", owner_email=self.email
+        )
+        self.second = Organization.objects.create(
+            name="Second", url="https://second.com", owner_email=self.email
+        )
+
+    def test_org_id_selects_that_brand(self):
+        from .views import _org_for_email
+
+        self.assertEqual(_org_for_email(self.email, self.second.id), self.second)
+        self.assertEqual(_org_for_email(self.email, self.first.id), self.first)
+
+    def test_falls_back_to_oldest_brand_matching_integrations(self):
+        """No org_id → the same brand integrations' _get_org_or_400 would pick."""
+        from .views import _org_for_email
+
+        self.assertEqual(_org_for_email(self.email), self.first)
+
+    def test_cannot_resolve_another_accounts_org(self):
+        from .views import _org_for_email
+
+        self.assertIsNone(_org_for_email("someone-else@example.com", self.first.id))
+
+    def test_status_endpoint_is_scoped_to_the_requested_brand(self):
+        from .models import GithubInstallation
+
+        GithubInstallation.objects.create(
+            installation_id=4242,
+            organization=self.first,
+            repo_full_name="acme/first",
+            repositories=["acme/first"],
+            is_active=True,
+        )
+        connected = self.client.get(
+            "/api/github/status/", {"email": self.email, "org_id": self.first.id}
+        ).json()
+        self.assertTrue(connected["connected"])
+        self.assertEqual(connected["repo_full_name"], "acme/first")
+
+        # The brand with no installation must NOT inherit the other brand's state.
+        other = self.client.get(
+            "/api/github/status/", {"email": self.email, "org_id": self.second.id}
+        ).json()
+        self.assertFalse(other["connected"])
+        self.assertEqual(other["repo_full_name"], "")
