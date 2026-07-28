@@ -20,11 +20,12 @@ from rest_framework.views import APIView
 
 from apps.analyzer.models import AnalysisRun
 from apps.organizations.models import Organization
+from apps.organizations.utils import normalize_url
 from core.throttling import ExpensiveThrottle, PollingThrottle
 
 from . import tasks
 from .models import GithubFixJob, GithubInstallation
-from .services import auth, fixable, fixers, webhook  # noqa: F401  (fixers used in helpers)
+from .services import auth, fixable, fixers, repo_match, webhook  # noqa: F401  (fixers used in helpers)
 
 logger = logging.getLogger("apps")
 
@@ -65,6 +66,56 @@ def _org_for_email(email: str, org_id: int | None = None) -> Organization | None
     if org_id:
         return qs.filter(pk=org_id).first()
     return qs.order_by("id").first()
+
+
+def _default_branch_for(repos: list[dict], full_name: str) -> str:
+    """The chosen repo's default branch (they are not all "main")."""
+    for repo in repos or []:
+        if repo.get("full_name") == full_name:
+            return repo.get("default_branch") or "main"
+    return "main"
+
+
+def _resolve_target_repo(installation_id: int, org: Organization | None, repos: list[dict]) -> dict:
+    """Decide which granted repo this installation should open fix PRs against.
+
+    Order of precedence:
+
+    1. An existing **locked** pick, as long as the installation still grants it.
+       This is what stops a re-install, or any later callback, from moving fix
+       PRs to a different repository behind the user's back.
+    2. A confident domain match (see ``services/repo_match``), which is then
+       locked so it stays put.
+    3. Nothing — the caller leaves the target empty and the product asks the user
+       to choose. Opening a PR on the wrong repo is worse than opening none.
+    """
+    repo_names = [r.get("full_name", "") for r in repos if r.get("full_name")]
+    existing = GithubInstallation.objects.filter(installation_id=installation_id).first()
+    if existing and existing.repo_locked and existing.repo_full_name in repo_names:
+        return {
+            "repo_full_name": existing.repo_full_name,
+            "locked": True,
+            "detection": existing.repo_detection or {},
+        }
+
+    picked = repo_match.pick_repo(
+        repos,
+        normalize_url(org.url) if org else "",
+        org.name if org else "",
+    )
+    # One granted repo is unambiguous by construction, whatever it is called.
+    if not picked["repo_full_name"] and len(repo_names) == 1:
+        picked = {
+            "repo_full_name": repo_names[0],
+            "confident": True,
+            "reason": "The installation grants exactly one repository.",
+            "candidates": picked.get("candidates", []),
+        }
+    return {
+        "repo_full_name": picked["repo_full_name"],
+        "locked": bool(picked["confident"] and picked["repo_full_name"]),
+        "detection": picked,
+    }
 
 
 def _active_installation_for_org(org_id) -> GithubInstallation | None:
@@ -172,12 +223,19 @@ class GithubOrgStatusView(APIView):
     def get(self, request):
         org = _org_for_email(request.query_params.get("email", ""), _org_id_param(request))
         inst = _active_installation_for_org(org.id) if org else None
+        detection = (inst.repo_detection if inst else None) or {}
         return Response(
             {
                 "configured": auth.is_configured(),
                 "connected": bool(inst),
                 "repo_full_name": inst.repo_full_name if inst else "",
                 "repositories": inst.repositories if inst else [],
+                # Pinned to this repo, so callbacks can't move it.
+                "repo_locked": bool(inst.repo_locked) if inst else False,
+                # Empty when the install granted several repos and none clearly
+                # matches the brand — the UI must ask the user to choose.
+                "needs_repo_choice": bool(inst and not inst.repo_full_name),
+                "repo_reason": detection.get("reason", ""),
             }
         )
 
@@ -239,9 +297,20 @@ class GithubOrgSelectRepoView(APIView):
                 {"error": "That repository isn't part of this GitHub installation."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # An explicit choice pins the target: later install callbacks must not
+        # move fix PRs somewhere else.
         inst.repo_full_name = repo
-        inst.save(update_fields=["repo_full_name", "updated_at"])
-        return Response({"repo_full_name": inst.repo_full_name})
+        inst.repo_locked = True
+        inst.repo_detection = {
+            "repo_full_name": repo,
+            "confident": True,
+            "reason": "Chosen manually.",
+            "candidates": (inst.repo_detection or {}).get("candidates", []),
+        }
+        inst.save(
+            update_fields=["repo_full_name", "repo_locked", "repo_detection", "updated_at"]
+        )
+        return Response({"repo_full_name": inst.repo_full_name, "repo_locked": True})
 
 
 class GithubCallbackView(APIView):
@@ -277,7 +346,6 @@ class GithubCallbackView(APIView):
         repos = auth.list_installation_repos(installation_id)
         repo_names = [r.get("full_name", "") for r in repos if r.get("full_name")]
         owner = repos[0].get("owner", {}) if repos else {}
-        default_branch = repos[0].get("default_branch", "main") if repos else "main"
 
         # Resolve which org/run this install belongs to from the state.
         if state.startswith("org_"):
@@ -292,6 +360,9 @@ class GithubCallbackView(APIView):
             org_id = run.organization_id if run else None
             connect_slug = state
 
+        org = Organization.objects.filter(pk=org_id).first() if org_id else None
+        target = _resolve_target_repo(installation_id, org, repos)
+
         GithubInstallation.objects.update_or_create(
             installation_id=installation_id,
             defaults={
@@ -299,9 +370,13 @@ class GithubCallbackView(APIView):
                 "connect_slug": connect_slug,
                 "account_login": owner.get("login", ""),
                 "account_type": owner.get("type", ""),
-                "repo_full_name": repo_names[0] if repo_names else "",
+                "repo_full_name": target["repo_full_name"],
                 "repositories": repo_names,
-                "default_branch": default_branch,
+                # The branch must come from the repo we actually target, not from
+                # whichever repo GitHub listed first — they can differ (main/master).
+                "default_branch": _default_branch_for(repos, target["repo_full_name"]),
+                "repo_locked": target["locked"],
+                "repo_detection": target["detection"],
                 "is_active": True,
             },
         )

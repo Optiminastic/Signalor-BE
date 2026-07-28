@@ -444,3 +444,137 @@ class OrgScopingTests(TestCase):
         ).json()
         self.assertFalse(other["connected"])
         self.assertEqual(other["repo_full_name"], "")
+
+
+def _repo(name, owner="acme", **extra):
+    """Minimal GitHub API repo object."""
+    base = {
+        "full_name": f"{owner}/{name}",
+        "name": name,
+        "homepage": "",
+        "description": "",
+        "default_branch": "main",
+        "archived": False,
+        "fork": False,
+    }
+    base.update(extra)
+    return base
+
+
+class RepoMatchTests(SimpleTestCase):
+    """Picking the right repo when the App is installed on "All repositories"."""
+
+    def test_matches_repo_name_to_brand_domain(self):
+        from .services.repo_match import pick_repo
+
+        repos = [_repo("Signalor-AI-Search"), _repo("BetterVersus"), _repo("infra")]
+        out = pick_repo(repos, "betterversus.com", "Better Versus")
+        self.assertEqual(out["repo_full_name"], "acme/BetterVersus")
+        self.assertTrue(out["confident"])
+
+    def test_homepage_field_wins_over_a_similar_name(self):
+        from .services.repo_match import pick_repo
+
+        repos = [
+            _repo("acme-site", homepage="https://www.acme.com/"),
+            _repo("acme"),
+        ]
+        out = pick_repo(repos, "acme.com", "Acme")
+        self.assertEqual(out["repo_full_name"], "acme/acme-site")
+
+    def test_no_confident_match_asks_the_user(self):
+        from .services.repo_match import pick_repo
+
+        repos = [_repo("infra"), _repo("marketing-tools"), _repo("sandbox")]
+        out = pick_repo(repos, "betterversus.com", "Better Versus")
+        self.assertEqual(out["repo_full_name"], "")
+        self.assertFalse(out["confident"])
+
+    def test_ambiguous_candidates_ask_the_user(self):
+        from .services.repo_match import pick_repo
+
+        # Both carry the brand's homepage, so neither can be picked safely.
+        repos = [
+            _repo("acme-web", homepage="https://acme.com"),
+            _repo("acme-app", homepage="https://acme.com"),
+        ]
+        out = pick_repo(repos, "acme.com", "Acme")
+        self.assertEqual(out["repo_full_name"], "")
+        self.assertFalse(out["confident"])
+
+    def test_archived_repos_are_never_picked(self):
+        from .services.repo_match import pick_repo
+
+        repos = [_repo("acme", archived=True)]
+        out = pick_repo(repos, "acme.com", "Acme")
+        self.assertEqual(out["repo_full_name"], "")
+
+    def test_generic_host_labels_do_not_match(self):
+        from .services.repo_match import score_repo
+
+        # "www" must never tie a repo called "www" to the brand.
+        score, _ = score_repo(_repo("www"), "www.acme.com", "Acme")
+        self.assertLess(score, 60)
+
+
+class TargetRepoLockTests(TestCase):
+    """A chosen repo must survive later install callbacks."""
+
+    def setUp(self):
+        from apps.organizations.models import Organization
+
+        self.org = Organization.objects.create(
+            name="Better Versus", url="https://betterversus.com", owner_email="o@example.com"
+        )
+        self.repos = [_repo("Signalor-AI-Search"), _repo("BetterVersus"), _repo("infra")]
+
+    def test_detects_and_locks_on_first_link(self):
+        from .views import _resolve_target_repo
+
+        out = _resolve_target_repo(9001, self.org, self.repos)
+        self.assertEqual(out["repo_full_name"], "acme/BetterVersus")
+        self.assertTrue(out["locked"])
+
+    def test_locked_pick_survives_a_later_callback(self):
+        from .models import GithubInstallation
+        from .views import _resolve_target_repo
+
+        GithubInstallation.objects.create(
+            installation_id=9002,
+            organization=self.org,
+            repo_full_name="acme/infra",
+            repositories=["acme/infra"],
+            repo_locked=True,
+        )
+        out = _resolve_target_repo(9002, self.org, self.repos)
+        # Detection would have said BetterVersus; the manual pick wins.
+        self.assertEqual(out["repo_full_name"], "acme/infra")
+        self.assertTrue(out["locked"])
+
+    def test_lock_is_released_when_access_to_that_repo_is_revoked(self):
+        from .models import GithubInstallation
+        from .views import _resolve_target_repo
+
+        GithubInstallation.objects.create(
+            installation_id=9003,
+            organization=self.org,
+            repo_full_name="acme/removed",
+            repositories=["acme/removed"],
+            repo_locked=True,
+        )
+        out = _resolve_target_repo(9003, self.org, self.repos)
+        self.assertEqual(out["repo_full_name"], "acme/BetterVersus")
+
+    def test_single_granted_repo_is_unambiguous(self):
+        from .views import _resolve_target_repo
+
+        out = _resolve_target_repo(9004, self.org, [_repo("anything-at-all")])
+        self.assertEqual(out["repo_full_name"], "acme/anything-at-all")
+        self.assertTrue(out["locked"])
+
+    def test_no_match_leaves_the_target_empty(self):
+        from .views import _resolve_target_repo
+
+        out = _resolve_target_repo(9005, self.org, [_repo("infra"), _repo("sandbox")])
+        self.assertEqual(out["repo_full_name"], "")
+        self.assertFalse(out["locked"])
