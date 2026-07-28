@@ -122,6 +122,20 @@ def _get_org_or_400(email):
 _ALLOWED_RANGE_DAYS = {7, 14, 30, 90}
 
 
+def _org_id_param(request) -> int | None:
+    """The selected brand's org id from the query string or body, if numeric.
+
+    Every brand-scoped endpoint should pass this to ``_resolve_org``. Without it
+    the caller silently falls back to the account's FIRST brand, which is what
+    made one brand's Integrations page show another brand's connections.
+    """
+    raw = request.query_params.get("org_id") or ""
+    if not raw and hasattr(request, "data") and isinstance(request.data, dict):
+        raw = request.data.get("org_id") or ""
+    raw = str(raw).strip()
+    return int(raw) if raw.isdigit() else None
+
+
 def _requested_days(request) -> int:
     """The explicit analytics window from ?days=, or 0 to use the cached snapshot."""
     raw = (request.query_params.get("days") or "").strip()
@@ -289,7 +303,7 @@ class GAAuthURLView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        org, err = _get_org_or_400(email)
+        org, err = _resolve_org(email, _org_id_param(request))
         if err:
             return err
 
@@ -431,7 +445,7 @@ class GADisconnectView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        org, err = _get_org_or_400(email)
+        org, err = _resolve_org(email, _org_id_param(request))
         if err:
             return err
 
@@ -815,7 +829,7 @@ class GSCAuthURLView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        org, err = _get_org_or_400(email)
+        org, err = _resolve_org(email, _org_id_param(request))
         if err:
             return err
 
@@ -917,7 +931,7 @@ class GSCDisconnectView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        org, err = _get_org_or_400(email)
+        org, err = _resolve_org(email, _org_id_param(request))
         if err:
             return err
 

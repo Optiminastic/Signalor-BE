@@ -36,12 +36,35 @@ def _get_run(slug: str) -> AnalysisRun | None:
     return AnalysisRun.objects.filter(slug=slug).select_related("organization").first()
 
 
-def _org_for_email(email: str) -> Organization | None:
-    """Resolve the org that owns this email (mirrors integrations' _get_org_or_400)."""
+def _org_id_param(request) -> int | None:
+    """The selected brand's org id from the query string or body, if numeric."""
+    raw = request.query_params.get("org_id") or ""
+    if not raw and hasattr(request, "data") and isinstance(request.data, dict):
+        raw = request.data.get("org_id") or ""
+    raw = str(raw).strip()
+    return int(raw) if raw.isdigit() else None
+
+
+def _org_for_email(email: str, org_id: int | None = None) -> Organization | None:
+    """Resolve the brand this request is about.
+
+    ``org_id`` is the brand selected in the dashboard and wins when supplied. It
+    is matched together with ``owner_email`` so a caller can never resolve another
+    account's organization by guessing an id.
+
+    Without ``org_id`` this falls back to the account's OLDEST org. That fallback
+    must match ``integrations._get_org_or_400`` exactly: it previously relied on
+    ``Organization.Meta.ordering = ["-created_at"]`` and so returned the NEWEST
+    org, which meant one brand's Integrations page could show its GitHub state
+    from one organization and its GA/GSC state from another.
+    """
     email = (email or "").strip().lower()
     if not email:
         return None
-    return Organization.objects.filter(owner_email=email).first()
+    qs = Organization.objects.filter(owner_email=email)
+    if org_id:
+        return qs.filter(pk=org_id).first()
+    return qs.order_by("id").first()
 
 
 def _active_installation_for_org(org_id) -> GithubInstallation | None:
@@ -126,7 +149,7 @@ class GithubOrgInstallURLView(APIView):
                 {"error": "GitHub App is not configured on the server."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        org = _org_for_email(request.query_params.get("email", ""))
+        org = _org_for_email(request.query_params.get("email", ""), _org_id_param(request))
         if not org:
             return Response(
                 {"error": "No organization for this email."},
@@ -137,13 +160,17 @@ class GithubOrgInstallURLView(APIView):
 
 
 class GithubOrgStatusView(APIView):
-    """GET status/?email=<e> — org-scoped connection state (onboarding)."""
+    """GET status/?email=<e>&org_id=<id> — the selected brand's connection state.
+
+    ``org_id`` scopes the answer to one brand. Without it the account's first
+    brand is used, which is why every brand used to report the same GitHub state.
+    """
 
     permission_classes = [AllowAny]
     throttle_classes = [PollingThrottle]
 
     def get(self, request):
-        org = _org_for_email(request.query_params.get("email", ""))
+        org = _org_for_email(request.query_params.get("email", ""), _org_id_param(request))
         inst = _active_installation_for_org(org.id) if org else None
         return Response(
             {
@@ -168,7 +195,7 @@ class GithubOrgDisconnectView(APIView):
 
     def post(self, request):
         email = request.query_params.get("email", "") or request.data.get("email", "")
-        org = _org_for_email(email)
+        org = _org_for_email(email, _org_id_param(request))
         if not org:
             return Response(
                 {"error": "No organization for this email."},
@@ -196,7 +223,7 @@ class GithubOrgSelectRepoView(APIView):
     def post(self, request):
         email = request.query_params.get("email", "") or request.data.get("email", "")
         repo = (request.data.get("repo_full_name") or "").strip()
-        org = _org_for_email(email)
+        org = _org_for_email(email, _org_id_param(request))
         if not org:
             return Response(
                 {"error": "No organization for this email."}, status=status.HTTP_400_BAD_REQUEST
