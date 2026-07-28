@@ -184,7 +184,13 @@ def open_fix_pr(job_id: int) -> None:
 
     try:
         if not installation.repo_full_name:
-            raise ValueError("Installation has no repo selected")
+            # Left empty on purpose when the install granted several repos and
+            # none clearly matched the brand's domain. Failing here is correct:
+            # guessing would open a PR on an unrelated repository.
+            raise ValueError(
+                "No repository selected for this brand. Choose which of the "
+                "connected repositories SignalorAI should open PRs against."
+            )
 
         client = GithubClient(installation.installation_id, installation.repo_full_name)
         profile = _ensure_profile(installation, client)

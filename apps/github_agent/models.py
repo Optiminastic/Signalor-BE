@@ -39,6 +39,16 @@ class GithubInstallation(models.Model):
     repositories = models.JSONField(default=list, blank=True)  # ["owner/name", ...]
     default_branch = models.CharField(max_length=255, blank=True, default="main")
 
+    # Pin the target repo. Set when a human picks one, or when detection matched
+    # the brand's domain with high confidence. While true, the install callback
+    # must NOT reassign repo_full_name: it previously reset the target to
+    # repositories[0] on every callback, silently moving fix PRs to whichever
+    # repo GitHub happened to list first.
+    repo_locked = models.BooleanField(default=False)
+    # Why the current repo was chosen (see services/repo_match.pick_repo), kept
+    # so a wrong pick can be explained and debugged rather than just overridden.
+    repo_detection = models.JSONField(default=dict, blank=True)
+
     # Cached framework + key paths so fixers know where code goes (see repo_profile.py).
     repo_profile = models.JSONField(default=dict, blank=True)
     repo_profile_updated_at = models.DateTimeField(null=True, blank=True)
