@@ -74,6 +74,7 @@ from .views import (
     GeoImprovementsView,
     HealthCheckView,
     IndexNowView,
+    LatestRunProgressView,
     OnboardingStartView,
     OurBacklinksView,
     OverviewInsightsView,
@@ -138,6 +139,9 @@ urlpatterns = [
     path("runs/history/", ScoreHistoryView.as_view(), name="run-history"),
     path("schedule/", ScheduledAnalysisView.as_view(), name="schedule"),
     path("runs/", AnalysisRunListView.as_view(), name="run-list"),
+    # Before "runs/<slug>" style routes: a literal segment must not be
+    # swallowed by a variable one.
+    path("runs/progress/", LatestRunProgressView.as_view(), name="run-progress"),
     path("runs/<int:run_id>/", AnalysisRunDetailView.as_view(), name="run-detail"),
     path("runs/s/<str:slug>/prompts/", PromptListCreateView.as_view(), name="prompt-list-create"),
     path(
