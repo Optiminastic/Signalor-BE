@@ -1,26 +1,20 @@
 import json
 import logging
 import re
-from urllib.parse import quote_plus, unquote, urlparse
-
-import requests
+from urllib.parse import urlparse
 
 from .aggregator import compute_static_composite
 from .content import score_content
 from .crawler import CrawlResult, crawl_page
 from .eeat import score_eeat
 from .market_profiler import build_brand_market_profile
+from .model_routing import model_for
 from .schema import score_schema
 from .structured import extract_json
 from .technical import score_technical
-from .utils import extract_brand_name
+from .utils import extract_brand_name, url_is_reachable
 
 logger = logging.getLogger("apps")
-
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-)
 
 VALID_TIERS = {"Tier 1", "Tier 2"}
 VALID_REVENUE_BANDS = {"Bootstrap", "<10M", "10M-50M", "50M-200M", "200M+"}
@@ -29,9 +23,11 @@ VALID_REVENUE_BANDS = {"Bootstrap", "<10M", "10M-50M", "50M-200M", "200M+"}
 RELEVANCE_THRESHOLD = 6
 MARKET_CONFIDENCE_STRICT = 0.35
 MARKET_CONFIDENCE_SOFT = 0.18
-SEARCH_TIMEOUT_SEC = 4
 WEB_CANDIDATE_LIMIT = 24
 WEB_SHORTLIST_LIMIT = 40
+# Organic results requested per Serper query. Four queries x 10 gives the LLM a
+# wide enough pool to fill five slots after host de-duplication and market gating.
+SEARCH_RESULTS_PER_QUERY = 10
 
 MARKETPLACE_HINTS = (
     "marketplace",
@@ -57,6 +53,17 @@ NON_COMPETITOR_HOST_HINTS = (
     "pinterest.com",
     "blogspot.com",
     "wordpress.com",
+    # Publishing and developer platforms. Category searches surface a lot of
+    # "best X tools" listicles hosted here; the article is not the competitor.
+    # Only hosts that are never a direct competitor in any vertical belong in
+    # this list — review directories (G2, Capterra) are context-dependent and
+    # are handled by the marketplace gate and the prompt's exclusion rules.
+    "medium.com",
+    "substack.com",
+    "dev.to",
+    "stackoverflow.com",
+    "github.com",
+    "slideshare.net",
 )
 
 MARKETPLACE_SOURCE_HINTS = (
@@ -233,29 +240,45 @@ def _domain_to_name(url: str) -> str:
     return " ".join(p.capitalize() for p in parts)
 
 
-def _extract_ddg_result_urls(html: str, brand_host: str) -> list[str]:
-    urls: list[str] = []
-    seen: set[str] = set()
-    for encoded in re.findall(r"uddg=([^&\"']+)", html or ""):
-        try:
-            candidate = unquote(encoded)
-        except Exception:
+def _candidates_from_organic(
+    organic: list[dict],
+    brand_host: str,
+    seen_hosts: set[str],
+) -> list[dict]:
+    """Turn Serper ``organic`` results into competitor candidates.
+
+    Keeps the search engine's ranking order, drops the brand's own domain and
+    known non-competitor hosts (Wikipedia, social, forums), and de-duplicates by
+    host across every query via the caller-owned ``seen_hosts`` set.
+
+    The title and snippet ride along so the selection LLM judges each candidate
+    on what the page actually says, not on a name guessed from its domain.
+    """
+    candidates: list[dict] = []
+    for item in organic:
+        if not isinstance(item, dict):
             continue
-        normalized = _normalize_homepage_url(candidate)
+        normalized = _normalize_homepage_url(item.get("link") or "")
         if not normalized:
             continue
         host = urlparse(normalized).netloc.lower().replace("www.", "")
+        if not host or host in seen_hosts:
+            continue
         if any(h in host for h in NON_COMPETITOR_HOST_HINTS):
             continue
-        if not host or host == brand_host or host.endswith("." + brand_host):
+        if host == brand_host or host.endswith("." + brand_host):
             continue
-        if host in seen:
-            continue
-        seen.add(host)
-        urls.append(normalized)
-        if len(urls) >= WEB_CANDIDATE_LIMIT:
-            break
-    return urls
+        seen_hosts.add(host)
+        candidates.append(
+            {
+                "name": _domain_to_name(normalized),
+                "url": normalized,
+                "title": _clean_text(item.get("title"), default="", max_len=200),
+                "snippet": _clean_text(item.get("snippet"), default="", max_len=300),
+                "source": "serper",
+            }
+        )
+    return candidates
 
 
 def _merge_competitor_candidates(items: list[dict]) -> list[dict]:
@@ -280,6 +303,40 @@ def _merge_competitor_candidates(items: list[dict]) -> list[dict]:
     return list(merged_by_host.values())
 
 
+def _build_search_queries(
+    brand_name: str,
+    product_category: str,
+    industry: str,
+    country: str | None,
+) -> list[str]:
+    """Build the Google queries used to source competitor candidates.
+
+    Category-anchored queries come first and carry most of the weight. A
+    brand-anchored query ("<brand> competitors") only works once a brand has
+    search presence — for a young or low-awareness brand it returns noise, or
+    matches an unrelated same-named entity, so it must never be the whole
+    strategy. Category queries surface the real field regardless of how well
+    known the brand itself is.
+    """
+    country_q = f" {country}" if country else ""
+    category = (product_category or "").strip()
+    sector = (industry or "").strip()
+
+    queries: list[str] = []
+    if category:
+        queries.append(f"best {category} tools{country_q}")
+        queries.append(f"{category} alternatives{country_q}")
+    if brand_name:
+        queries.append(f"{brand_name} competitors{country_q}")
+    # Only worth a slot when the industry label says something the category
+    # doesn't already say, otherwise it re-runs a near-duplicate search.
+    if sector and sector.lower() not in category.lower():
+        queries.append(f"best {sector} software{country_q}")
+    if not queries and brand_name:
+        queries.append(f"{brand_name} alternatives{country_q}")
+    return queries
+
+
 def _discover_web_candidates(
     brand_name: str,
     brand_url: str,
@@ -287,47 +344,55 @@ def _discover_web_candidates(
     industry: str,
     country: str | None,
 ) -> list[dict]:
+    """Fetch real competitor candidates from Google via Serper.
+
+    An empty list means *unknown*, not "no competitors exist". Callers must never
+    fall back to model memory on an empty result: an LLM asked to name competitors
+    without live results answers from training data and invents companies.
+    """
+    from . import serper
+
+    if not serper.is_configured():
+        logger.error(
+            "Competitor discovery for %s: SERPER_API_KEY not configured — cannot ground the search",
+            brand_name,
+        )
+        return []
+
     brand_host = urlparse(brand_url or "").netloc.lower().replace("www.", "")
-    country_q = f" {country}" if country else ""
-    query_fragments = [
-        f"{brand_name} alternatives{country_q}",
-        f"{brand_name} competitors{country_q}",
-        f"best {product_category} brands{country_q}",
-        f"{industry} companies like {brand_name}{country_q}",
-    ]
+    queries = _build_search_queries(brand_name, product_category, industry, country)
+    if not queries:
+        logger.warning("Competitor discovery for %s: no usable search query could be built", brand_name)
+        return []
 
     candidates: list[dict] = []
     seen_hosts: set[str] = set()
-    for q in query_fragments:
-        query = quote_plus(q.strip())
-        search_url = f"https://duckduckgo.com/html/?q={query}"
-        try:
-            resp = requests.get(
-                search_url,
-                headers={"User-Agent": USER_AGENT},
-                timeout=SEARCH_TIMEOUT_SEC,
-            )
-            if resp.status_code >= 400:
-                continue
-            result_urls = _extract_ddg_result_urls(resp.text, brand_host)
-        except requests.RequestException:
+    failed_queries = 0
+    for query in queries:
+        data = serper.search(query, num=SEARCH_RESULTS_PER_QUERY)
+        if data is None:
+            failed_queries += 1
             continue
+        candidates.extend(
+            _candidates_from_organic(data.get("organic") or [], brand_host, seen_hosts)
+        )
+        if len(candidates) >= WEB_CANDIDATE_LIMIT:
+            break
 
-        for result_url in result_urls:
-            host = urlparse(result_url).netloc.lower()
-            if host in seen_hosts:
-                continue
-            seen_hosts.add(host)
-            candidates.append(
-                {
-                    "name": _domain_to_name(result_url),
-                    "url": result_url,
-                    "source": "web_search",
-                }
-            )
-            if len(candidates) >= WEB_CANDIDATE_LIMIT:
-                return candidates
-    return candidates
+    if failed_queries:
+        logger.warning(
+            "Competitor discovery for %s: %d/%d Serper queries failed",
+            brand_name,
+            failed_queries,
+            len(queries),
+        )
+    logger.info(
+        "Competitor discovery for %s: %d web candidates from %d queries",
+        brand_name,
+        len(candidates),
+        len(queries),
+    )
+    return candidates[:WEB_CANDIDATE_LIMIT]
 
 
 def _is_likely_marketplace(comp: dict) -> bool:
@@ -858,6 +923,50 @@ def _sort_competitors(candidates: list[dict], top_market: str | None = None) -> 
     )
 
 
+def _format_candidates_block(web_candidates: list[dict]) -> str:
+    """Render candidates for the prompt, including what each page says about itself.
+
+    The title/snippet are what let the model tell a direct competitor from an
+    adjacent-category tool; a bare domain list forces it to guess from the name.
+    """
+    lines = []
+    for item in web_candidates[:WEB_SHORTLIST_LIMIT]:
+        descriptor = " | ".join(p for p in (item.get("title"), item.get("snippet")) if p)
+        line = f"- {item.get('name', '')} ({item.get('url', '')})"
+        lines.append(f"{line}: {descriptor}" if descriptor else line)
+    return "\n".join(lines)
+
+
+def _candidate_hosts(web_candidates: list[dict]) -> set[str]:
+    """Host allow-list built from the live search results."""
+    hosts = set()
+    for item in web_candidates:
+        host = urlparse(_normalize_homepage_url(item.get("url", ""))).netloc.lower()
+        if host:
+            hosts.add(host)
+    return hosts
+
+
+def _filter_to_allowed_hosts(competitors: list[dict], allowed_hosts: set[str]) -> list[dict]:
+    """Drop anything the model returned that was not in the search results.
+
+    This is the hallucination gate: the model may only *choose* among domains the
+    search engine actually returned, never introduce one from memory.
+    """
+    kept = []
+    for comp in competitors:
+        host = urlparse(_normalize_homepage_url(comp.get("url", ""))).netloc.lower()
+        if host in allowed_hosts:
+            kept.append(comp)
+        else:
+            logger.info(
+                "Dropping competitor %s (%s): not in live search results",
+                comp.get("name"),
+                comp.get("url"),
+            )
+    return kept
+
+
 def _select_competitors_from_web_candidates_llm(
     brand_name: str,
     understanding: dict,
@@ -873,10 +982,7 @@ def _select_competitors_from_web_candidates_llm(
     try:
         from .llm import ask_llm
 
-        candidates_block = "\n".join(
-            f"- {item.get('name', '')}: {item.get('url', '')}"
-            for item in web_candidates[:WEB_SHORTLIST_LIMIT]
-        )
+        candidates_block = _format_candidates_block(web_candidates)
 
         prompt = (
             f"You are selecting DIRECT competitors for '{brand_name}' from a web-retrieved shortlist.\n\n"
@@ -901,19 +1007,12 @@ def _select_competitors_from_web_candidates_llm(
         )
         text = ask_llm(
             prompt,
-            preferred_provider="gemini",
+            preferred_provider=model_for("competitor_discovery"),
             max_tokens=1200,
             purpose="Competitor Selection From Web Candidates",
         )
         shortlisted = _parse_competitors_from_llm(text, brand_name, is_marketplace=is_marketplace)
-        allowed_hosts = {
-            urlparse(_normalize_homepage_url(item.get("url", ""))).netloc.lower() for item in web_candidates
-        }
-        filtered = []
-        for comp in shortlisted:
-            host = urlparse(_normalize_homepage_url(comp.get("url", ""))).netloc.lower()
-            if host in allowed_hosts:
-                filtered.append(comp)
+        filtered = _filter_to_allowed_hosts(shortlisted, _candidate_hosts(web_candidates))
         return filtered[:5]
     except Exception as exc:
         logger.warning("Web-candidate competitor selection failed: %s", exc)
@@ -1025,6 +1124,18 @@ def _discover_competitors_llm(
             industry=industry if understanding else "",
             country=primary_country if primary_country not in {"Global", "Unknown", ""} else None,
         )
+        # No live results means we do not know who the competitors are. Returning
+        # nothing is correct; asking the model anyway produces invented companies,
+        # which is what this pipeline used to ship whenever the search failed.
+        if not web_candidates:
+            logger.error(
+                "Competitor discovery for %s: no live search results — returning no competitors "
+                "rather than an ungrounded guess",
+                brand_name,
+            )
+            return []
+        allowed_hosts = _candidate_hosts(web_candidates)
+
         grounded_candidates = _select_competitors_from_web_candidates_llm(
             brand_name=brand_name,
             understanding=understanding or {},
@@ -1035,11 +1146,7 @@ def _discover_competitors_llm(
             customer_segment=customer_segment,
             brand_revenue=brand_revenue,
         )
-        web_candidates_block = (
-            "\n".join(f"- {item['name']}: {item['url']}" for item in web_candidates)
-            if web_candidates
-            else "No live web candidates fetched."
-        )
+        web_candidates_block = _format_candidates_block(web_candidates)
         # Anchor on the brand's actual job-to-be-done so results don't drift into
         # adjacent categories (e.g. generic SEO / AI-writing tools for a brand that
         # is really about AI-answer / LLM citation visibility).
@@ -1049,14 +1156,17 @@ def _discover_competitors_llm(
         )
         prompt = (
             f"You are a senior competitive intelligence analyst.\n\n"
-            f"Find exactly 5 DIRECT competitors for '{brand_name}'{problem_anchor}.\n\n"
+            f"Select up to 5 DIRECT competitors for '{brand_name}'{problem_anchor}.\n\n"
             f"Brand profile:\n{understanding_block}\n\n"
             f"{model_line}\n"
             f"{country_source_line}\n"
             f"Market profiler:\n{_market_profile_prompt_block(market_profile)}\n"
             f"Additional site signals:\n{compact_context}\n\n"
-            f"Live web candidate domains (internet-retrieved):\n{web_candidates_block}\n\n"
+            f"Live web search results (retrieved from Google just now):\n{web_candidates_block}\n\n"
             f"HARD REQUIREMENTS — every competitor MUST satisfy ALL of these:\n"
+            f"0. It MUST be one of the candidates listed above. Never introduce a company "
+            f"from your own knowledge — you are selecting from this list, not recalling. "
+            f"Returning fewer than 5 is correct when fewer than 5 candidates qualify.\n"
             f"1. Solves the SAME core problem / job-to-be-done for the same buyer, in the same "
             f"specific product category — not merely the same broad industry. A tool in an "
             f"ADJACENT category (e.g. general SEO rank tracking, keyword research, or AI "
@@ -1068,7 +1178,6 @@ def _discover_competitors_llm(
             f"4. {_geography_constraint(primary_country, is_global)}\n"
             f"5. Similar revenue scale — within 1-2 bands of the brand ({brand_revenue or 'unknown'})\n"
             f"6. Active company with a real, working homepage URL\n\n"
-            f"Prefer selecting from the live web candidate domains whenever they satisfy direct-competitor rules.\n"
             f"If the source brand is not a marketplace, marketplaces/aggregators/directories are not direct competitors.\n\n"
             f"{local_leader_preference}\n"
             f"{marketplace_rules}\n"
@@ -1081,7 +1190,7 @@ def _discover_competitors_llm(
             f"- Enterprise giants when the brand is small/bootstrap (and vice versa)\n\n"
             f"Return ONLY a JSON array. Each object must have:\n"
             f"- name (string)\n"
-            f"- url (homepage, must start with https://)\n"
+            f"- url (the candidate's homepage exactly as listed above)\n"
             f"- industry (specific label)\n"
             f'- tier ("Tier 1" = direct clone, "Tier 2" = close alternative)\n'
             f"- target_market (SMB / Mid-Market / Enterprise / DTC / Consumer / Marketplace)\n"
@@ -1093,8 +1202,16 @@ def _discover_competitors_llm(
             f"Output ONLY the JSON array, no markdown, no explanation."
         )
 
-        text = ask_llm(prompt, preferred_provider="gemini", max_tokens=1200, purpose="Competitor Discovery")
-        llm_candidates = _parse_competitors_from_llm(text, brand_name, is_marketplace=is_marketplace)
+        text = ask_llm(
+            prompt,
+            preferred_provider=model_for("competitor_discovery"),
+            max_tokens=1200,
+            purpose="Competitor Discovery",
+        )
+        llm_candidates = _filter_to_allowed_hosts(
+            _parse_competitors_from_llm(text, brand_name, is_marketplace=is_marketplace),
+            allowed_hosts,
+        )
         candidates = _merge_competitor_candidates(grounded_candidates + llm_candidates)
         source_flags = _build_source_flags(site_context)
         filtered_candidates = []
@@ -1147,25 +1264,32 @@ def _discover_competitors_llm(
             )
 
         selected = list(gated)
-        if gate_mode in {"strict", "soft"} and gate_market and len(selected) < 5:
+        existing_hosts = [urlparse(c["url"]).netloc.lower() for c in selected]
+        # Only worth a refill call if the search returned candidates we haven't used
+        # yet — otherwise the model has nothing left to legitimately pick from and
+        # anything it returns would be filtered out as off-list anyway.
+        unused_hosts = allowed_hosts - set(existing_hosts)
+        if gate_mode in {"strict", "soft"} and gate_market and len(selected) < 5 and unused_hosts:
             needed = 5 - len(selected)
-            existing_hosts = [urlparse(c["url"]).netloc.lower() for c in selected]
             refill_prompt = (
                 f"{prompt}\n\n"
                 f"REFILL MODE:\n"
-                f"- Return exactly {needed} NEW competitors.\n"
+                f"- Return up to {needed} NEW competitors, still chosen ONLY from the "
+                f"candidate list above.\n"
                 f"- Do not return any domain from this list: {json.dumps(existing_hosts, ensure_ascii=True)}\n"
                 f"- ABSOLUTE MARKET LOCK: each competitor must primarily operate in {gate_market}.\n"
                 f"- If you are not confident a company is in {gate_market}, do not include it.\n"
+                f"- Return an empty array if no remaining candidate qualifies.\n"
             )
             refill_text = ask_llm(
                 refill_prompt,
-                preferred_provider="gemini",
+                preferred_provider=model_for("competitor_discovery"),
                 max_tokens=900,
                 purpose="Competitor Discovery Refill",
             )
-            refill_candidates = _parse_competitors_from_llm(
-                refill_text, brand_name, is_marketplace=is_marketplace
+            refill_candidates = _filter_to_allowed_hosts(
+                _parse_competitors_from_llm(refill_text, brand_name, is_marketplace=is_marketplace),
+                allowed_hosts,
             )
             gated_refill_candidates = [
                 comp
@@ -1354,44 +1478,8 @@ def _parse_competitors_from_llm(text: str, brand_name: str, is_marketplace: bool
 
 
 def _validate_url(url: str) -> bool:
-    try:
-        resp = requests.head(
-            url,
-            headers={"User-Agent": USER_AGENT},
-            timeout=3,
-            allow_redirects=True,
-        )
-        if resp.status_code < 400:
-            return True
-        # Some sites block HEAD; fall back to lightweight GET validation.
-        if resp.status_code in {403, 405}:
-            get_resp = requests.get(
-                url,
-                headers={"User-Agent": USER_AGENT},
-                timeout=4,
-                allow_redirects=True,
-                stream=True,
-            )
-            try:
-                return get_resp.status_code < 400
-            finally:
-                get_resp.close()
-        return False
-    except requests.RequestException:
-        try:
-            get_resp = requests.get(
-                url,
-                headers={"User-Agent": USER_AGENT},
-                timeout=4,
-                allow_redirects=True,
-                stream=True,
-            )
-            try:
-                return get_resp.status_code < 400
-            finally:
-                get_resp.close()
-        except requests.RequestException:
-            return False
+    """Whether a competitor homepage actually resolves."""
+    return url_is_reachable(url)
 
 
 def discover_competitors(crawl: CrawlResult, user_country: str | None = None) -> list[dict]:

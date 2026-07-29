@@ -14,6 +14,7 @@ from collections.abc import Iterable
 
 from apps.analyzer.models import BacklinkOpportunity, PromptTrack
 from apps.analyzer.pipeline.llm import ask_llm
+from apps.analyzer.pipeline.utils import drop_unreachable
 
 logger = logging.getLogger("apps")
 
@@ -137,7 +138,7 @@ def generate_for_prompt(track: PromptTrack) -> list[BacklinkOpportunity]:
         logger.warning("backlink_opportunities: LLM returned empty for track %d", track.pk)
         return []
 
-    rows = _parse_response(raw)
+    rows = drop_unreachable(_parse_response(raw), "submit_url")
     if not rows:
         return []
 

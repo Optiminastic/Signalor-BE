@@ -1,10 +1,77 @@
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urljoin, urlparse
 
+import requests
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger("apps")
+
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+_REACHABILITY_WORKERS = 8
+
+
+def url_is_reachable(url: str, *, timeout: float = 3.0) -> bool:
+    """Whether a URL answers with a non-error status.
+
+    Tries HEAD first, then falls back to a streamed GET: plenty of sites reject
+    HEAD with 403/405 while serving GET normally, so a HEAD-only check would
+    discard live pages.
+    """
+    if not (url or "").startswith(("http://", "https://")):
+        return False
+
+    headers = {"User-Agent": DEFAULT_USER_AGENT}
+
+    def _get_ok() -> bool:
+        resp = requests.get(url, headers=headers, timeout=timeout + 1, allow_redirects=True, stream=True)
+        try:
+            return resp.status_code < 400
+        finally:
+            resp.close()
+
+    try:
+        resp = requests.head(url, headers=headers, timeout=timeout, allow_redirects=True)
+        if resp.status_code < 400:
+            return True
+        if resp.status_code in {403, 405}:
+            return _get_ok()
+        return False
+    except requests.RequestException:
+        try:
+            return _get_ok()
+        except requests.RequestException:
+            return False
+
+
+def drop_unreachable(rows: list[dict], url_key: str) -> list[dict]:
+    """Drop rows whose URL does not resolve, checking them concurrently.
+
+    A generated link that 404s is worse than no link at all: it is presented to
+    the user as an action to take, and they only discover it is dead by clicking.
+    """
+    if not rows:
+        return rows
+
+    with ThreadPoolExecutor(max_workers=min(_REACHABILITY_WORKERS, len(rows))) as executor:
+        reachable = list(executor.map(lambda row: url_is_reachable(row.get(url_key, "")), rows))
+
+    kept = [row for row, ok in zip(rows, reachable, strict=True) if ok]
+    dropped = len(rows) - len(kept)
+    if dropped:
+        logger.info(
+            "Dropped %d/%d rows with unreachable %s: %s",
+            dropped,
+            len(rows),
+            url_key,
+            [r.get(url_key) for r, ok in zip(rows, reachable, strict=True) if not ok][:5],
+        )
+    return kept
 
 
 def extract_text(soup: BeautifulSoup) -> str:

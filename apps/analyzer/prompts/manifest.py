@@ -28,4 +28,13 @@ MANIFEST: dict[str, str] = {
     "task_enrich_faq": "v1",
     "task_enrich_citations": "v1",
     "task_enrich_rewrite": "v1",
+    # Fallback drafter for the ~73 findings with no specialised template. Without
+    # it those tasks ship the same static sentence to every customer.
+    "task_enrich_generic": "v1",
+    # Open-ended site audit (pipeline/site_findings.py). Produces findings the
+    # 83 fixed rules cannot express, including cross-page inconsistency.
+    "site_findings": "v1",
+    # Paste-ready passage that makes one page answer one tracked prompt
+    # (services/answer_block.py).
+    "answer_block": "v1",
 }

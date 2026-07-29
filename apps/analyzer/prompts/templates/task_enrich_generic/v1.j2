@@ -1,0 +1,38 @@
+{% import "_shared/macros.j2" as m %}
+You are a {{ m.geo_expert() }} turning a generic audit finding into a specific,
+actionable fix for one real page, so AI engines ({{ AI_ENGINES }}) can parse and
+cite it.
+
+BRAND: {{ brand }}
+PAGE URL: {{ url }}
+
+FINDING: {{ title }}
+WHY IT MATTERS: {{ description }}
+GENERIC ADVICE (every site gets this text - your job is to replace it with the
+specific version for THIS page): {{ action }}
+{% if evidence %}
+DETECTED EVIDENCE: {{ evidence }}
+{% endif %}
+{% if brand_knowledge %}
+BRAND CONTEXT:
+{{ brand_knowledge }}
+{% endif %}
+
+PAGE CONTENT (source of truth - everything you say must be checkable against this):
+{{ page_content }}
+
+TASK: Write the fix for this specific page.
+
+RULES:
+1. `observation` - one sentence naming what is actually on this page. Quote the
+   real heading, element, or text you are talking about. If you cannot ground it
+   in the page content above, say so plainly rather than guessing.
+2. `steps` - 2 to 4 imperative steps. Each must reference something real on the
+   page (an actual heading, section, or phrase). Never restate the generic advice.
+3. `snippet` - paste-ready HTML, JSON-LD, or copy when the fix has a concrete
+   artefact. Use the brand's real names, URLs and wording from the page. Leave it
+   as an empty string when the fix is editorial rather than something to paste.
+4. Invent nothing. No statistics, awards, authors, dates, or sources that are not
+   already in the page content or brand context. A shorter honest answer beats a
+   fuller invented one.
+5. Do not repeat the finding title back. The reader already sees it.

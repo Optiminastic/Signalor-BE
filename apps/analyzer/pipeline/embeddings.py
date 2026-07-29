@@ -14,10 +14,19 @@ import os
 
 logger = logging.getLogger("apps")
 
-# text-embedding-004 → 768 dims. Must match models.EMBEDDING_DIMENSIONS / the
-# BrandCorpusChunk.embedding column width. Override via env only if you also
-# migrate the column and re-embed.
-DEFAULT_EMBED_MODEL = os.getenv("CORPUS_EMBED_MODEL", "models/text-embedding-004")
+# ``text-embedding-004`` was retired: the Gemini API now answers it with
+# "not found for API version v1beta". Only the gemini-embedding-* family remains,
+# and those default to 3072 dims, so the dimension MUST be requested explicitly -
+# BrandCorpusChunk.embedding is a fixed-width 768 pgvector column and a 3072-wide
+# vector cannot be stored in it.
+#
+# Requesting 768 (a supported Matryoshka truncation) keeps the existing column and
+# every already-stored vector valid, so this is a drop-in swap with no migration
+# and no re-index. Override both together via env if you ever widen the column.
+DEFAULT_EMBED_MODEL = os.getenv("CORPUS_EMBED_MODEL", "models/gemini-embedding-001")
+
+# Must equal organizations.models.EMBEDDING_DIMENSIONS.
+EMBED_DIMENSIONS = int(os.getenv("CORPUS_EMBED_DIMENSIONS", "768"))
 
 # Gemini caps batch embedding requests; stay well under it.
 _MAX_BATCH = 100
@@ -46,10 +55,45 @@ def _configure() -> object | None:
     return genai
 
 
+def _embed_content(genai: object, **kwargs):
+    """``genai.embed_content`` with an explicit output width.
+
+    Older SDK builds do not accept ``output_dimensionality``; on TypeError we
+    retry without it and let ``_fit`` trim the result, so an SDK downgrade
+    degrades to a slightly wasteful call rather than a hard failure.
+    """
+    try:
+        return genai.embed_content(output_dimensionality=EMBED_DIMENSIONS, **kwargs)
+    except TypeError:
+        return genai.embed_content(**kwargs)
+
+
+def _fit(vector) -> list[float] | None:
+    """Coerce a returned vector to exactly ``EMBED_DIMENSIONS`` floats.
+
+    Truncation is safe here because retrieval ranks by cosine similarity, which
+    is scale-invariant, and these embeddings are Matryoshka-trained so a prefix
+    is a valid lower-dimensional embedding. A vector that comes back *shorter*
+    than the column is unusable, so it is dropped rather than zero-padded - a
+    padded vector would silently score as a poor match forever.
+    """
+    if vector is None:
+        return None
+    values = list(vector)
+    if len(values) < EMBED_DIMENSIONS:
+        logger.warning(
+            "Embedding too short (%d < %d); dropping rather than padding",
+            len(values),
+            EMBED_DIMENSIONS,
+        )
+        return None
+    return values[:EMBED_DIMENSIONS]
+
+
 def _embed_one(genai: object, text: str, model: str) -> list[float] | None:
     try:
-        resp = genai.embed_content(model=model, content=text, task_type=_TASK_DOCUMENT)
-        return list(resp["embedding"])
+        resp = _embed_content(genai, model=model, content=text, task_type=_TASK_DOCUMENT)
+        return _fit(resp["embedding"])
     except Exception as exc:  # noqa: BLE001 - fail-soft per item
         logger.warning("Embedding failed for one chunk: %s", exc)
         return None
@@ -58,11 +102,11 @@ def _embed_one(genai: object, text: str, model: str) -> list[float] | None:
 def _embed_batch(genai: object, texts: list[str], model: str) -> list[list[float] | None]:
     """Embed a batch in one call; fall back to per-item on batch failure."""
     try:
-        resp = genai.embed_content(model=model, content=texts, task_type=_TASK_DOCUMENT)
+        resp = _embed_content(genai, model=model, content=texts, task_type=_TASK_DOCUMENT)
         vectors = resp["embedding"]
         # The batch API returns a list aligned with ``texts``.
         if isinstance(vectors, list) and len(vectors) == len(texts):
-            return [list(v) for v in vectors]
+            return [_fit(v) for v in vectors]
         logger.warning("Unexpected batch embedding shape; retrying per item")
     except Exception as exc:  # noqa: BLE001 - fall back to per-item
         logger.warning("Batch embedding failed (%s); retrying per item", exc)
@@ -103,8 +147,11 @@ def embed_query(text: str, *, model: str | None = None) -> list[float] | None:
         return None
     model = model or DEFAULT_EMBED_MODEL
     try:
-        resp = genai.embed_content(model=model, content=text, task_type=_TASK_QUERY)
-        return list(resp["embedding"])
+        # Must go through the same width-controlling wrapper as the document path.
+        # A 3072-wide query vector cannot be compared against 768-wide stored
+        # vectors, so every search would fail or silently score nothing.
+        resp = _embed_content(genai, model=model, content=text, task_type=_TASK_QUERY)
+        return _fit(resp["embedding"])
     except Exception as exc:  # noqa: BLE001 - fail-soft
         logger.warning("Query embedding failed: %s", exc)
         return None

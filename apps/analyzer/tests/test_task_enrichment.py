@@ -16,6 +16,7 @@ from apps.analyzer.pipeline.schemas import (
     FaqDraft,
     FaqPair,
     ParagraphRewrite,
+    TaskGuidance,
 )
 from apps.analyzer.services import task_enrichment
 from apps.analyzer.services.task_enrichment import enrich_recommendations
@@ -68,11 +69,39 @@ class DispatchTests(SimpleTestCase):
             enrich_recommendations(_run(), recs)
         self.assertEqual(recs[0]["generated_content"]["data"]["rewritten"], "new")
 
-    def test_unenrichable_finding_is_left_untouched(self):
+    def test_finding_without_a_specialised_drafter_still_gets_page_specific_guidance(self):
+        """The whole point of the generic drafter.
+
+        ``no_https`` has no bespoke template. It used to fall straight through to
+        the static rule text, which reads the same for every customer. It must
+        now be drafted against the actual page like everything else.
+        """
+        draft = TaskGuidance(
+            observation='The page loads over http:// and the nav links to "http://brand.com/pricing".',
+            steps=["Redirect all http:// URLs to https://", "Update the hard-coded nav link"],
+            snippet="",
+        )
         recs = [_rec("no_https")]
-        with patch(_ASK, side_effect=AssertionError("should not be called")):
+        with patch(_ASK, return_value=draft):
+            enrich_recommendations(_run(), recs)
+        gc = recs[0]["generated_content"]
+        self.assertEqual(gc["type"], "guidance")
+        self.assertIn("http://", gc["data"]["observation"])
+        self.assertEqual(len(gc["data"]["steps"]), 2)
+
+    def test_generic_drafter_returning_no_steps_falls_back_to_static_text(self):
+        recs = [_rec("no_h1")]
+        with patch(_ASK, return_value=TaskGuidance(observation="x", steps=[])):
             enrich_recommendations(_run(), recs)
         self.assertEqual(recs[0]["generated_content"], {})
+
+    def test_specialised_drafters_still_win_over_the_generic_one(self):
+        """A FAQ finding must keep producing Q&A pairs, not generic guidance."""
+        draft = FaqDraft(pairs=[FaqPair(question="Q?", answer="A.")])
+        recs = [_rec("no_faq_section")]
+        with patch(_ASK, return_value=draft):
+            enrich_recommendations(_run(), recs)
+        self.assertEqual(recs[0]["generated_content"]["type"], "faq")
 
     def test_llm_failure_is_fail_soft(self):
         recs = [_rec("no_faq_section")]

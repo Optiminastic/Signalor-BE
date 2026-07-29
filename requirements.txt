@@ -79,13 +79,16 @@ playwright>=1.49,<2
 # --- OpenTelemetry (Better Stack Telemetry) ---
 # Keep `opentelemetry-instrumentation-*` and `opentelemetry-distro` on the same
 # 0.NNb0 line, and `opentelemetry-exporter-otlp` on the matching 1.NN.x.
-opentelemetry-distro==0.50b0
-opentelemetry-exporter-otlp==1.29.0
-opentelemetry-instrumentation-django==0.50b0
-opentelemetry-instrumentation-psycopg2==0.50b0
-opentelemetry-instrumentation-requests==0.50b0
-opentelemetry-instrumentation-redis==0.50b0
-opentelemetry-instrumentation-logging==0.50b0
+# Held at the 1.33.x / 0.54bN line because langfuse (below) requires
+# opentelemetry-exporter-otlp-proto-http>=1.33.1; the previous 1.29.0 / 0.50b0
+# pins made the two impossible to install together.
+opentelemetry-distro==0.54b1
+opentelemetry-exporter-otlp==1.33.1
+opentelemetry-instrumentation-django==0.54b1
+opentelemetry-instrumentation-psycopg2==0.54b1
+opentelemetry-instrumentation-requests==0.54b1
+opentelemetry-instrumentation-redis==0.54b1
+opentelemetry-instrumentation-logging==0.54b1
 apscheduler>=3.10,<4
 
 # Celery worker — currently only used by the sitemap audit task
@@ -103,3 +106,7 @@ crawlee>=1.7,<2
 # ConcurrentRotatingFileHandler coordinates rotation with a portalocker file lock.
 # (Pulls pywin32 on Windows only, via its own env markers.)
 concurrent-log-handler>=0.9,<1
+
+# LLM observability: per-call traces, tokens and exact OpenRouter cost.
+# Optional at runtime — pipeline/observability.py no-ops without LANGFUSE_* keys.
+langfuse==4.14.1

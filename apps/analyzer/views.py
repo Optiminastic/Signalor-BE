@@ -6900,6 +6900,182 @@ class CrawlerIngestView(APIView):
         return Response({"stored": len(rows), "ignored": ignored})
 
 
+class EntityResolutionView(APIView):
+    """POST /runs/s/<slug>/entity-resolution/ — do engines know who this brand is?
+
+    POST because it probes every engine live and costs one call each. Asking
+    about the *name* is the only way to observe name resolution: prompt tracking
+    asks category questions, which an engine can answer fully without ever
+    resolving the brand.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        from .services.entity_disambiguation import probe_identity
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        engines = request.data.get("engines") or None
+        return Response(probe_identity(run, engines=engines).as_dict())
+
+
+class IndexNowView(APIView):
+    """GET/POST /runs/s/<slug>/indexnow/ — push pages into Bing's index.
+
+    GET returns the key, where to host it, and whether it is currently
+    reachable. POST submits the run's pages.
+
+    POST rather than GET for the submission because it changes external state
+    and is rate-limited by the receiving engines.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        from .services.indexnow import setup_for_run
+
+        return Response(setup_for_run(get_object_or_404(AnalysisRun, slug=slug)))
+
+    def post(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        from .services.indexnow import submit_run_pages
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        return Response(submit_run_pages(run, request.data.get("urls") or None))
+
+
+class CitationGapsView(APIView):
+    """GET/PATCH /runs/s/<slug>/citation-gaps/ — the domains cited instead of you.
+
+    GET returns the ranked outreach list. PATCH records outreach state for one
+    domain (``{"domain": ..., "status": ..., "note": ...}``).
+
+    ``live`` cannot be PATCHed: it is derived from a presence check, so the
+    pipeline stays honest as it ages instead of reflecting stale checkboxes.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        from .services.citation_gaps import report_for_run
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        # Verification costs one search per domain; let a caller skip it when
+        # only the ranking is needed.
+        verify = request.query_params.get("verify", "1") not in {"0", "false", "no"}
+        return Response(report_for_run(run, verify=verify))
+
+    def patch(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        from .services.citation_gaps import set_status
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        if run.organization is None:
+            return Response(
+                {"detail": "Run has no organization."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            return Response(
+                set_status(
+                    run.organization,
+                    request.data.get("domain", ""),
+                    request.data.get("status", ""),
+                    request.data.get("note", "") or "",
+                )
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PromptCoverageView(APIView):
+    """GET /runs/s/<slug>/prompt-coverage/ — does a page answer each tracked prompt?
+
+    Semantic search of every tracked prompt against the brand's own indexed
+    pages. Answers the question that comes before any on-page or off-page work:
+    a prompt with no answering content cannot be fixed by improving a page that
+    does not exist.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        from .services.prompt_coverage import report_for_run
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        return Response(report_for_run(run))
+
+
+class PromptAnswerBlockView(APIView):
+    """POST /runs/s/<slug>/prompts/<track_id>/answer-block/ — draft the passage.
+
+    POST rather than GET because it is generative and costs money on every call.
+    Drafted on demand rather than for every prompt on every run, so nobody pays
+    for drafts they never read.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request, slug, track_id):
+        from django.shortcuts import get_object_or_404
+
+        from .services.answer_block import generate_for_prompt
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        track = get_object_or_404(PromptTrack, pk=track_id, analysis_run=run, deleted_at__isnull=True)
+
+        draft = generate_for_prompt(track)
+        if draft is None:
+            return Response(
+                {"detail": "Could not draft an answer for this prompt. Try again shortly."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response(draft)
+
+
+class CrawlerAccessView(APIView):
+    """GET /runs/s/<slug>/crawler-access/ — can AI engines crawl this site?
+
+    Joins robots.txt policy with observed CrawlerHit telemetry and answers it per
+    engine. Distinct from ``crawler-logs``, which reports raw activity: this
+    reports the *verdict* (blocked / never crawled / stale / active / unknown)
+    and why it matters.
+
+    robots.txt is fetched live rather than read from the run, so a customer who
+    fixes their configuration sees it reflected on refresh instead of waiting for
+    the next analysis.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request, slug):
+        from django.shortcuts import get_object_or_404
+
+        from .services.crawler_access import report_for_run
+
+        run = get_object_or_404(AnalysisRun, slug=slug)
+        if run.organization is None:
+            return Response(
+                {"detail": "Run has no organization."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        return Response(report_for_run(run))
+
+
 class CrawlerLogsView(APIView):
     """GET /runs/s/<slug>/crawler-logs/ — AI crawler activity for the brand:
     daily per-bot counts (last 30 days), top crawlers, top pages, and the

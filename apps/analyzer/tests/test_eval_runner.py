@@ -69,9 +69,18 @@ class TokenCaptureTests(SimpleTestCase):
         from apps.analyzer.pipeline.llm import _extract_usage
 
         usage = _extract_usage({"usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20}})
-        self.assertEqual(usage, {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20})
+        # Subset rather than equality: the block also carries cost/cache/reasoning
+        # fields now, and asserting the exact dict would fight every addition.
+        self.assertEqual(usage["prompt_tokens"], 12)
+        self.assertEqual(usage["completion_tokens"], 8)
+        self.assertEqual(usage["total_tokens"], 20)
+        self.assertEqual(usage["cost"], 0.0)  # absent from this payload
 
     def test_extract_usage_defaults_to_zero(self):
         from apps.analyzer.pipeline.llm import _extract_usage
 
-        self.assertEqual(_extract_usage({}), {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+        usage = _extract_usage({})
+        self.assertEqual(
+            {k: usage[k] for k in ("prompt_tokens", "completion_tokens", "total_tokens", "cost")},
+            {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cost": 0.0},
+        )

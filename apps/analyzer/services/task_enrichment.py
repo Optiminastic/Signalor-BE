@@ -1,9 +1,19 @@
 """LLM enrichment of the top-ranked tasks (Phase 2).
 
-The finding engine produces the *what* (a generic template). This service adds
-the *how* for the highest-impact tasks: concrete, page-specific, brand-grounded
-content the user can paste - drafted FAQ Q&A, citation sentences, or a rewritten
-paragraph - stored on ``rec["generated_content"]``.
+The finding engine produces the *what*: one of 83 rules in
+``pipeline/recommendations.py``, each carrying a fixed sentence of advice that is
+byte-identical for every customer ("Add a single H1 tag wrapping your page
+title"). This service adds the *how*, grounded in the page actually analysed, and
+stores it on ``rec["generated_content"]``.
+
+Two drafter kinds:
+
+* **Specialised** - FAQ pairs, citation sentences, paragraph rewrite. These
+  return rich structures the UI renders specially. They cover 10 finding codes.
+* **Generic** - ``_enrich_generic`` rewrites any other finding's static advice
+  against the real page. Before it existed the remaining 73 codes shipped
+  boilerplate, which is the single biggest reason the Tasks list read like a
+  stock SEO checklist rather than an analysis of the customer's site.
 
 Design:
 - Reuses existing machinery only: ``prompts.render`` (versioned Jinja2 templates),
@@ -21,8 +31,18 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 
 logger = logging.getLogger("apps")
+
+# How many tasks get drafted per run. Every eligible task costs one medium-tier
+# call, so this is the cost dial. It was 6 while only ~10 finding codes had a
+# drafter; now that every code has one, 6 would leave most of a typical run's
+# tasks showing boilerplate. Override with TASK_ENRICH_TOP_N.
+TOP_N = int(os.getenv("TASK_ENRICH_TOP_N", "20"))
+
+# Code prefix used by pipeline/site_findings.py for discovered (non-rule) findings.
+_DISCOVERED_PREFIX = "site:"
 
 # finding_code -> (template name, schema attr, content type label)
 _FAQ_CODES = {"no_faq_section", "no_faqpage_schema"}
@@ -127,31 +147,95 @@ def _enrich_rewrite(run, rec, page_content, brand) -> dict | None:
     }
 
 
+def _enrich_generic(run, rec, page_content, brand) -> dict | None:
+    """Draft a page-specific version of any finding's static advice.
+
+    This is what stops the other ~73 findings shipping identical boilerplate.
+    The specialised drafters above stay in front of it because they return
+    richer structures (Q&A pairs, citation sentences, a rewrite); this one
+    handles everything else.
+    """
+    from apps.analyzer.pipeline.schemas import TaskGuidance
+    from apps.analyzer.pipeline.structured import ask_structured
+
+    title = rec.get("title", "")
+    evidence = rec.get("evidence") or {}
+    prompt = _render(
+        "task_enrich_generic",
+        brand=brand,
+        url=run.url,
+        title=title,
+        description=rec.get("description", ""),
+        action=rec.get("action", ""),
+        evidence=_evidence_line(evidence),
+        page_content=page_content,
+        brand_knowledge=_brand_knowledge(run, f"{brand} {title}"),
+    )
+    result = ask_structured(
+        prompt, TaskGuidance, tier="medium", max_tokens=900, purpose="task-enrich-generic"
+    )
+    if not result or not result.steps:
+        return None
+    return {
+        "type": "guidance",
+        "data": {
+            "observation": result.observation,
+            "steps": result.steps,
+            "snippet": result.snippet,
+        },
+    }
+
+
+def _evidence_line(evidence: dict) -> str:
+    """Flatten the finding's evidence dict into one prompt-friendly line."""
+    if not isinstance(evidence, dict):
+        return ""
+    parts = [f"{k}: {v}" for k, v in evidence.items() if v not in (None, "", [], {})]
+    return "; ".join(parts)[:400]
+
+
 def _dispatch(code: str):
+    # Findings discovered by pipeline/site_findings.py are born page-specific and
+    # already carry their own generated_content. Re-drafting them would spend a
+    # call to replace grounded, evidence-checked text with a generic rewrite.
+    if code.startswith(_DISCOVERED_PREFIX):
+        return None, None
     if code in _FAQ_CODES:
         return "task_enrich_faq", _enrich_faq
     if code in _CITATION_CODES:
         return "task_enrich_citations", _enrich_citations
     if code in _REWRITE_CODES:
         return "task_enrich_rewrite", _enrich_rewrite
-    return None, None
+    # Everything else gets the generic drafter rather than static template text.
+    return "task_enrich_generic", _enrich_generic
 
 
-def enrich_recommendations(run, recs: list[dict], *, top_n: int = 6) -> None:
+def enrich_recommendations(run, recs: list[dict], *, top_n: int | None = None) -> None:
     """Draft concrete fix content for the top-``top_n`` enrichable recs, in place.
 
     Mutates ``rec["generated_content"]``. Fail-soft per rec: a failure leaves the
     empty dict and the static template stands.
     """
+    limit = TOP_N if top_n is None else top_n
     page_hash = _content_hash(getattr(run, "content_hash", "") or run.url)
 
     # Enrich the highest-priority tasks we have a drafter for.
     _sev = {"critical": 3, "high": 2, "medium": 1}
     enrichable = [r for r in recs if _dispatch(r.get("finding_code", ""))[1] is not None]
     enrichable.sort(key=lambda r: -_sev.get(r.get("priority", "low"), 0))
-    targets = enrichable[:top_n]
+    targets = enrichable[:limit]
     if not targets:
         return
+    if len(enrichable) > limit:
+        # Say what was left generic rather than letting it look fully covered.
+        logger.info(
+            "task_enrichment: enriching %d of %d eligible tasks for %s (cap=%d); "
+            "the rest keep their static text",
+            limit,
+            len(enrichable),
+            run.url,
+            limit,
+        )
 
     page_content = _page_content(run)
     if not page_content:

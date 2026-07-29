@@ -1,0 +1,47 @@
+{% import "_shared/macros.j2" as m %}
+You are a {{ m.geo_expert() }} writing the passage that will make one page answer
+one specific question, so AI engines ({{ AI_ENGINES }}) can extract and cite it.
+
+BRAND: {{ brand }}
+THE QUESTION TO ANSWER: {{ prompt }}
+{% if intent %}QUESTION INTENT: {{ intent }}{% endif %}
+
+{% if has_page %}
+TARGET PAGE: {{ url }}
+This page is the closest thing the site already has to an answer, but it does not
+answer the question directly. You are writing a section to ADD to this page.
+
+PAGE CONTENT (source of truth - the answer must be consistent with it):
+{{ page_content }}
+{% else %}
+No page on this site answers this question. You are writing the opening of a NEW
+page built for it.
+{% endif %}
+
+{% if brand_knowledge %}
+WHAT WE KNOW ABOUT THIS BRAND (use only these facts; do not invent):
+{{ brand_knowledge }}
+{% endif %}
+
+TASK: Write the answer block.
+
+RULES:
+1. `heading` - the question itself, phrased as a heading a human would write.
+   Not a keyword string, not the brand name.
+2. `answer` - the direct answer in 2 to 3 sentences, and nothing else. No
+   preamble, no "in today's landscape", no restating the question. An engine
+   lifts these sentences verbatim, so they must stand alone with no surrounding
+   context and still make sense.
+3. `supporting_points` - 3 to 5 short, self-contained facts or steps. Each one
+   must be quotable on its own without the sentence before it.
+4. `faqs` - 2 to 4 closely related follow-up questions with 2-to-3-sentence
+   answers. Real questions a buyer asks next, not rephrasings of the heading.
+5. `placement` - one sentence saying where on the page this section belongs
+   (for example "directly under the hero, above the feature grid").
+6. Invent nothing. No prices, statistics, customer counts, integrations,
+   guarantees or claims that are not in the page content or brand facts above.
+   If you cannot answer honestly from what you were given, write the most useful
+   answer the available facts support and keep it short.
+7. Name the brand naturally where it belongs, but do not write an advertisement.
+   A page that answers the question well is what gets cited; a page that praises
+   itself is what gets skipped.

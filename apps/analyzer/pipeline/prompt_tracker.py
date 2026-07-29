@@ -13,6 +13,7 @@ extracts signals, and computes 5-factor weighted AI visibility scores.
 """
 
 import logging
+import os
 
 logger = logging.getLogger("apps")
 
@@ -27,7 +28,12 @@ _ENGINE_MAP = {
     "llama": "llama",
 }
 
-DEFAULT_RUNS = 3  # Fire each prompt N times to handle AI randomness
+# Fire each prompt N times to average out model randomness. This was 3 while the
+# engines answered from training data, where sampling variance was the main
+# source of noise. They now answer from live web search, which is far more
+# stable run-to-run, and each run costs a real search. One run is the better
+# trade; raise PROMPT_TRACK_RUNS if a specific plan wants more sampling.
+DEFAULT_RUNS = int(os.getenv("PROMPT_TRACK_RUNS", "1"))
 
 _TOKEN_STOP = frozenset(
     {
@@ -601,11 +607,13 @@ def fire_prompt_across_engines(
     allowed_engines: list[str] | None = None,
 ) -> list[dict]:
     """
-    Fire prompt_text to all AI models (GPT/Claude/Gemini/Perplexity) multiple
-    times plus Google and Bing search engines to handle randomness and gather
+    Fire prompt_text to every AI answer engine plus Google and Bing, and gather
     multi-source ranking signals.
 
-    With runs=3 and 4 LLMs + Google + Bing → up to 14 total results.
+    The AI engines run **with web search on** (see ``llm.ANSWER_ENGINES``), so
+    this measures what a real user is shown today rather than what the model
+    memorised before its training cutoff.
+
     allowed_engines: PLAN_LIMITS["engines"] list; None = all configured.
     Returns list of dicts: engine, response_text, brand_mentioned, sentiment, confidence, rank_position
     """
@@ -615,7 +623,7 @@ def fire_prompt_across_engines(
         _check_ranking_position,
         _match_brand,
     )
-    from .llm import ask_multiple_llms_with_citations
+    from .llm import ask_answer_engines
 
     provider_keys, include_google, include_bing = _providers_and_search_from_plan_engines(allowed_engines)
 
@@ -626,11 +634,11 @@ def fire_prompt_across_engines(
         responses: dict[str, dict] = {}
         if provider_keys:
             try:
-                responses = ask_multiple_llms_with_citations(
+                responses = ask_answer_engines(
                     prompt_text,
-                    providers=provider_keys,
+                    engines=provider_keys,
                     purpose=f"Prompt Track (run {run_idx + 1}/{runs})",
-                    max_tokens=512,
+                    max_tokens=1024,
                 )
             except Exception as exc:
                 logger.warning("fire_prompt run %d failed: %s", run_idx + 1, exc)

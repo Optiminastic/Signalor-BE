@@ -17,6 +17,7 @@ import logging
 
 from apps.analyzer.models import AnalysisRun
 from apps.analyzer.pipeline.llm import ask_llm
+from apps.analyzer.pipeline.utils import drop_unreachable
 
 logger = logging.getLogger("apps")
 
@@ -124,4 +125,51 @@ def generate_for_run(run: AnalysisRun) -> list[dict]:
     if not raw:
         logger.warning("site_backlink_opportunities: LLM returned empty for run %d", run.pk)
         return []
-    return _parse_response(raw)
+    rows = drop_unreachable(_parse_response(raw), "submit_url")
+    return _drop_already_present(rows, run)
+
+
+def _drop_already_present(rows: list[dict], run: AnalysisRun) -> list[dict]:
+    """Remove targets the brand is already listed on.
+
+    The model is asked for places the brand *could* earn a citation, but it has
+    no idea where the brand already is - so a brand with a live Product Hunt
+    launch was still told to "launch on Product Hunt". Advising work that is
+    already done is worse than saying nothing: it costs the user time to
+    discover the suggestion is stale, and it makes the whole list look untrusted.
+
+    ``brand_present_on_domain`` returns True / False / None, and only a definite
+    True is dropped. An unknown (search unavailable, or an ambiguous same-name
+    match) keeps the row, because suppressing on "we could not check" would
+    silently hide real opportunities.
+    """
+    from urllib.parse import urlparse
+
+    from apps.analyzer.pipeline.offpage_presence import brand_present_on_domain
+
+    brand = (run.brand_name or "").strip()
+    if not brand:
+        return rows
+
+    industry = getattr(run, "industry", "") or ""
+    kept, dropped = [], []
+    for row in rows:
+        domain = urlparse(row.get("submit_url", "")).netloc.lower().removeprefix("www.")
+        try:
+            present = brand_present_on_domain(brand, domain, industry=industry)
+        except Exception:
+            logger.warning("presence check failed for %s; keeping the row", domain, exc_info=True)
+            present = None
+        if present is True:
+            dropped.append(domain)
+            continue
+        kept.append(row)
+
+    if dropped:
+        logger.info(
+            "site_backlink_opportunities: dropped %d target(s) %s is already listed on: %s",
+            len(dropped),
+            brand,
+            dropped,
+        )
+    return kept
