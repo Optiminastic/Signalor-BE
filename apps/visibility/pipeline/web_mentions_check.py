@@ -1,15 +1,22 @@
 """Web Mentions check — finds brand mentions across blogs, news, forums, etc.
 
+Every mention reported here is a URL a search engine actually returned. There is
+deliberately no LLM fallback: this check used to ask a model to "include up to 15
+specific, realistic mentions", which is a request for plausible fiction — the
+model cannot know where a brand is mentioned, so it produced invented URLs that
+were then stored and scored as measured presence.
+
 Strategy 1: Google Custom Search API (if GOOGLE_CSE_API_KEY + GOOGLE_CSE_CX set)
-Strategy 2: LLM estimation fallback (always works)
+Strategy 2: Serper (Google Search API) — the maintained path, shares SERPER_API_KEY
+
+When neither can answer the result is *unknown*: score 0 with ``unknown=True``,
+never a guess.
 
 Returns (score 0-100, details_dict).
 """
 
-import json
 import logging
 import os
-import re
 from urllib.parse import urlparse
 
 import requests
@@ -74,6 +81,11 @@ PLATFORM_DOMAINS = {
     "tripadvisor.com": "review",
 }
 
+# Organic results per Serper query, and the cap on stored mentions. The scoring
+# curve saturates at 20 mentions, so collecting more would not change the score.
+_MENTIONS_PER_QUERY = 20
+_MAX_MENTIONS = 20
+
 # Authority weights for scoring
 TYPE_AUTHORITY = {
     "news": 1.0,
@@ -113,8 +125,73 @@ def check_web_mentions(brand_name: str, brand_url: str) -> tuple[float, dict]:
         if result is not None:
             return result
 
-    # Strategy 2: LLM fallback
-    return _llm_web_mentions(brand_name, brand_url, brand_domain)
+    # Strategy 2: Serper
+    result = _check_via_serper(brand_name, brand_domain)
+    if result is not None:
+        return result
+
+    logger.warning("Web mentions for %s: no search backend available (result: unknown)", brand_name)
+    return 0.0, {
+        "method": "unavailable",
+        "unknown": True,
+        "mentions": [],
+        "total_mentions": 0,
+        "platform_counts": {},
+        "sub_scores": {},
+        "error": "No search backend configured (set SERPER_API_KEY or GOOGLE_CSE_API_KEY + GOOGLE_CSE_CX).",
+    }
+
+
+def _check_via_serper(brand_name: str, brand_domain: str) -> tuple[float, dict] | None:
+    """Find real third-party mentions of the brand via Serper.
+
+    Returns ``None`` when Serper is unconfigured or every query fails, so the
+    caller can report *unknown* rather than an empty-looking zero.
+    """
+    from apps.analyzer.pipeline import serper
+
+    if not serper.is_configured():
+        return None
+
+    queries = [
+        f'"{brand_name}" -site:reddit.com -site:{brand_domain}',
+        f'"{brand_name}" review',
+    ]
+
+    mentions: list[dict] = []
+    seen_urls: set[str] = set()
+    answered = False
+    for query in queries:
+        data = serper.search(query, num=_MENTIONS_PER_QUERY)
+        if data is None:
+            continue
+        answered = True
+        for item in data.get("organic") or []:
+            url = (item.get("link") or "")[:300]
+            if not url or url in seen_urls:
+                continue
+            domain = urlparse(url).netloc.replace("www.", "").lower()
+            if not domain:
+                continue
+            # Reddit has its own dedicated check; the brand's own site is not a mention.
+            if domain.endswith("reddit.com"):
+                continue
+            if brand_domain and (domain == brand_domain or domain.endswith("." + brand_domain)):
+                continue
+            seen_urls.add(url)
+            mentions.append(
+                {
+                    "url": url,
+                    "title": (item.get("title") or "")[:150],
+                    "snippet": (item.get("snippet") or "")[:250],
+                    "platform_type": _classify_domain(domain),
+                    "domain": domain,
+                }
+            )
+
+    if not answered:
+        return None
+    return _compute_score(mentions[:_MAX_MENTIONS], method="serper")
 
 
 def _check_via_cse(
@@ -185,84 +262,6 @@ def _check_via_cse(
     except Exception as exc:
         logger.warning("Web mentions CSE check failed: %s", exc)
         return None
-
-
-def _llm_web_mentions(
-    brand_name: str, brand_url: str, brand_domain: str
-) -> tuple[float, dict]:
-    """Use LLM to discover web mentions."""
-    empty_details = {
-        "method": "llm_analysis",
-        "mentions": [],
-        "total_mentions": 0,
-        "platform_counts": {},
-        "sub_scores": {},
-    }
-
-    try:
-        from apps.analyzer.pipeline.llm import ask_llm, is_available
-
-        if not is_available():
-            return 15.0, {**empty_details, "error": "No LLM available"}
-
-        prompt = (
-            f"Find where the brand '{brand_name}' (website: {brand_url}) is mentioned "
-            f"across the web. Look for mentions on blogs, news sites, forums, social media, "
-            f"review sites, industry publications, etc.\n\n"
-            f"Exclude {brand_domain} (the brand's own site) and reddit.com.\n\n"
-            f"For each mention, provide:\n"
-            f"- url: the specific URL where the brand is mentioned\n"
-            f"- title: the page/article title\n"
-            f"- snippet: a brief description of how the brand is mentioned\n"
-            f"- platform_type: one of 'blog', 'news', 'forum', 'social', 'review', 'other'\n"
-            f"- domain: the website domain\n\n"
-            f"Reply with ONLY this JSON:\n"
-            f"{{\n"
-            f'  "mentions": [\n'
-            f'    {{"url": "...", "title": "...", "snippet": "...", '
-            f'"platform_type": "blog|news|forum|social|review|other", "domain": "..."}}\n'
-            f"  ],\n"
-            f'  "reasoning": "brief explanation of brand web presence"\n'
-            f"}}\n\n"
-            f"Include up to 15 specific, realistic mentions. Be accurate about URLs and domains."
-        )
-
-        response = ask_llm(
-            prompt, preferred_provider="gemini", max_tokens=2048,
-            purpose="Web Mentions Analysis",
-        )
-
-        match = re.search(r"\{.*\}", response, re.DOTALL)
-        if match:
-            data = json.loads(match.group())
-            mentions = []
-            for m in data.get("mentions", [])[:20]:
-                domain = m.get("domain", "")
-                if not domain:
-                    try:
-                        domain = urlparse(m.get("url", "")).netloc.replace("www.", "")
-                    except Exception:
-                        domain = ""
-                ptype = m.get("platform_type", "other")
-                if ptype not in TYPE_AUTHORITY:
-                    ptype = "other"
-                mentions.append({
-                    "url": str(m.get("url", ""))[:300],
-                    "title": str(m.get("title", ""))[:150],
-                    "snippet": str(m.get("snippet", ""))[:250],
-                    "platform_type": ptype,
-                    "domain": domain.lower(),
-                })
-
-            score, details = _compute_score(mentions, method="llm_analysis")
-            if data.get("reasoning"):
-                details["reasoning"] = str(data["reasoning"])[:500]
-            return score, details
-
-    except Exception as exc:
-        logger.warning("LLM web mentions check failed: %s", exc)
-
-    return 15.0, {**empty_details, "error": "All methods failed"}
 
 
 def _compute_score(mentions: list[dict], method: str) -> tuple[float, dict]:

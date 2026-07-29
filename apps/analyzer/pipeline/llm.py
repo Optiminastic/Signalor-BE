@@ -1,9 +1,21 @@
 """
 Unified LLM client using OpenRouter.
-Routes requests through 3 cheap models: GPT-4o-mini, Claude 3.5 Haiku, Gemini 2.0 Flash.
-Falls back to direct Gemini API if no OpenRouter key.
+
+Two distinct model sets live here, and conflating them is a bug:
+
+* ``MODELS`` — **internal workers.** They summarise crawled pages, pick
+  competitors, draft copy. Chosen for cost; they never need world knowledge,
+  because whatever they reason about is already in the prompt.
+* ``ANSWER_ENGINES`` — **answer-engine simulation.** Used by prompt tracking,
+  rank tracking and visibility probes to reproduce what a real user sees when
+  they ask ChatGPT or Gemini something. These run with web search on.
+
+Falls back to direct Gemini API if no OpenRouter key (internal work only —
+answer-engine simulation requires OpenRouter for web search).
 """
 
+import contextlib
+import contextvars
 import logging
 import os
 import threading
@@ -15,6 +27,16 @@ import requests
 logger = logging.getLogger("apps")
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+DEFAULT_TIMEOUT_SEC = 30
+# A web-search call does retrieval before generation, so it needs a longer budget
+# than a plain completion. Measured runs land well inside this.
+WEB_SEARCH_TIMEOUT_SEC = 120
+# Ceiling for a web-search call made while an HTTP request waits on it. The 120s
+# budget above suits a queued Celery run, but on a request thread it outlives the
+# gunicorn worker timeout and every proxy in front of it - the user gets a 504
+# and the worker is still blocked. Better to give up first and report it.
+INTERACTIVE_TIMEOUT_SEC = 25
 
 # Default models.
 # OpenRouter model IDs change over time: "google/gemini-2.0-flash-001" was
@@ -39,7 +61,11 @@ HAIKU_MODEL = os.getenv("OPENROUTER_HAIKU_MODEL", "").strip() or "anthropic/clau
 # Answer-engine additions for prompt tracking — all served through the same
 # OpenRouter key. Ids are env-overridable like the Claude/Gemini ones above.
 DEEPSEEK_MODEL = os.getenv("OPENROUTER_DEEPSEEK_MODEL", "deepseek/deepseek-chat")
-GROK_MODEL = os.getenv("OPENROUTER_GROK_MODEL", "x-ai/grok-3-mini")
+# ``x-ai/grok-3-mini`` was deprecated by xAI and now 404s on OpenRouter. Because
+# ``_retry_with_next`` silently falls through to another vendor's model, every
+# "Grok" answer was really an OpenAI answer wearing a Grok label. Keep this id
+# current; override via OPENROUTER_GROK_MODEL.
+GROK_MODEL = os.getenv("OPENROUTER_GROK_MODEL", "x-ai/grok-4.5")
 LLAMA_MODEL = os.getenv("OPENROUTER_LLAMA_MODEL", "meta-llama/llama-3.3-70b-instruct")
 # Kimi K2 (Moonshot) — a strong-but-cheap code/reasoning model, candidate for the
 # GitHub fix agent and blog generation to cut cost vs Sonnet/Opus. Served through
@@ -73,6 +99,74 @@ MODEL_LABELS = {
     GROK_MODEL: "Grok",
     LLAMA_MODEL: "Meta Llama",
     KIMI_MODEL: "Kimi K2",
+    # Answer-engine models that differ from the internal worker set.
+    "openai/gpt-4.1-mini": "GPT-4.1 Mini (search)",
+}
+
+# ── Answer-engine simulation ──────────────────────────────────────────────
+# The models above are *internal workers*: they summarise crawled pages, pick
+# competitors, draft copy. They are chosen for cost, and they never need to know
+# anything about the world.
+#
+# Prompt tracking is the opposite job. It has to reproduce what a real person
+# sees when they ask ChatGPT or Gemini a question, and real people get web
+# search. Firing a base model instead measures whether the brand was famous
+# before that model's training cutoff, which is a different question and almost
+# always answers "no" — that is why every engine used to report "not a widely
+# recognized term" for any brand younger than the cutoff.
+#
+# ``search`` selects how the model reaches the web (OpenRouter web plugin):
+#   "native" -> the provider's own search. Cheapest and highest fidelity, but
+#               only some models support it (others 400 with a clear message).
+#   "exa"    -> OpenRouter's Exa plugin, for models with no native search.
+#   None     -> the model already searches on its own (Perplexity Sonar).
+#
+# Each entry is env-overridable so an engine can be repointed or have its search
+# turned off (set the *_SEARCH var to "none") without a code change.
+def _engine(nickname: str, model: str, search: str | None) -> dict:
+    configured = os.getenv(f"ANSWER_ENGINE_{nickname.upper()}_SEARCH", "").strip().lower()
+    if configured:
+        search = None if configured == "none" else configured
+    return {
+        "model": os.getenv(f"ANSWER_ENGINE_{nickname.upper()}_MODEL", "").strip() or model,
+        "search": search,
+    }
+
+
+# Native search is not automatically the cheaper option, and the difference is
+# not small. Measured on the same question, one call each:
+#
+#   grok-4.5   native  54,424 in  $0.1343  4 citations
+#   grok-4.5   exa      2,342 in  $0.0152  5 citations   <- cheaper AND better
+#   haiku-4.5  native  10,272 in  $0.0231  8 citations
+#   haiku-4.5  exa      1,875 in  $0.0095  5 citations
+#
+# xAI's native search injects its whole result set into the prompt. On a 10-prompt
+# run that was $1.82 of a $2.76 total - 66% of the bill for one engine - for fewer
+# citations than the cheap path. Anthropic's native search is the opposite trade:
+# dearer, but 60% more citations, which is worth paying for in a product whose
+# output is citation share. Per-engine, measured, not a blanket rule.
+ANSWER_ENGINES = {
+    # gpt-4o-mini has no native search and a 2023 cutoff, so it had to go. Its
+    # replacement must NOT be a reasoning model: gpt-5-mini spends the whole
+    # token budget thinking and returns content=None with finish_reason
+    # "length", i.e. an empty answer that also costs more. Measured on one
+    # question with native search:
+    #
+    #   gpt-5-mini  (2048 tok)  content=None    1728 reasoning tok  $0.0698  0 citations
+    #   gpt-4.1-mini(1024 tok)  content=2928ch     0 reasoning tok  $0.0143  8 citations
+    #
+    # Cheaper, actually answers, and cites more. It is also the closer analogue
+    # of what a real ChatGPT user is served.
+    "gpt": _engine("gpt", "openai/gpt-4.1-mini", "native"),
+    "claude": _engine("claude", HAIKU_MODEL, "native"),
+    # Gemini rejects engine="native" on OpenRouter; Exa is the supported route.
+    "gemini": _engine("gemini", GEMINI_MODEL, "exa"),
+    "perplexity": _engine("perplexity", "perplexity/sonar", None),
+    # Exa, not native — see the note above.
+    "grok": _engine("grok", GROK_MODEL, "exa"),
+    "deepseek": _engine("deepseek", DEEPSEEK_MODEL, "exa"),
+    "llama": _engine("llama", LLAMA_MODEL, "exa"),
 }
 
 # Default rotation order
@@ -99,6 +193,66 @@ _availability_cache = None
 _log_lock = threading.Lock()
 _collected_logs: list[dict] | None = None
 
+# ── Cost scopes ───────────────────────────────────────────────────────────
+# ``_collected_logs`` is a single process-global list, which is fine for the one
+# analysis a worker is running but cannot meter work that happens *outside* that
+# window - most importantly the competitive-prompt fire, which is dispatched to a
+# daemon thread after the run has already been finalized and its logs drained.
+# Those calls used to land on a ``None`` log and never reach ``llm_cost_usd`` or
+# the spend window the budget fuse reads.
+#
+# A cost scope is an independent accumulator. It is held in a ContextVar so
+# concurrent analyses on one worker cannot bleed into each other, and
+# ``propagate()`` copies the context into pool workers, which do NOT inherit it
+# on their own.
+_cost_scopes: contextvars.ContextVar[tuple[dict, ...]] = contextvars.ContextVar(
+    "llm_cost_scopes", default=()
+)
+
+
+@contextlib.contextmanager
+def cost_scope():
+    """Accumulate the exact USD cost of every LLM call made inside this block.
+
+    Yields a dict that fills in as calls complete::
+
+        with cost_scope() as spend:
+            ...
+        spend["cost"]  # USD actually billed
+
+    Nests safely: an inner scope does not steal from an outer one, both receive
+    every call made within the inner block.
+    """
+    scope = {"cost": 0.0, "calls": 0}
+    token = _cost_scopes.set((*_cost_scopes.get(), scope))
+    try:
+        yield scope
+    finally:
+        _cost_scopes.reset(token)
+
+
+def _record_scope_cost(usage: dict | None) -> None:
+    cost = float((usage or {}).get("cost", 0.0) or 0.0)
+    for scope in _cost_scopes.get():
+        scope["cost"] += cost
+        scope["calls"] += 1
+
+
+def propagate(fn):
+    """Wrap ``fn`` so it runs with the caller's context inside a pool worker.
+
+    ``ThreadPoolExecutor`` does not copy contextvars to its workers, so without
+    this a threaded fan-out loses both the cost scope and the Langfuse run
+    identity, and files its calls under whatever run happened to touch the
+    globals last.
+    """
+    ctx = contextvars.copy_context()
+
+    def _run(*args, **kwargs):
+        return ctx.run(fn, *args, **kwargs)
+
+    return _run
+
 
 def start_log_collection():
     """Start collecting LLM logs (thread-safe, works across ThreadPoolExecutor)."""
@@ -114,6 +268,59 @@ def get_collected_logs() -> list[dict]:
         logs = _collected_logs or []
         _collected_logs = None
         return logs
+
+
+def summarize_llm_logs(logs: list[dict]) -> dict:
+    """Roll a run's ``llm_logs`` into a cost/latency report.
+
+    Answers, without opening the OpenRouter dashboard: what did this run cost,
+    where did the money go, and which call was slow. ``by_purpose`` and
+    ``by_model`` are sorted most-expensive first, because in practice one line
+    item dominates and that is the one worth acting on.
+    """
+    from collections import defaultdict
+
+    def _bucket():
+        return {"calls": 0, "cost": 0.0, "in": 0, "out": 0, "cached": 0, "ms": 0}
+
+    by_purpose: dict[str, dict] = defaultdict(_bucket)
+    by_model: dict[str, dict] = defaultdict(_bucket)
+    total = _bucket()
+    errors = 0
+
+    for entry in logs or []:
+        usage = entry.get("usage") or {}
+        cost = float(usage.get("cost", 0.0) or 0.0)
+        # Strip the per-engine "[gpt]" suffix so all engines of one job group up.
+        purpose = (entry.get("purpose") or "unknown").split(" [")[0]
+        for bucket in (by_purpose[purpose], by_model[entry.get("model") or "unknown"], total):
+            bucket["calls"] += 1
+            bucket["cost"] += cost
+            bucket["in"] += int(usage.get("prompt_tokens", 0) or 0)
+            bucket["out"] += int(usage.get("completion_tokens", 0) or 0)
+            bucket["cached"] += int(usage.get("cached_tokens", 0) or 0)
+            bucket["ms"] += int(entry.get("duration_ms", 0) or 0)
+        if entry.get("status") != "success":
+            errors += 1
+
+    def _sorted(d):
+        return dict(sorted(d.items(), key=lambda kv: -kv[1]["cost"]))
+
+    slowest = max(logs or [], key=lambda e: e.get("duration_ms", 0), default=None)
+    return {
+        # 6dp, not 4: a single cheap call costs ~$0.00002 and rounding to 4
+        # places reports it as exactly zero, which reads as "this was free".
+        "total_cost_usd": round(total["cost"], 6),
+        "total_calls": total["calls"],
+        "total_tokens_in": total["in"],
+        "total_tokens_out": total["out"],
+        "cached_tokens": total["cached"],
+        "errors": errors,
+        "slowest_call_ms": (slowest or {}).get("duration_ms", 0),
+        "slowest_call_purpose": (slowest or {}).get("purpose", ""),
+        "by_purpose": _sorted(by_purpose),
+        "by_model": _sorted(by_model),
+    }
 
 
 def _sanitize(text: str) -> str:
@@ -138,12 +345,42 @@ def _log_call(
     status: str,
     duration_ms: int,
     usage: dict | None = None,
+    *,
+    system: str | None = None,
+    web_search: str | None = None,
 ):
     """Record an LLM call to the shared log (thread-safe).
 
-    ``usage`` is the provider's token-usage block ({prompt_tokens, completion_tokens,
-    total_tokens}) when available, so Epic 6 can measure token cost per generation.
+    One row per call, carrying everything needed to answer "why did this run cost
+    that much": which model, for what purpose, how long it took, how many tokens
+    in/out, the exact USD charge, whether web search was on (the dominant cost
+    driver for answer-engine calls), and the system prompt that shaped it.
+
+    Also mirrors the call to Langfuse. That happens *before* the collection check
+    below, because the run-scoped log is opt-in per task while tracing should
+    cover every call the process makes, including ones outside an analysis run.
     """
+    _record_scope_cost(usage)
+
+    from .observability import record_generation
+
+    # Sanitized for the same reason the stored copy below is: a null byte or a
+    # lone surrogate from a model response is rejected by the Postgres JSON that
+    # backs Langfuse too, and there it fails silently in a background flush.
+    # Not truncated here - record_generation applies its own, larger limit, and
+    # the 1000/3000 caps below exist to bound a database column.
+    record_generation(
+        model=model,
+        purpose=purpose,
+        prompt=_sanitize(prompt or ""),
+        response=_sanitize(response or ""),
+        status=status,
+        duration_ms=duration_ms,
+        usage=usage,
+        system=_sanitize(system) if system else system,
+        web_search=web_search,
+    )
+
     with _log_lock:
         if _collected_logs is None:
             return  # Not collecting
@@ -155,6 +392,9 @@ def _log_call(
                 "model_id": model,
                 "purpose": purpose,
                 "prompt": _sanitize(prompt[:1000]),
+                "prompt_chars": len(prompt or ""),
+                "system": _sanitize((system or "")[:1000]),
+                "web_search": web_search or "",
                 "response": _sanitize(response[:3000]),
                 "status": status,
                 "duration_ms": duration_ms,
@@ -295,6 +535,10 @@ def ask_llm_with_citations(
     system: str | None = None,
     tier: str | None = None,
     response_format: dict | None = None,
+    model_override: str | None = None,
+    web_search: str | None = None,
+    allow_fallback: bool = True,
+    timeout: int | None = None,
 ) -> tuple[str, list[dict]]:
     """
     Send a prompt to an LLM and return (text, citations[]).
@@ -304,6 +548,12 @@ def ask_llm_with_citations(
     Empty list when the provider does not attach source metadata.
 
     See ``ask_llm`` for the keyword-only ``system`` / ``tier`` / ``response_format`` extras.
+
+    ``model_override`` sends an explicit model id (used by answer-engine
+    simulation, whose model set is separate from ``MODELS``). ``web_search``
+    enables the OpenRouter web plugin ("native" or "exa"). ``allow_fallback=False``
+    stops a failed call from being retried on a *different vendor's* model, which
+    matters whenever the caller attributes the answer to a named engine.
     """
     if not is_available():
         return ("", [])
@@ -321,6 +571,10 @@ def ask_llm_with_citations(
             system=system,
             tier=tier,
             response_format=response_format,
+            model_override=model_override,
+            web_search=web_search,
+            allow_fallback=allow_fallback,
+            timeout=timeout,
         )
     else:
         return (
@@ -472,16 +726,47 @@ def ask_llm_with_tools(
     }
 
 
-def _extract_usage(data: dict) -> dict:
-    """Pull the token-usage block from an OpenRouter/OpenAI-style response (Epic 6).
+def _content_of(data: dict) -> str:
+    """Assistant text from an OpenRouter response, always a string.
 
-    Returns ``{prompt_tokens, completion_tokens, total_tokens}`` (zeros if absent).
+    ``message.content`` is genuinely ``null`` in two real cases: a reasoning
+    model that burned its whole token budget before emitting an answer
+    (``finish_reason: "length"``), and a refusal. The key is present, so a
+    ``.get("content", "")`` default does not save you - it returns None, and the
+    next thing that touches it (a log preview slice) raises
+    "'NoneType' object is not subscriptable" and takes out the whole call.
+    """
+    try:
+        choices = data.get("choices") or [{}]
+        message = (choices[0] or {}).get("message") or {}
+        return message.get("content") or ""
+    except (AttributeError, IndexError, TypeError):
+        return ""
+
+
+def _extract_usage(data: dict) -> dict:
+    """Pull token usage **and cost** from an OpenRouter response.
+
+    OpenRouter returns the exact charge for the call in ``usage.cost`` (plus
+    cache and reasoning token counts) on every response, with no extra request
+    and no flag to set. This used to keep only the three token counts and drop
+    the rest, which meant nothing in the system knew what a run cost - the only
+    way to find out was to read the OpenRouter dashboard afterwards.
+
+    ``cost`` is USD for this single call. ``cached_tokens`` matters because
+    cached input is billed at a fraction of the normal rate, so a high ratio is
+    the signal that prompt caching is actually working.
     """
     usage = data.get("usage") or {}
+    prompt_details = usage.get("prompt_tokens_details") or {}
+    completion_details = usage.get("completion_tokens_details") or {}
     return {
         "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
         "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
         "total_tokens": int(usage.get("total_tokens", 0) or 0),
+        "cost": float(usage.get("cost", 0.0) or 0.0),
+        "cached_tokens": int(prompt_details.get("cached_tokens", 0) or 0),
+        "reasoning_tokens": int(completion_details.get("reasoning_tokens", 0) or 0),
     }
 
 
@@ -582,9 +867,13 @@ def _call_openrouter(
     system: str | None = None,
     tier: str | None = None,
     response_format: dict | None = None,
+    model_override: str | None = None,
+    web_search: str | None = None,
+    allow_fallback: bool = True,
+    timeout: int | None = None,
 ) -> tuple[str, list[dict]]:
     """Call OpenRouter API. Returns (text, citations[])."""
-    model = _pick_model(preferred_provider, tier)
+    model = model_override or _pick_model(preferred_provider, tier)
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -603,9 +892,17 @@ def _call_openrouter(
     # never 400s. Correctness is enforced downstream by Pydantic validation.
     if response_format and _supports_json_object(model):
         payload["response_format"] = response_format
+    if web_search:
+        payload["plugins"] = [{"id": "web", "engine": web_search}]
 
     prompt_preview = _log_preview(prompt, 120)
     logger.info('[LLM REQUEST] >> %s | %s | prompt: "%s..."', model, purpose, prompt_preview)
+
+    # Web search adds a retrieval round trip before generation, so the 30s budget
+    # that suits a plain completion is not enough. An explicit timeout wins: a
+    # caller blocking an HTTP request needs a far shorter leash than a queued run.
+    if timeout is None:
+        timeout = WEB_SEARCH_TIMEOUT_SEC if web_search else DEFAULT_TIMEOUT_SEC
 
     t0 = time.time()
     try:
@@ -613,13 +910,13 @@ def _call_openrouter(
             OPENROUTER_API_URL,
             headers=headers,
             json=payload,
-            timeout=30,
+            timeout=timeout,
         )
         duration_ms = int((time.time() - t0) * 1000)
 
         if resp.status_code == 200:
             data = resp.json()
-            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            content = _content_of(data)
             citations = _extract_citations_from_openrouter(data)
             usage = _extract_usage(data)
             response_preview = _log_preview(content, 200)
@@ -631,11 +928,23 @@ def _call_openrouter(
                 len(citations),
                 response_preview,
             )
-            _log_call(model, purpose, prompt, content.strip(), "success", duration_ms, usage=usage)
+            _log_call(
+                model,
+                purpose,
+                prompt,
+                content.strip(),
+                "success",
+                duration_ms,
+                usage=usage,
+                system=system,
+                web_search=web_search,
+            )
             return (content.strip(), citations)
 
         logger.warning("[LLM FAILED] << %s | HTTP %d: %s", model, resp.status_code, resp.text[:200])
         _log_call(model, purpose, prompt, f"HTTP {resp.status_code}", "error", duration_ms)
+        if not allow_fallback:
+            return ("", [])
         return _retry_with_next(
             prompt,
             model,
@@ -652,6 +961,8 @@ def _call_openrouter(
         duration_ms = int((time.time() - t0) * 1000)
         logger.warning("OpenRouter timeout for %s", model)
         _log_call(model, purpose, prompt, "Timeout", "error", duration_ms)
+        if not allow_fallback:
+            return ("", [])
         return _retry_with_next(
             prompt,
             model,
@@ -707,7 +1018,7 @@ def _retry_with_next(
             duration_ms = int((time.time() - t0) * 1000)
             if resp.status_code == 200:
                 data = resp.json()
-                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                content = _content_of(data)
                 citations = _extract_citations_from_openrouter(data)
                 logger.info("Fallback to %s succeeded (%dms)", model, duration_ms)
                 _log_call(model, purpose + " (retry)", prompt, content.strip(), "success", duration_ms)
@@ -772,67 +1083,65 @@ def _call_gemini_direct(
         return ""
 
 
-def ask_multiple_llms(
-    prompt: str, providers: list[str] | None = None, purpose: str = "", max_tokens: int = 512
-) -> dict[str, str]:
-    """
-    Ask the same prompt to multiple LLMs IN PARALLEL and return all responses.
-    Useful for AI visibility probes -- test across providers concurrently.
-
-    Returns: {"gpt": "response...", "claude": "response...", "gemini": "response..."}
-    """
-    rich = ask_multiple_llms_with_citations(
-        prompt, providers=providers, purpose=purpose, max_tokens=max_tokens
-    )
-    return {p: v["text"] for p, v in rich.items()}
-
-
-def ask_multiple_llms_with_citations(
+def ask_answer_engines(
     prompt: str,
-    providers: list[str] | None = None,
+    engines: list[str] | None = None,
     purpose: str = "",
-    max_tokens: int = 512,
+    max_tokens: int = 1024,
+    *,
+    timeout: int | None = None,
 ) -> dict[str, dict]:
-    """
-    Parallel variant that returns structured {text, citations[]} per provider.
+    """Ask each consumer answer engine the prompt **with web search enabled**.
 
-    Returns: {"gpt": {"text": "...", "citations": [{url, title, snippet, position}]}, ...}
+    This is what prompt tracking and visibility probes must use. Unlike
+    ``ask_multiple_llms_with_citations`` it resolves models from
+    ``ANSWER_ENGINES`` rather than ``MODELS``, turns on the web plugin, and
+    disables cross-vendor fallback so an engine's answer is always genuinely
+    that engine's answer. An engine that fails yields an empty string, which
+    the caller records as "no answer" rather than silently substituting another
+    model's response under the wrong label.
+
+    Returns: {"gpt": {"text": ..., "citations": [...]}, ...}
     """
-    if not is_available():
+    if not is_available() or not _get_openrouter_key():
+        # Web search requires OpenRouter; the direct-Gemini fallback cannot
+        # provide it, and an ungrounded answer here is worse than no answer.
+        logger.warning("Answer-engine probe skipped: OpenRouter key required for web search")
         return {}
 
-    if providers is None:
-        providers = list(MODELS.keys())
-
-    providers = [p for p in providers if p in MODELS]
-    if not providers:
+    selected = [e for e in (engines or list(ANSWER_ENGINES)) if e in ANSWER_ENGINES]
+    if not selected:
         return {}
 
-    # If only direct Gemini is available (no OpenRouter), just use that
-    if not _get_openrouter_key():
-        text = _call_gemini_direct(prompt, purpose)
-        return {"gemini": {"text": text, "citations": []}} if text else {}
-
-    results: dict[str, dict] = {}
-
-    def _call_provider(provider):
+    def _call_engine(nickname: str):
+        spec = ANSWER_ENGINES[nickname]
         text, citations = ask_llm_with_citations(
             prompt,
-            preferred_provider=provider,
-            purpose=purpose,
+            purpose=f"{purpose} [{nickname}]".strip(),
             max_tokens=max_tokens,
+            model_override=spec["model"],
+            web_search=spec["search"],
+            allow_fallback=False,
+            timeout=timeout,
         )
-        return provider, {"text": text, "citations": citations}
+        return nickname, {"text": text, "citations": citations, "model": spec["model"]}
 
-    with ThreadPoolExecutor(max_workers=max(1, len(providers))) as executor:
-        futures = {executor.submit(_call_provider, p): p for p in providers}
+    results: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=max(1, len(selected))) as executor:
+        # Pool workers do not inherit contextvars; carry the cost scope and
+        # run identity across explicitly.
+        futures = {executor.submit(propagate(_call_engine), e): e for e in selected}
         for future in as_completed(futures):
+            nickname = futures[future]
             try:
-                provider, payload = future.result()
-                results[provider] = payload
+                nickname, payload = future.result()
+                results[nickname] = payload
             except Exception as exc:
-                provider = futures[future]
-                logger.warning("Parallel LLM call failed for %s: %s", provider, exc)
-                results[provider] = {"text": "", "citations": []}
+                logger.warning("Answer-engine call failed for %s: %s", nickname, exc)
+                results[nickname] = {
+                    "text": "",
+                    "citations": [],
+                    "model": ANSWER_ENGINES[nickname]["model"],
+                }
 
     return results

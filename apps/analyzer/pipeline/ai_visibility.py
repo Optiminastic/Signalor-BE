@@ -497,12 +497,20 @@ def _check_ranking_position(text: str, brand_aliases: list[str]) -> dict:
 def _fire_probe(prompt: str, brand_aliases: list[str]) -> tuple[str, bool, float, dict]:
     """Fire a single probe across multiple LLM providers via OpenRouter."""
     try:
-        from .llm import ask_multiple_llms
+        from .llm import ask_answer_engines
 
-        # Ask 3 providers the same question (exclude perplexity to control cost)
-        responses = ask_multiple_llms(
-            prompt, providers=["gpt", "claude", "gemini"], purpose="AI Visibility Probe", max_tokens=400
-        )
+        # Ask 3 engines the same question (exclude perplexity to control cost).
+        # Web search is on: a probe that asks whether AI engines mention the brand
+        # has to ask the engines as users actually experience them.
+        responses = {
+            engine: payload.get("text", "")
+            for engine, payload in ask_answer_engines(
+                prompt,
+                engines=["gpt", "claude", "gemini"],
+                purpose="AI Visibility Probe",
+                max_tokens=1024,
+            ).items()
+        }
 
         # Combine all responses for matching
         all_text = "\n\n".join(f"[{provider}]: {resp}" for provider, resp in responses.items() if resp)

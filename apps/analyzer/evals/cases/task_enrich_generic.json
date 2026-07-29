@@ -1,0 +1,22 @@
+{
+  "id": "task_enrich_generic",
+  "prompt": "task_enrich_generic",
+  "version": "v1",
+  "vars": {
+    "brand": "Riverside Dental",
+    "url": "https://riversidedental.co.uk/treatments/invisalign",
+    "title": "Add an H1 Tag",
+    "description": "Your page is missing an H1 tag. This is the first thing AI models look at to understand your page topic.",
+    "action": "Add a single H1 tag wrapping your page title: <h1>Your Page Title</h1>. Ensure it clearly describes the page content.",
+    "evidence": "h1_count: 0; largest_text_block: Invisalign Clear Aligners",
+    "brand_knowledge": "Riverside Dental is a family and cosmetic dental clinic in Manchester, UK. It offers checkups, emergency appointments, and private treatments including Invisalign.",
+    "page_content": "<div class=\"hero\"><span class=\"hero-eyebrow\">Treatments</span><div class=\"hero-title\">Invisalign Clear Aligners</div><p>Straighten your teeth discreetly with removable clear aligners, fitted by our Manchester team.</p></div><h2>How Invisalign works</h2><p>We take a 3D scan of your teeth and plan each stage of movement before you start.</p><h2>What it costs</h2><p>Invisalign at Riverside Dental starts at GBP 2,400, with interest-free payment plans over 12 months.</p><h2>Book a consultation</h2><p>Call our Manchester clinic or use the online booking form.</p>"
+  },
+  "format_spec": "A single JSON object with exactly three keys: observation (string), steps (array of 2-4 strings), snippet (string, may be empty). No extra text, no markdown fences.",
+  "known_good": "{\"observation\": \"The page's main heading is a styled div, <div class=\\\"hero-title\\\">Invisalign Clear Aligners</div>, so the page has no h1 at all while its h2 sections start at 'How Invisalign works'.\", \"steps\": [\"Convert the hero-title div holding 'Invisalign Clear Aligners' into an h1, keeping the existing styling via the class.\", \"Extend the heading text to name the treatment and the location, matching the page's own copy about the Manchester team.\", \"Leave the existing h2 sections ('How Invisalign works', 'What it costs', 'Book a consultation') unchanged so the hierarchy runs h1 then h2.\"], \"snippet\": \"<h1 class=\\\"hero-title\\\">Invisalign Clear Aligners in Manchester</h1>\"}",
+  "thresholds": {
+    "faithfulness": 0.8,
+    "relevance": 0.7,
+    "format_score": 0.8
+  }
+}

@@ -42,14 +42,15 @@ def _profile_from_tree(paths: list[str], package_json_text: str | None) -> dict:
 
     layout_path = next((c for c in _LAYOUT_CANDIDATES if c in path_set), "")
     app_router = bool(layout_path)
-    # "src/app/..." layout means the public dir + src convention; public/ is still root-level.
-    has_public_dir = any(p.startswith("public/") for p in paths)
 
     return {
         "framework": framework,
         "app_router": app_router,
         "layout_path": layout_path,
-        "public_dir": "public" if has_public_dir else "public",  # Next serves /public regardless
+        # Constant on purpose: Next serves /public from the repo root whatever
+        # the source layout is, including the "src/app/..." convention. This was
+        # a ternary with the same value on both sides, over a scan of every path.
+        "public_dir": "public",
         "has_llms_txt": "public/llms.txt" in path_set,
         "has_robots_txt": "public/robots.txt" in path_set,
         "robots_ts_path": next(

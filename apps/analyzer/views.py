@@ -75,6 +75,8 @@ from .serializers import (
     BlogAutomationJobSerializer,
     CitationTrendPointSerializer,
     CreateUserActionSerializer,
+    EntityResolutionRequestSerializer,
+    IndexNowSubmitSerializer,
     PromptTrackSerializer,
     ShareOfVoiceSerializer,
     StartAnalysisSerializer,
@@ -796,13 +798,19 @@ class OnboardingStartView(APIView):
     ``X-Onboarding-Token`` header.
 
     Body (optional):
-      { "turnstile_token": "<cf turnstile response>" }
+      { "turnstile_token": "<cf turnstile response>" }  # accepted, not verified
 
-    If ``TURNSTILE_SECRET`` is configured server-side, ``turnstile_token`` is
-    required and verified against Cloudflare. Without it, /onboarding-start
-    only requires passing the global IP middleware + this throttle — that
-    alone breaks rotating-IP wallet-drain on /generate-prompts since each
-    fresh IP must round-trip here first (heavily throttled).
+    **Turnstile is currently disabled.** ``onboarding_security.turnstile_enabled``
+    returns False unconditionally - the Cloudflare check was removed - so
+    ``turnstile_token`` is accepted and ignored, and ``turnstile_enabled`` in the
+    response is always False. Setting ``TURNSTILE_SECRET`` does *not* re-enable
+    it; that function has to change first. The docstring previously claimed the
+    opposite, which read as bot protection that is not actually running.
+
+    What does defend this endpoint today: the global IP middleware plus this
+    throttle. That still breaks rotating-IP wallet-drain on /generate-prompts,
+    because each fresh IP must round-trip here first (heavily throttled) - but
+    it is IP-based only, with no proof-of-humanity.
     """
 
     permission_classes = [AllowAny]
@@ -6898,6 +6906,328 @@ class CrawlerIngestView(APIView):
         rows, ignored = self._rows(org_id, hits[: self._MAX_BATCH])
         CrawlerHit.objects.bulk_create(rows)
         return Response({"stored": len(rows), "ignored": ignored})
+
+
+class EntityResolutionView(APIView):
+    """POST /runs/s/<slug>/entity-resolution/ — do engines know who this brand is?
+
+    POST because it probes every engine live and costs one call each. Asking
+    about the *name* is the only way to observe name resolution: prompt tracking
+    asks category questions, which an engine can answer fully without ever
+    resolving the brand.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request, slug):
+        from .services.entity_disambiguation import probe_identity
+
+        # Billable: one live call per engine, so a slug holder must not fire it.
+        run, err = _scoped_run(request, slug)
+        if err is not None:
+            return err
+        denied = _budget_denied(run)
+        if denied is not None:
+            return denied
+        body = EntityResolutionRequestSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        engines = body.validated_data.get("engines") or None
+        return Response(probe_identity(run, engines=engines).as_dict())
+
+
+class IndexNowView(APIView):
+    """GET/POST /runs/s/<slug>/indexnow/ — push pages into Bing's index.
+
+    GET returns the key, where to host it, and whether it is currently
+    reachable. POST submits the run's pages.
+
+    POST rather than GET for the submission because it changes external state
+    and is rate-limited by the receiving engines.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def get(self, request, slug):
+        from .services.indexnow import setup_for_run
+
+        # The response carries the org's IndexNow key, which is a submission
+        # capability for that host: anyone holding it can push URLs to
+        # Bing/Yandex/Seznam/Naver as the customer.
+        run, err = _scoped_run(request, slug)
+        if err is not None:
+            return err
+        return Response(setup_for_run(run))
+
+    def post(self, request, slug):
+        from .services.indexnow import submit_run_pages
+
+        # Pushes URLs to an external index under the customer's key, and the
+        # engines rate-limit that key itself.
+        run, err = _scoped_run(request, slug)
+        if err is not None:
+            return err
+        body = IndexNowSubmitSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        return Response(submit_run_pages(run, body.validated_data.get("urls") or None))
+
+
+def _budget_denied(run):
+    """Refuse billable work for an account over its LLM allowance.
+
+    These endpoints spend real money per call and are reachable with only a run
+    slug, so without this the budget fuse on ``start_analysis_task`` can be
+    walked around by hitting them directly. Fails open if the meter itself
+    errors - see services.llm_spend.
+    """
+    try:
+        from .services.llm_spend import check_budget
+
+        status_ = check_budget(run.email)
+    except Exception:
+        logger.exception("Budget lookup failed for %s; allowing", run.email)
+        return None
+    if status_.allowed:
+        return None
+    return Response(
+        {
+            "detail": (
+                "This account has reached its monthly AI usage allowance. "
+                "It resets on a rolling 30-day basis."
+            )
+        },
+        status=status.HTTP_402_PAYMENT_REQUIRED,
+    )
+
+
+def _acting_owner_email(email: str) -> str:
+    """The brand-owner identity ``email`` acts as.
+
+    An agency teammate legitimately manages their agency's brands, so ownership
+    resolves through ``get_agency_context`` exactly as ``ScheduleView._owned_org``
+    does. Comparing the caller's own address against ``owner_email`` directly
+    would lock those teammates out of brands they are paid to work on.
+    """
+    from apps.accounts.agency_utils import get_agency_context
+
+    normalized = (email or "").strip().lower()
+    ctx = get_agency_context(normalized)
+    return (ctx.agency_email if ctx else normalized).strip().lower()
+
+
+def _may_access_run(email: str, run) -> bool:
+    """Does ``email`` own the brand ``run`` belongs to?
+
+    Derived entirely from server records: the caller supplies no organization or
+    owner id, only a verified address that is mapped to an owner here.
+    """
+    if not email:
+        return False
+    acting = _acting_owner_email(email)
+    org = getattr(run, "organization", None)
+    # Runs predating organizations are owned by the address that started them.
+    owner = (org.owner_email if org is not None else run.email) or ""
+    return owner.strip().lower() == acting
+
+
+def _unauthenticated(action: str):
+    """Refusal for a request carrying no verified identity.
+
+    Distinguishes "you did not authenticate" from "this deployment cannot
+    authenticate anyone". Both refuse, but a bare 401 on a server with no JWKS
+    configured sends the operator hunting for a bad token that does not exist.
+    """
+    from django.conf import settings as _settings
+
+    if not getattr(_settings, "BETTER_AUTH_JWKS_URL", ""):
+        logger.error(
+            "Refusing %s: BETTER_AUTH_JWKS_URL is unset, so no caller can "
+            "authenticate. Set it to enable this endpoint.",
+            action,
+        )
+        return Response(
+            {"detail": "Authentication is not configured on this server."},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    return Response({"detail": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
+
+
+def _scoped_run(request, slug: str):
+    """Load a run by slug, scoped to the caller's verified identity. Fails closed.
+
+    Returns ``(run, error_response)``; callers do
+    ``run, err = _scoped_run(request, slug); if err: return err``.
+
+    A run slug is unguessable but it is not a credential: it travels in browser
+    history, support tickets and analytics tooling. Holding one must not grant a
+    third party the brand's data - not its citation gaps, not its crawler
+    posture, and not its IndexNow key.
+
+    Two cases:
+
+    1. **Verified caller** - identity comes from ``request.user``, which
+       ``BetterAuthJWTAuthentication`` sets only after verifying a signed JWT.
+       Ownership is re-derived server-side and a mismatch is 404, not 403: a 403
+       confirms the run exists to someone who should not know that.
+    2. **No verified identity** - refused, for reads as well as writes.
+
+    Reads are deliberately *not* gated behind ``REQUIRE_VERIFIED_IDENTITY``. That
+    flag governs migrating the ~78 pre-existing slug-only endpoints, which have
+    shipped clients that would break. Every endpoint routed through here is new
+    and has no such client, so there is nothing to stage: they ship authorized or
+    they do not ship. A staged read path here would only have widened the
+    unauthenticated surface this API is trying to shrink.
+    """
+    from django.shortcuts import get_object_or_404
+
+    from apps.accounts.identity import verified_email
+
+    # Identity is resolved *before* the lookup on purpose. Fetching first would
+    # let an unauthenticated caller tell a real slug (401) from a made-up one
+    # (404), which is the same existence leak the 404-not-403 choice below
+    # avoids for authenticated callers.
+    email = verified_email(request)
+    if not email:
+        return None, _unauthenticated(f"{request.method} {request.path}")
+
+    run = get_object_or_404(AnalysisRun, slug=slug)
+    if not _may_access_run(email, run):
+        return None, Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+    return run, None
+
+
+class CitationGapsView(APIView):
+    """GET/PATCH /runs/s/<slug>/citation-gaps/ — the domains cited instead of you.
+
+    GET returns the ranked outreach list. PATCH records outreach state for one
+    domain (``{"domain": ..., "status": ..., "note": ...}``).
+
+    ``live`` cannot be PATCHed: it is derived from a presence check, so the
+    pipeline stays honest as it ages instead of reflecting stale checkboxes.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request, slug):
+        from .services.citation_gaps import report_for_run
+
+        run, err = _scoped_run(request, slug)
+        if err is not None:
+            return err
+        # Verification costs one search per domain; let a caller skip it when
+        # only the ranking is needed.
+        verify = request.query_params.get("verify", "1") not in {"0", "false", "no"}
+        return Response(report_for_run(run, verify=verify))
+
+    def patch(self, request, slug):
+        from .services.citation_gaps import set_status
+
+        # Durably mutates CitationOutreach rows.
+        run, err = _scoped_run(request, slug)
+        if err is not None:
+            return err
+        if run.organization is None:
+            return Response(
+                {"detail": "Run has no organization."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            return Response(
+                set_status(
+                    run.organization,
+                    request.data.get("domain", ""),
+                    request.data.get("status", ""),
+                    request.data.get("note", "") or "",
+                )
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PromptCoverageView(APIView):
+    """GET /runs/s/<slug>/prompt-coverage/ — does a page answer each tracked prompt?
+
+    Semantic search of every tracked prompt against the brand's own indexed
+    pages. Answers the question that comes before any on-page or off-page work:
+    a prompt with no answering content cannot be fixed by improving a page that
+    does not exist.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request, slug):
+        from .services.prompt_coverage import report_for_run
+
+        run, err = _scoped_run(request, slug)
+        if err is not None:
+            return err
+        return Response(report_for_run(run))
+
+
+class PromptAnswerBlockView(APIView):
+    """POST /runs/s/<slug>/prompts/<track_id>/answer-block/ — draft the passage.
+
+    POST rather than GET because it is generative and costs money on every call.
+    Drafted on demand rather than for every prompt on every run, so nobody pays
+    for drafts they never read.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request, slug, track_id):
+        from django.shortcuts import get_object_or_404
+
+        from .services.answer_block import generate_for_prompt
+
+        # Generative, and billed on every call.
+        run, err = _scoped_run(request, slug)
+        if err is not None:
+            return err
+        denied = _budget_denied(run)
+        if denied is not None:
+            return denied
+        # Scoped to the run, so a track id from another brand cannot be reached.
+        track = get_object_or_404(PromptTrack, pk=track_id, analysis_run=run, deleted_at__isnull=True)
+
+        draft = generate_for_prompt(track)
+        if draft is None:
+            return Response(
+                {"detail": "Could not draft an answer for this prompt. Try again shortly."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response(draft)
+
+
+class CrawlerAccessView(APIView):
+    """GET /runs/s/<slug>/crawler-access/ — can AI engines crawl this site?
+
+    Joins robots.txt policy with observed CrawlerHit telemetry and answers it per
+    engine. Distinct from ``crawler-logs``, which reports raw activity: this
+    reports the *verdict* (blocked / never crawled / stale / active / unknown)
+    and why it matters.
+
+    robots.txt is fetched live rather than read from the run, so a customer who
+    fixes their configuration sees it reflected on refresh instead of waiting for
+    the next analysis.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request, slug):
+        from .services.crawler_access import report_for_run
+
+        run, err = _scoped_run(request, slug)
+        if err is not None:
+            return err
+        if run.organization is None:
+            return Response(
+                {"detail": "Run has no organization."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        return Response(report_for_run(run))
 
 
 class CrawlerLogsView(APIView):

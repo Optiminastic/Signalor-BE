@@ -434,18 +434,18 @@ def fetch_ai_responses(query: str) -> list[dict]:
     Results are returned in AI_ENGINE_ORDER for stable positioning.
     """
     try:
-        from apps.analyzer.pipeline.llm import ask_multiple_llms_with_citations
+        from apps.analyzer.pipeline.llm import ask_answer_engines
     except Exception as exc:
         logger.warning("ai fetch: llm module unavailable: %s", exc)
         return []
 
     try:
         responses = (
-            ask_multiple_llms_with_citations(
+            ask_answer_engines(
                 query,
-                providers=AI_ENGINE_ORDER,
+                engines=AI_ENGINE_ORDER,
                 purpose="Rank Tracker — AI engine response",
-                max_tokens=420,
+                max_tokens=1024,
             )
             or {}
         )

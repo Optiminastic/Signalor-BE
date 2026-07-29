@@ -20,12 +20,31 @@ _ALL_ENGINES = ["chatgpt", "gemini", "perplexity", "claude", "deepseek", "grok",
 # subscriptions). See AccountProfile + subscription_utils.effective_max_projects.
 AGENCY_MAX_PROJECTS = 1000
 
+def _plan_budget(plan: str, default: float) -> float:
+    """Monthly LLM spend ceiling in USD for a plan, env-overridable.
+
+    A single analysis costs real money (measured: ~$1-3 depending on how many
+    prompts are tracked and whether web search is on), so an unbounded account
+    can outspend its own subscription. These defaults are deliberately
+    conservative starting points, not modelled margins - tune them with
+    LLM_BUDGET_USD_<PLAN> once real usage is known. 0 means uncapped.
+    """
+    import os as _os
+
+    raw = _os.getenv(f"LLM_BUDGET_USD_{plan}", "").strip()
+    try:
+        return float(raw) if raw else default
+    except ValueError:
+        return default
+
+
 PLAN_LIMITS = {
     "starter": {
         "label": "Self-Serve Brand",
         "price_gbp": 69.99,
         "max_projects": 1,
         "max_prompts": 10,
+        "max_llm_spend_usd": _plan_budget("STARTER", 25.0),
         "engines": _ALL_ENGINES,
         "features": [
             "1 brand / domain",
@@ -41,6 +60,7 @@ PLAN_LIMITS = {
         "price_gbp": 99.69,
         "max_projects": 1,
         "max_prompts": 25,
+        "max_llm_spend_usd": _plan_budget("PRO", 40.0),
         "engines": _ALL_ENGINES,
         "features": [
             "1 brand / domain",
@@ -57,6 +77,9 @@ PLAN_LIMITS = {
         "price_gbp": 59.99,
         "max_projects": 6,
         "max_prompts": 200,
+        # 0 = uncapped. Internal/grandfathered accounts must never be blocked by
+        # a cost ceiling meant for self-serve customers.
+        "max_llm_spend_usd": _plan_budget("BUSINESS", 0.0),
         "engines": _ALL_ENGINES,
         "features": [
             "6 projects",

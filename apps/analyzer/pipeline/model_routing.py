@@ -32,6 +32,14 @@ _ROUTES: dict[str, tuple[str, str]] = {
     "auto_fix_content": ("LLM_MODEL_AUTOFIX_CONTENT", "claude"),
     # Analyzer auto-fix meta / llms.txt — today tier "cheap" = gemini (auto_fix.py:370,387).
     "auto_fix_meta": ("LLM_MODEL_AUTOFIX_META", "gemini"),
+    # Competitor selection (pipeline/competitors.py). Deliberately NOT mirroring the
+    # previous call sites: this task ran on "gemini" (cheap tier) with a dead web
+    # search behind it, so it answered from training data and invented companies.
+    # The search is now grounded in Serper; "sonnet" is here because picking five
+    # direct competitors out of ~24 real search results is a judgment task, not an
+    # extraction task. Drop to a cheaper nickname via the env var if the judge gate
+    # shows parity.
+    "competitor_discovery": ("LLM_MODEL_COMPETITOR_DISCOVERY", "sonnet"),
 }
 
 # Strong model a cheap-first call escalates to when its output fails validation/judge.

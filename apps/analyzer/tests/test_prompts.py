@@ -27,6 +27,46 @@ SAMPLES = {
     "geo_meta": dict(brand_name="Acme", site_url="u", current_title="(not set)", current_desc="(not set)"),
     "geo_product_desc": dict(product_title="P", brand_name="Acme"),
     "judge_eval": dict(task="T", output="O", context="", reference="", format_spec=""),
+    # Task enrichment. These were registered in MANIFEST without sample context,
+    # which made test_samples_cover_manifest fail and left the templates
+    # unexercised by the registry suite.
+    "task_enrich_faq": dict(
+        brand="Acme", url="u", count=5, page_content="PC", brand_knowledge="(none provided)"
+    ),
+    "task_enrich_citations": dict(brand="Acme", url="u", count=4, page_content="PC"),
+    "task_enrich_rewrite": dict(
+        brand="Acme", url="u", title="T", description="D", hint="", page_content="PC"
+    ),
+    "task_enrich_generic": dict(
+        brand="Acme",
+        url="u",
+        title="T",
+        description="D",
+        action="A",
+        evidence="",
+        page_content="PC",
+        brand_knowledge="",
+    ),
+    "answer_block": dict(
+        brand="Acme",
+        prompt="what is GEO?",
+        intent="informational",
+        url="u",
+        has_page=True,
+        page_content="PC",
+        brand_knowledge="",
+    ),
+    "site_findings": dict(
+        brand="Acme",
+        url="u",
+        pages_block="PAGES",
+        already_found="- (nothing yet)",
+        analyzer_block="A",
+        siteone_block="S",
+        analytics_block="AN",
+        ai_visibility_block="AV",
+        count=6,
+    ),
 }
 
 

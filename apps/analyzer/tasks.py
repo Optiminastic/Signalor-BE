@@ -303,6 +303,170 @@ def _save_probes_and_tracks(
             logger.warning("PromptTrack persist failed for run %d: %s", run.id, exc)
 
 
+def _start_trace(run: AnalysisRun) -> None:
+    """Group this run's LLM calls under one Langfuse trace. Never raises."""
+    try:
+        from .pipeline.observability import start_run
+
+        org = getattr(run, "organization", None)
+        email = (run.email or "").strip().lower()
+        start_run(
+            run.id,
+            url=run.url or "",
+            organization=getattr(org, "name", "") or "",
+            # user_id drives Langfuse's per-user cost view, which is the same
+            # question the budget fuse answers. session_id groups an org's runs.
+            user_id=email,
+            session_id=f"org-{org.id}" if org else (email or f"run-{run.id}"),
+            tags=[t for t in ("analysis", run.country or "") if t],
+            extra={"country": run.country or ""},
+        )
+    except Exception:
+        logger.warning("Run %s: Langfuse trace start failed", getattr(run, "id", "?"), exc_info=True)
+
+
+def _end_trace(run_id: int) -> None:
+    """Flush buffered traces so a redeployed worker cannot lose them."""
+    try:
+        from .pipeline.observability import end_run
+
+        end_run()
+    except Exception:
+        logger.warning("Run %s: Langfuse flush failed", run_id, exc_info=True)
+
+
+def _robots_txt_for(crawl) -> str:
+    """Fetch robots.txt for the crawled site, reusing the crawl's session."""
+    try:
+        from .pipeline.crawler import fetch_file_content
+
+        return fetch_file_content(crawl.url, "robots.txt", session=getattr(crawl, "session", None)) or ""
+    except Exception:
+        logger.warning("robots.txt fetch failed for %s", getattr(crawl, "url", "?"), exc_info=True)
+        return ""
+
+
+def _budget_status(email: str):
+    """Account's LLM budget status, or ``None`` if the check is unavailable."""
+    try:
+        from .services.llm_spend import check_budget
+
+        return check_budget(email)
+    except Exception:
+        logger.exception("Budget lookup failed for %s; allowing the run", email)
+        return None
+
+
+def _add_background_spend(run_id: int, spend: dict) -> None:
+    """Fold work that finished after the run into its recorded cost.
+
+    ``llm_cost_usd`` is what ``services.llm_spend`` sums for the budget window,
+    so spend that never lands there is spend the fuse cannot see.
+    """
+    cost = float((spend or {}).get("cost", 0.0) or 0.0)
+    if cost <= 0:
+        return
+    try:
+        from django.db.models import F
+
+        AnalysisRun.objects.filter(pk=run_id).update(llm_cost_usd=F("llm_cost_usd") + cost)
+        logger.info(
+            "Run %d: +$%.4f from %d background call(s) (competitive prompts)",
+            run_id,
+            cost,
+            (spend or {}).get("calls", 0),
+        )
+    except Exception:
+        logger.exception("Run %d: could not record background spend", run_id)
+
+
+def _record_spend(run) -> None:
+    """Persist this run's LLM spend so it can be metered and capped per account."""
+    try:
+        from .services.llm_spend import record_run_cost
+
+        record_run_cost(run)
+    except Exception:
+        logger.exception("Run %s: spend recording failed", getattr(run, "id", "?"))
+
+
+def _record_run_spend(run, run_id: int) -> None:
+    """Drain, persist and meter this run's LLM spend. Idempotent.
+
+    Guarded on a non-empty drain because ``get_collected_logs()`` *clears* the
+    collector as it reads. Two callers rely on that guard:
+
+    * the partial-analysis path drains and records its own spend before
+      returning, so an unconditional write here would overwrite its
+      ``llm_logs`` with an empty list and reset ``llm_cost_usd`` to zero;
+    * the success path calls this *before* dispatching competitive prompts, so
+      the ``finally`` call that follows must be a no-op rather than a second,
+      empty write.
+
+    Writing ``llm_cost_usd`` absolutely (via ``record_run_cost``) is also why
+    ordering matters against ``_add_background_spend``, which increments it with
+    an ``F()`` expression. Recording first and incrementing later is safe; the
+    reverse would silently clobber the background charge.
+    """
+    try:
+        logs = get_collected_logs()
+        if logs:
+            run.llm_logs = logs
+            run.save(update_fields=["llm_logs"])
+            _record_spend(run)
+            _log_run_cost(run_id, logs)
+    except Exception:
+        logger.exception("Run %s: cost accounting failed", run_id)
+
+
+def _finalize_accounting(run, run_id: int) -> None:
+    """Record spend and flush the trace. Runs from a ``finally``.
+
+    Must cover every exit: a run that crashed halfway still made (and was billed
+    for) real LLM calls, and skipping this used to lose both the spend and the
+    buffered Langfuse events.
+
+    ``_end_trace`` is deliberately *not* folded into ``_record_run_spend``. The
+    success path records spend early, before dispatching competitive prompts,
+    but the trace has to stay open across that dispatch: the daemon thread
+    captures the run context when it is wrapped, so ending the trace first would
+    strip user and trace attribution from those ~40 calls. It also runs outside
+    the guarded block, so a broken meter cannot strand buffered events in a
+    worker about to idle.
+    """
+    _record_run_spend(run, run_id)
+    _end_trace(run_id)
+
+
+def _log_run_cost(run_id: int, logs: list[dict]) -> None:
+    """Emit one structured line with what this run cost and where it went.
+
+    Every LLM call already records its exact OpenRouter charge; without this the
+    numbers sat unread inside a 128 KB JSONField and the only way to find out
+    what a run cost was the provider dashboard. Fail-soft: cost reporting must
+    never break a completed run.
+    """
+    try:
+        from .pipeline.llm import summarize_llm_logs
+
+        summary = summarize_llm_logs(logs)
+        top = list(summary["by_purpose"].items())[:5]
+        logger.info(
+            "Run %d LLM cost: $%.4f over %d calls (%d in / %d out tokens, %d cached, %d errors). "
+            "Top spend: %s",
+            run_id,
+            summary["total_cost_usd"],
+            summary["total_calls"],
+            summary["total_tokens_in"],
+            summary["total_tokens_out"],
+            summary["cached_tokens"],
+            summary["errors"],
+            "; ".join(f"{p}=${b['cost']:.4f}({b['calls']})" for p, b in top),
+        )
+    except Exception:
+        logger.exception("Run %d: LLM cost summary failed", run_id)
+
+
 def _update_status(run: AnalysisRun, status: str, progress: int = 0):
     run.status = status
     run.progress = progress
@@ -347,6 +511,7 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
     """
     logger.info("Run %d: crawl failed (%s), running partial analysis", run.id, crawl.error)
     start_log_collection()
+    _start_trace(run)
 
     _update_status(run, AnalysisRun.Status.ANALYZING, 20)
 
@@ -493,6 +658,9 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
     run.error_message = f"Partial results: {crawl.error}. Content, schema, and E-E-A-T could not be analyzed."
     run.llm_logs = get_collected_logs()
     run.save()
+    _record_spend(run)
+    _log_run_cost(run.id, run.llm_logs)
+    _end_trace(run.id)
     logger.info("Partial analysis complete for run %d: score %.1f", run.id, composite)
 
 
@@ -506,6 +674,7 @@ def run_single_page_analysis(run_id: int):
 
     try:
         start_log_collection()
+        _start_trace(run)
 
         # Phase 1: Crawl (public URL first, then API fallback)
         _update_status(run, AnalysisRun.Status.CRAWLING, 5)
@@ -903,6 +1072,66 @@ def run_single_page_analysis(run_id: int):
             run_url=run.url,
             extra_recs=extra_recs,
         )
+        # AI crawler access. Highest-severity finding the product can make: a
+        # blocked crawler caps every other effort at zero, and Cloudflare ships
+        # its AI-crawler block on by default, so sites block every engine without
+        # anyone having chosen to. Fail-soft — never gates the run.
+        try:
+            from .services.crawler_access import build_report, to_recommendations
+
+            _access = build_report(
+                run.organization,
+                robots_txt=_robots_txt_for(crawl),
+                known_urls=[p["url"] for p in page_scores_data] or [crawl.url],
+            )
+            _access_recs = to_recommendations(_access)
+            if _access_recs:
+                recs.extend(_access_recs)
+                logger.info(
+                    "Run %d: %d AI-crawler access finding(s); blocked=%s",
+                    run_id,
+                    len(_access_recs),
+                    _access.summary()["blocked_engines"],
+                )
+        except Exception:
+            logger.exception("Run %d: crawler access check failed", run_id)
+
+        # Open-ended site audit: findings the 83 fixed rules cannot express,
+        # read off the crawled pages plus every signal we already have for this
+        # run (analyzer checks, SiteOne, GA4/GSC, AI visibility). Additive and
+        # fail-soft — the rule engine's output stands on its own if this fails.
+        try:
+            from .pipeline.site_findings import discover_site_findings
+            from .services.overview_signals import build_overview_signals
+
+            try:
+                _signals = build_overview_signals(run)
+            except Exception:
+                logger.exception("Run %d: overview signals unavailable for site findings", run_id)
+                _signals = None
+
+            _discovered = discover_site_findings(
+                [crawl, *additional_crawls],
+                brand=run.brand_name or "",
+                homepage_url=run.url,
+                existing_recs=recs,
+                pillar_details=pillar_details,
+                siteone=(
+                    siteone_crawl.to_check_payload(siteone_report)
+                    if siteone_report is not None
+                    else None
+                ),
+                signals=_signals,
+                ai_visibility=ai_vis_details,
+            )
+            if _discovered:
+                recs.extend(_discovered)
+                logger.info(
+                    "Run %d: added %d site-specific findings", run_id, len(_discovered)
+                )
+        except Exception:
+            logger.exception("Run %d: site finding discovery failed", run_id)
+
         # Satisfaction gate: drop any task a multi-signal check proves is already
         # done on every affected page, so "already-fixed" items never surface.
         # Suppress-only + runs on the crawl already in memory (no extra fetch).
@@ -925,7 +1154,9 @@ def run_single_page_analysis(run_id: int):
         # Draft concrete, page-specific fix content for the top-ranked tasks
         # (best-effort; leaves the static action as fallback on any failure).
         try:
-            enrich_recommendations(run, recs, top_n=6)
+            # Cap lives in the service (TASK_ENRICH_TOP_N) so it is tunable
+            # without a code change; passing it here would silently override that.
+            enrich_recommendations(run, recs)
         except Exception:
             logger.exception("Run %d: task enrichment failed", run_id)
         # one INSERT instead of one per recommendation (see note above).
@@ -1026,9 +1257,15 @@ def run_single_page_analysis(run_id: int):
         # Clear any stale error (e.g. a "stalled" message the watchdog set while
         # this run was waiting in the queue) — it completed cleanly after all.
         run.error_message = ""
-        run.llm_logs = get_collected_logs()
         run.save()
         logger.info("Analysis complete for run %d: score %.1f", run_id, composite)
+        # Meter this run *before* dispatching more billable work. The budget gate
+        # inside reads llm_cost_usd back from the database, and until this call
+        # lands the just-completed run still reads as $0 there - so an account
+        # sitting just under its cap looked clear and fired 40 more calls.
+        _record_run_spend(run, run_id)
+        # Dispatched after finalization on purpose (it must not delay completion),
+        # so it meters its own spend rather than relying on this run's window.
         _generate_and_fire_competitive_prompts(run)
 
     except Exception as exc:
@@ -1036,6 +1273,8 @@ def run_single_page_analysis(run_id: int):
         run.status = AnalysisRun.Status.FAILED
         run.error_message = str(exc)
         run.save()
+    finally:
+        _finalize_accounting(run, run_id)
 
 
 def _domain_label(url: str) -> str:
@@ -1127,6 +1366,22 @@ def _generate_and_fire_competitive_prompts(run: AnalysisRun) -> None:
     the user having to trigger anything from the UI.
     """
     try:
+        # This fires up to 40 billable calls (10 prompts x 4 engines), so it is
+        # subject to the same budget as the analysis that triggered it. Without
+        # this an account whose allowance is exhausted could still spend
+        # unbounded amounts, once per completed run.
+        status = _budget_status(run.email)
+        if status is not None and not status.allowed:
+            logger.warning(
+                "Run %d: skipping competitive prompts, %s is over its LLM allowance "
+                "($%.2f of $%.2f)",
+                run.id,
+                status.email or "(anonymous)",
+                status.spent_usd,
+                status.limit_usd,
+            )
+            return
+
         # Idempotency: count-based, not existence-based. Onboarding can plant a
         # single COMPETITIVE-typed prompt (e.g. the hardcoded "Compare X with
         # competitors" fallback from GeneratePromptsView), which would trip a
@@ -1181,20 +1436,33 @@ def _generate_and_fire_competitive_prompts(run: AnalysisRun) -> None:
                 )
             )
 
-        def _fire_all():
-            # Parallel pool: 4 prompts in flight, each one fires its engines
-            # in parallel internally. Keeps total wall-clock to ~3x slowest
-            # engine round-trip instead of 10x.
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                futures = [pool.submit(_fire_competitive_prompt_fast, t, brand, url) for t in tracks]
-                for fut in as_completed(futures):
-                    try:
-                        fut.result()
-                    except Exception:
-                        # _fire_competitive_prompt_fast already logs internally.
-                        pass
+        from .pipeline.llm import cost_scope, propagate
 
-        threading.Thread(target=_fire_all, daemon=True).start()
+        def _fire_all():
+            # This work happens after the run was finalized and its logs drained,
+            # so it cannot ride on the run's collection window. A cost scope meters
+            # it independently and the total is added to the run afterwards, which
+            # is what puts it inside the 30-day window the budget fuse reads.
+            with cost_scope() as spend:
+                # Parallel pool: 4 prompts in flight, each one fires its engines
+                # in parallel internally. Keeps total wall-clock to ~3x slowest
+                # engine round-trip instead of 10x.
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    # Pool workers do not inherit contextvars, so the scope and the
+                    # Langfuse run identity have to be carried across explicitly.
+                    futures = [
+                        pool.submit(propagate(_fire_competitive_prompt_fast), t, brand, url)
+                        for t in tracks
+                    ]
+                    for fut in as_completed(futures):
+                        try:
+                            fut.result()
+                        except Exception:
+                            # _fire_competitive_prompt_fast already logs internally.
+                            pass
+            _add_background_spend(run.id, spend)
+
+        threading.Thread(target=propagate(_fire_all), daemon=True).start()
         logger.info(
             "Queued %d competitive prompts for run %d (runs=1, pool=4).",
             len(tracks),
@@ -1242,7 +1510,29 @@ def start_analysis_task(run_id: int):
     eager mode, which would block the HTTP response for the whole run — so we
     fall back to the original daemon thread to keep ``/analyze/`` fast.
     """
-    if not AnalysisRun.objects.filter(pk=run_id).exists():
+    run = AnalysisRun.objects.filter(pk=run_id).only("id", "email").first()
+    if run is None:
+        return
+
+    # Budget fuse. An analysis costs real money, so an account that has burned
+    # through its plan's LLM allowance must not keep queueing more. Fails open
+    # (see services/llm_spend) — a broken meter should not stop paying customers.
+    status = _budget_status(run.email)
+    if status is not None and not status.allowed:
+        logger.warning(
+            "Run %d blocked: %s has spent $%.2f of its $%.2f LLM allowance in the last 30 days",
+            run_id,
+            status.email or "(anonymous)",
+            status.spent_usd,
+            status.limit_usd,
+        )
+        AnalysisRun.objects.filter(pk=run_id).update(
+            status=AnalysisRun.Status.FAILED,
+            error_message=(
+                "This account has reached its monthly AI usage allowance. "
+                "It resets on a rolling 30-day basis, or upgrade for a higher limit."
+            ),
+        )
         return
 
     from config.celery_rabbit import analysis_app

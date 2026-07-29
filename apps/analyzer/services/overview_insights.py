@@ -144,7 +144,7 @@ def _parse_json(raw: str | None) -> dict | None:
     if not isinstance(data, dict):
         logger.warning("overview_insights JSON parse failed; raw=%r", (raw or "")[:300])
         return None
-    return data if isinstance(data, dict) else None
+    return data
 
 
 def _str(v, max_len: int) -> str:
