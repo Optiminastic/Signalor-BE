@@ -49,6 +49,7 @@ from .views import (
     CitationTrendView,
     CompetitorDetailView,
     CompetitorListCreateView,
+    CompetitorPromptGenerateView,
     CompetitorPromptListView,
     CompetitorVisibilityMatrixView,
     ContentApplyElementView,
@@ -144,6 +145,13 @@ urlpatterns = [
     path("runs/progress/", LatestRunProgressView.as_view(), name="run-progress"),
     path("runs/<int:run_id>/", AnalysisRunDetailView.as_view(), name="run-detail"),
     path("runs/s/<str:slug>/prompts/", PromptListCreateView.as_view(), name="prompt-list-create"),
+    # The literal "generate" segment must precede the list route so it is not
+    # shadowed by it.
+    path(
+        "runs/s/<str:slug>/competitor-prompts/generate/",
+        CompetitorPromptGenerateView.as_view(),
+        name="competitor-prompts-generate",
+    ),
     path(
         "runs/s/<str:slug>/competitor-prompts/",
         CompetitorPromptListView.as_view(),

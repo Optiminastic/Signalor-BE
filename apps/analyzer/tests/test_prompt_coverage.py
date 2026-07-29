@@ -217,12 +217,14 @@ class EndpointTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["heading"], "h")
 
-    def test_answer_block_refuses_a_caller_holding_only_the_slug(self):
-        """Billable, so the slug alone must not trigger it."""
+    def test_an_enforced_deployment_refuses_an_anonymous_draft(self):
+        """Billable, so the slug alone must not trigger it once auth is live."""
         from django.urls import reverse
 
         url = reverse("analyzer:prompt-answer-block", args=[self.run.slug, self.track.id])
-        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"):
+        with self.settings(
+            BETTER_AUTH_JWKS_URL="https://auth.example/jwks", REQUIRE_VERIFIED_IDENTITY=True
+        ):
             self.assertEqual(self.client.post(url).status_code, 401)
 
     def test_answer_block_refuses_a_verified_stranger(self):

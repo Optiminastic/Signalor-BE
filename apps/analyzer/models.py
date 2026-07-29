@@ -43,6 +43,12 @@ class AnalysisRun(models.Model):
     run_type = models.CharField(max_length=20, choices=RunType.choices, default=RunType.SINGLE_PAGE)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     progress = models.IntegerField(default=0)
+    # Human-readable description of the work in flight, shown on the analysing
+    # screen. ``status`` only distinguishes crawling/analyzing/scoring, which is
+    # far too coarse: two checkpoints (prompt firing and competitor discovery)
+    # account for most of the wall-clock, so a user watching those sees a frozen
+    # bar and no explanation. This says what is actually happening right now.
+    phase = models.CharField(max_length=140, blank=True, default="")
     composite_score = models.FloatField(null=True, blank=True)
     content_hash = models.CharField(max_length=64, blank=True, default="")
     error_message = models.TextField(blank=True, default="")

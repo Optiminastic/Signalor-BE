@@ -327,16 +327,22 @@ class CompetitiveDispatchBudgetTests(TestCase):
         with patch.object(llm_spend, "limit_for", return_value=20.0):
             self.assertTrue(tasks._budget_status(EMAIL).allowed)
 
-    def test_spend_is_recorded_before_the_dispatch_is_attempted(self):
-        """Pins the ordering itself, not just the arithmetic."""
+    def test_the_run_records_its_spend_before_finishing(self):
+        """The ordering guard that mattered when the run dispatched more billable work.
+
+        Competitive prompts no longer fire from the run at all (see
+        test_competitive_prompts), so there is nothing left to race. What still
+        matters is that the run's own cost reaches llm_cost_usd on the success
+        path, not only in the finally block — the on-demand generate endpoint
+        reads that value back when it checks the budget.
+        """
         import inspect
 
         from apps.analyzer import tasks
 
         source = inspect.getsource(tasks.run_single_page_analysis)
-        record_at = source.index("_record_run_spend(run, run_id)")
-        dispatch_at = source.index("_generate_and_fire_competitive_prompts(run)")
-        self.assertLess(record_at, dispatch_at)
+        self.assertIn("_record_run_spend(run, run_id)", source)
+        self.assertNotIn("_generate_and_fire_competitive_prompts(run)", source)
 
     def test_background_spend_is_not_clobbered_by_the_run_total(self):
         """record_run_cost writes absolutely; _add_background_spend increments."""

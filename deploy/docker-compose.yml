@@ -175,6 +175,9 @@ services:
       # every recreate (Let's Encrypt has issuance rate limits).
       - /mnt/HC_Volume_105845076/caddy/data:/data
       - /mnt/HC_Volume_105845076/caddy/config:/config
+      # Access logs on the volume, not the container filesystem, so they survive
+      # a recreate — an incident log that vanishes on redeploy is no log at all.
+      - /mnt/HC_Volume_105845076/caddy/logs:/var/log/caddy
     depends_on:
       - web
     networks: [internal]

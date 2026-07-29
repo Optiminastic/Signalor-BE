@@ -2,6 +2,8 @@ import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from django.utils import timezone
+
 from .models import (
     AIVisibilityProbe,
     AnalysisRun,
@@ -251,13 +253,20 @@ def _save_probes_and_tracks(
 
     processed: list[tuple[str, str, str, list[dict]]] = []
     if brand_prompts:
+        # This loop is ~66% of the whole analysis: every prompt is asked of all
+        # seven answer engines with web search. It used to sit on one checkpoint
+        # for the entire duration, which is what made the bar look frozen.
+        total_prompts = len(brand_prompts)
         with ThreadPoolExecutor(max_workers=5) as executor:
             futures = [executor.submit(_process_prompt, p) for p in brand_prompts]
-            for future in as_completed(futures):
+            for done, future in enumerate(as_completed(futures), start=1):
                 try:
                     processed.append(future.result())
                 except Exception as exc:
                     logger.warning("Prompt processing failed for run %d: %s", run.id, exc)
+                _update_sub_progress(
+                    run, 25, 78, done, total_prompts, "Asking AI engines your tracked prompts"
+                )
 
     # DB writes stay sequential — Django ORM isn't thread-safe across saves
     # on SQLite, and the writes themselves are fast (no LLM latency).
@@ -467,10 +476,34 @@ def _log_run_cost(run_id: int, logs: list[dict]) -> None:
         logger.exception("Run %d: LLM cost summary failed", run_id)
 
 
-def _update_status(run: AnalysisRun, status: str, progress: int = 0):
+def _update_status(run: AnalysisRun, status: str, progress: int = 0, phase: str = ""):
     run.status = status
     run.progress = progress
-    run.save(update_fields=["status", "progress", "updated_at"])
+    if phase:
+        run.phase = phase[:140]
+    run.save(update_fields=["status", "progress", "phase", "updated_at"])
+
+
+def _update_sub_progress(run: AnalysisRun, start: int, end: int, done: int, total: int, phase: str) -> None:
+    """Advance the bar *within* a long phase, so it moves while work happens.
+
+    The two slowest stages - firing prompts across every answer engine, and
+    discovering competitors - each sat on a single checkpoint for the majority of
+    the run. Both already iterate ``as_completed``, so they know how many items
+    are finished; this turns that into movement instead of a frozen number.
+
+    Fail-soft and never raises: a progress write must not be able to kill a run
+    that is otherwise succeeding.
+    """
+    if total <= 0:
+        return
+    try:
+        pct = start + int((end - start) * (min(done, total) / total))
+        AnalysisRun.objects.filter(pk=run.pk).update(
+            progress=pct, phase=f"{phase} ({done}/{total})"[:140], updated_at=timezone.now()
+        )
+    except Exception:
+        logger.debug("Sub-progress update failed for run %s", getattr(run, "pk", "?"), exc_info=True)
 
 
 def _score_competitor_static(url: str) -> tuple[dict | None, float]:
@@ -513,7 +546,7 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
     start_log_collection()
     _start_trace(run)
 
-    _update_status(run, AnalysisRun.Status.ANALYZING, 20)
+    _update_status(run, AnalysisRun.Status.ANALYZING, 20, "Page content unavailable — checking what we can")
 
     # Content, schema, eeat all need HTML — score 0 with explanation
     content_score, content_details = (
@@ -541,7 +574,7 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
         },
     )
 
-    _update_status(run, AnalysisRun.Status.ANALYZING, 40)
+    _update_status(run, AnalysisRun.Status.ANALYZING, 40, "Checking robots.txt, sitemap and llms.txt")
 
     # Technical — works without HTML (robots.txt, sitemap, llms.txt, HTTPS)
     technical_score_val, technical_details = score_technical(crawl)
@@ -565,7 +598,7 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
     def _run_brand_vis():
         return run_brand_visibility(brand_name, run.url)
 
-    _update_status(run, AnalysisRun.Status.ANALYZING, 55)
+    _update_status(run, AnalysisRun.Status.ANALYZING, 55, "Measuring AI visibility")
 
     with ThreadPoolExecutor(max_workers=3) as executor:
         entity_future = executor.submit(_run_entity)
@@ -589,7 +622,7 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
         except Exception as exc:
             logger.warning("Brand visibility failed for run %d: %s", run.id, exc)
 
-    _update_status(run, AnalysisRun.Status.ANALYZING, 80)
+    _update_status(run, AnalysisRun.Status.ANALYZING, 80, "Building recommendations")
 
     _save_probes_and_tracks(
         run,
@@ -599,7 +632,7 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
         crawl_text=crawl.text[:2000] if crawl.text else "",
     )
 
-    _update_status(run, AnalysisRun.Status.SCORING, 85)
+    _update_status(run, AnalysisRun.Status.SCORING, 85, "Calculating your GEO score")
 
     composite = compute_composite(
         content_score,
@@ -677,7 +710,7 @@ def run_single_page_analysis(run_id: int):
         _start_trace(run)
 
         # Phase 1: Crawl (public URL first, then API fallback)
-        _update_status(run, AnalysisRun.Status.CRAWLING, 5)
+        _update_status(run, AnalysisRun.Status.CRAWLING, 3, "Fetching your pages")
 
         # Check if store has a storefront password (Shopify dev stores)
         storefront_password = ""
@@ -745,7 +778,7 @@ def run_single_page_analysis(run_id: int):
                 _run_partial_analysis(run, crawl)
                 return
 
-        _update_status(run, AnalysisRun.Status.ANALYZING, 15)
+        _update_status(run, AnalysisRun.Status.ANALYZING, 8, "Reading page content and structure")
 
         # Content hashing for change detection
         import hashlib
@@ -842,7 +875,7 @@ def run_single_page_analysis(run_id: int):
             "pages_crawled": 1 + len(additional_crawls),
         }
 
-        _update_status(run, AnalysisRun.Status.ANALYZING, 30)
+        _update_status(run, AnalysisRun.Status.ANALYZING, 14, "Scoring content, schema and E-E-A-T")
 
         # Derive brand label from URL (corrects generic / mismatched stored names)
         brand_name = visibility_brand_label(run.url, run.brand_name)
@@ -897,7 +930,7 @@ def run_single_page_analysis(run_id: int):
                 logger.warning("E-E-A-T scoring failed for run %d: %s", run_id, exc)
                 eeat_details = {"error": str(exc)}
 
-            _update_status(run, AnalysisRun.Status.ANALYZING, 50)
+            _update_status(run, AnalysisRun.Status.ANALYZING, 18, "Checking how AI engines describe your brand")
 
             try:
                 entity_score_val, entity_details = entity_future.result()
@@ -905,7 +938,7 @@ def run_single_page_analysis(run_id: int):
                 logger.warning("Entity scoring failed for run %d: %s", run_id, exc)
                 entity_details = {"error": str(exc)}
 
-            _update_status(run, AnalysisRun.Status.ANALYZING, 65)
+            _update_status(run, AnalysisRun.Status.ANALYZING, 22, "Measuring AI visibility")
 
             try:
                 ai_vis_score, ai_vis_details, probes_data = ai_vis_future.result()
@@ -918,7 +951,7 @@ def run_single_page_analysis(run_id: int):
             except Exception as exc:
                 logger.warning("Brand visibility failed for run %d: %s", run_id, exc)
 
-        _update_status(run, AnalysisRun.Status.ANALYZING, 75)
+        _update_status(run, AnalysisRun.Status.ANALYZING, 25, "Writing prompts to track")
 
         # Save AI probes + backfill prompt tracking with full brand context
         # Extract meta description for prompt generation
@@ -948,7 +981,7 @@ def run_single_page_analysis(run_id: int):
         )
 
         # Phase 4: Scoring with smoothing
-        _update_status(run, AnalysisRun.Status.SCORING, 80)
+        _update_status(run, AnalysisRun.Status.SCORING, 80, "Calculating your GEO score")
 
         # Score smoothing: blend LLM-dependent pillars with previous run
         # Static pillars (content, schema, technical) are NOT smoothed — they reflect current state
@@ -1177,7 +1210,7 @@ def run_single_page_analysis(run_id: int):
             BrandVisibility.objects.create(analysis_run=run, **brand_vis_result)
 
         # Phase 6: Competitor discovery & scoring (static-only, no LLM for competitors)
-        _update_status(run, AnalysisRun.Status.SCORING, 85)
+        _update_status(run, AnalysisRun.Status.SCORING, 84, "Finding competitors AI engines cite")
         try:
             competitor_list = discover_competitors(crawl, user_country=(run.country or "").strip() or None)
 
@@ -1186,9 +1219,15 @@ def run_single_page_analysis(run_id: int):
                 page_data, comp_composite = _score_competitor_static(comp_data["url"])
                 return comp_data, page_data, comp_composite
 
+            # Each competitor is a full fetch and score of someone else's site,
+            # so this is the second place the bar used to freeze.
+            total_comps = len(competitor_list)
             with ThreadPoolExecutor(max_workers=4) as executor:
                 futures = [executor.submit(_score_comp, cd) for cd in competitor_list]
-                for future in as_completed(futures):
+                for comps_done, future in enumerate(as_completed(futures), start=1):
+                    _update_sub_progress(
+                        run, 84, 94, comps_done, total_comps, "Scoring competitor sites"
+                    )
                     try:
                         comp_data, page_data, comp_composite = future.result()
                         comp = Competitor.objects.create(
@@ -1264,9 +1303,11 @@ def run_single_page_analysis(run_id: int):
         # lands the just-completed run still reads as $0 there - so an account
         # sitting just under its cap looked clear and fired 40 more calls.
         _record_run_spend(run, run_id)
-        # Dispatched after finalization on purpose (it must not delay completion),
-        # so it meters its own spend rather than relying on this run's window.
-        _generate_and_fire_competitive_prompts(run)
+        # Competitive prompts are NOT fired here any more. Firing them on every
+        # completed run cost ~$0.75 - 39% of the whole analysis - whether or not
+        # anyone ever opened the page that displays them. They are now generated
+        # on first view (see CompetitorPromptListView), which produces the same
+        # rows for anyone who looks and nothing for everyone who does not.
 
     except Exception as exc:
         logger.error("Analysis failed for run %d: %s", run_id, exc, exc_info=True)

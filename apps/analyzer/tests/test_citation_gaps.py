@@ -398,14 +398,15 @@ class WriteAuthorizationTests(_Base):
             content_type="application/json",
         )
 
-    def test_anonymous_write_is_refused_when_auth_is_unconfigured(self):
-        """Fails closed, and says the server cannot authenticate rather than 401."""
-        with self.settings(BETTER_AUTH_JWKS_URL=""):
-            self.assertEqual(self._patch().status_code, 503)
-
-    def test_anonymous_write_is_401_when_auth_is_configured(self):
-        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"):
+    def test_an_enforced_deployment_refuses_an_anonymous_write(self):
+        with self.settings(
+            BETTER_AUTH_JWKS_URL="https://auth.example/jwks", REQUIRE_VERIFIED_IDENTITY=True
+        ):
             self.assertEqual(self._patch().status_code, 401)
+
+    def test_an_unconfigured_enforced_deployment_says_so_rather_than_401(self):
+        with self.settings(BETTER_AUTH_JWKS_URL="", REQUIRE_VERIFIED_IDENTITY=True):
+            self.assertEqual(self._patch().status_code, 503)
 
     def test_the_owner_may_write(self):
         with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"), self._as(
@@ -455,11 +456,13 @@ class WriteAuthorizationTests(_Base):
 
 
 class ReadScopingTests(_Base):
-    """Reads fail closed, exactly like writes.
+    """Identity-aware reads, with the slug still admitting until the flag flips.
 
-    A slug is not a credential. These endpoints are new and have no shipped
-    client, so there was nothing to stage: gating reads on the rollout flag would
-    only have widened the unauthenticated surface this API is shrinking.
+    Failing closed here shipped six features as a 503 for every user, because no
+    caller *could* authenticate: JWKS is unconfigured and the frontend sends
+    cookies, not a Bearer token. What survives is the part that works today - a
+    signed-in caller is held to their own brands - plus a single flag that closes
+    the anonymous path everywhere at once.
     """
 
     def _url(self, slug=None):
@@ -470,19 +473,20 @@ class ReadScopingTests(_Base):
     def _get(self, slug=None):
         return self.client.get(self._url(slug), {"verify": "0"})
 
-    def test_an_anonymous_read_is_refused(self):
-        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"):
-            self.assertEqual(self._get().status_code, 401)
+    def test_an_anonymous_read_is_admitted_while_the_rollout_flag_is_off(self):
+        """Matches the ~78 sibling endpoints; closing it alone only breaks features."""
+        with self.settings(REQUIRE_VERIFIED_IDENTITY=False):
+            self.assertEqual(self._get().status_code, 200)
 
-    def test_an_anonymous_read_is_refused_even_with_the_rollout_flag_off(self):
-        """The flag governs the ~78 legacy endpoints, not these."""
+    def test_flipping_the_rollout_flag_closes_the_anonymous_path(self):
         with self.settings(
-            BETTER_AUTH_JWKS_URL="https://auth.example/jwks", REQUIRE_VERIFIED_IDENTITY=False
+            BETTER_AUTH_JWKS_URL="https://auth.example/jwks", REQUIRE_VERIFIED_IDENTITY=True
         ):
             self.assertEqual(self._get().status_code, 401)
 
     def test_an_unconfigured_deployment_says_so_rather_than_401(self):
-        with self.settings(BETTER_AUTH_JWKS_URL=""):
+        """503, not 401, so an operator is not sent hunting for a bad token."""
+        with self.settings(BETTER_AUTH_JWKS_URL="", REQUIRE_VERIFIED_IDENTITY=True):
             self.assertEqual(self._get().status_code, 503)
 
     def test_the_owner_may_read(self):
@@ -503,7 +507,9 @@ class ReadScopingTests(_Base):
         ):
             self.assertEqual(self._get("nope").status_code, 404)
 
-    def test_an_anonymous_caller_cannot_tell_a_real_slug_from_a_fake_one(self):
-        """Both 401: looking the run up first would leak which slugs exist."""
-        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"):
+    def test_an_enforced_deployment_does_not_leak_which_slugs_exist(self):
+        """Both 401: looking the run up first would distinguish real from fake."""
+        with self.settings(
+            BETTER_AUTH_JWKS_URL="https://auth.example/jwks", REQUIRE_VERIFIED_IDENTITY=True
+        ):
             self.assertEqual(self._get().status_code, self._get("nope").status_code)

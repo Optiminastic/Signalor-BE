@@ -11,6 +11,7 @@ Callers store those chunks un-embedded and retry them on the next run.
 
 import logging
 import os
+import time
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -62,6 +63,10 @@ EMBED_DIMENSIONS = _embed_dimensions()
 
 # Gemini caps batch embedding requests; stay well under it.
 _MAX_BATCH = 100
+# The free tier allows 100 embed requests/minute/model. A rate-limited batch is
+# retried this many times before its chunks are left for the next run.
+_RATE_LIMIT_RETRIES = 3
+_RATE_LIMIT_BACKOFF_SEC = 20
 # task_type tunes the vector for its role; documents and queries use different
 # types so a query vector lands near the docs that answer it (Epic 4 retrieval).
 _TASK_DOCUMENT = "retrieval_document"
@@ -131,17 +136,54 @@ def _embed_one(genai: object, text: str, model: str) -> list[float] | None:
         return None
 
 
+def _is_rate_limited(exc: Exception) -> bool:
+    """Whether the API refused because we are over quota, not because of the input."""
+    name = type(exc).__name__
+    if name in {"ResourceExhausted", "TooManyRequests"}:
+        return True
+    text = str(exc)
+    return "429" in text or "quota" in text.lower() or "rate limit" in text.lower()
+
+
 def _embed_batch(genai: object, texts: list[str], model: str) -> list[list[float] | None]:
-    """Embed a batch in one call; fall back to per-item on batch failure."""
-    try:
-        resp = _embed_content(genai, model=model, content=texts, task_type=_TASK_DOCUMENT)
-        vectors = resp["embedding"]
-        # The batch API returns a list aligned with ``texts``.
-        if isinstance(vectors, list) and len(vectors) == len(texts):
-            return [_fit(v) for v in vectors]
-        logger.warning("Unexpected batch embedding shape; retrying per item")
-    except Exception as exc:  # noqa: BLE001 - fall back to per-item
-        logger.warning("Batch embedding failed (%s); retrying per item", exc)
+    """Embed a batch in one call, backing off rather than fanning out on a quota error.
+
+    The per-item fallback is for a *malformed batch* - one bad chunk shouldn't
+    lose the other ninety-nine. It is exactly the wrong response to a 429: the
+    free tier allows 100 embed requests/minute, so retrying a 100-text batch item
+    by item spends 100 more requests against a quota that is already exhausted,
+    and every one of them fails too. That turned one rate-limited batch into a
+    guaranteed loss of the whole run's remaining chunks.
+
+    On a quota error we wait and retry the batch instead. Chunks that still fail
+    are returned as ``None`` and stay un-embedded, which the caller already
+    treats as "retry on the next run".
+    """
+    for attempt in range(_RATE_LIMIT_RETRIES + 1):
+        try:
+            resp = _embed_content(genai, model=model, content=texts, task_type=_TASK_DOCUMENT)
+            vectors = resp["embedding"]
+            # The batch API returns a list aligned with ``texts``.
+            if isinstance(vectors, list) and len(vectors) == len(texts):
+                return [_fit(v) for v in vectors]
+            logger.warning("Unexpected batch embedding shape; retrying per item")
+            break
+        except Exception as exc:  # noqa: BLE001 - classify, then decide
+            if not _is_rate_limited(exc):
+                logger.warning("Batch embedding failed (%s); retrying per item", exc)
+                break
+            if attempt == _RATE_LIMIT_RETRIES:
+                logger.warning(
+                    "Embedding still rate-limited after %d retries; leaving %d chunk(s) "
+                    "un-embedded for the next run",
+                    _RATE_LIMIT_RETRIES,
+                    len(texts),
+                )
+                return [None] * len(texts)
+            delay = _RATE_LIMIT_BACKOFF_SEC * (2**attempt)
+            logger.info("Embedding rate-limited; waiting %ds before retry %d", delay, attempt + 1)
+            time.sleep(delay)
+
     return [_embed_one(genai, t, model) for t in texts]
 
 

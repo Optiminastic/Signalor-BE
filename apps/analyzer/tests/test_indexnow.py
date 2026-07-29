@@ -213,11 +213,13 @@ class EndpointTests(TestCase):
         self.assertIn(".txt", body["key_file_url"])
         self.assertFalse(body["verified"])
 
-    def test_the_key_is_never_returned_to_an_unauthenticated_caller(self):
-        """The key authorises submissions for the host, so a slug must not buy it."""
-        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"):
+    def test_a_verified_stranger_never_gets_the_key(self):
+        """The key authorises submissions for the host; a signed-in stranger is 404."""
+        from apps.analyzer.tests.auth_helpers import signed_in
+
+        with signed_in("stranger@example.com"):
             resp = self.client.get(self._url())
-        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.status_code, 404)
         self.assertNotIn("key", resp.json())
 
     def test_post_submits_the_runs_pages(self):
@@ -228,11 +230,11 @@ class EndpointTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.json()["ok"])
 
-    def test_post_refuses_a_caller_holding_only_the_slug(self):
+    def test_an_enforced_deployment_refuses_an_anonymous_submit(self):
         """Submissions burn the customer's own IndexNow key against engine quotas."""
-        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"), patch.object(
-            indexnow, "submit_run_pages", side_effect=AssertionError("must not submit")
-        ):
+        with self.settings(
+            BETTER_AUTH_JWKS_URL="https://auth.example/jwks", REQUIRE_VERIFIED_IDENTITY=True
+        ), patch.object(indexnow, "submit_run_pages", side_effect=AssertionError("must not submit")):
             resp = self.client.post(self._url(), data={}, content_type="application/json")
         self.assertEqual(resp.status_code, 401)
 

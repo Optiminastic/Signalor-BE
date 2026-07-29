@@ -138,3 +138,88 @@ class QueryDocumentParityTests(SimpleTestCase):
         with patch.object(emb, "_configure", return_value=self._stub(768)):
             out = emb.embed_documents(["a", "b", "c"])
         self.assertEqual(len(out), 3)
+
+
+class RateLimitBackoffTests(SimpleTestCase):
+    """A 429 must back off, never fan out.
+
+    The per-item fallback exists so one malformed chunk can't lose the other
+    ninety-nine. Applied to a quota error it is catastrophic: the free tier
+    allows 100 embed requests/minute, so retrying a 100-text batch item by item
+    spends 100 more requests against an already-exhausted quota and loses every
+    one. That is what left 491 chunks un-embedded in production.
+    """
+
+    class _Quota(Exception):
+        def __str__(self):
+            return "429 Resource has been exhausted (e.g. check quota)."
+
+    def test_a_quota_error_is_recognised(self):
+        self.assertTrue(emb._is_rate_limited(self._Quota()))
+        self.assertTrue(emb._is_rate_limited(Exception("Quota exceeded for model")))
+        self.assertTrue(emb._is_rate_limited(Exception("rate limit reached")))
+
+    def test_an_ordinary_error_is_not_treated_as_a_quota_error(self):
+        self.assertFalse(emb._is_rate_limited(Exception("invalid content part")))
+
+    def test_a_rate_limited_batch_never_falls_back_to_per_item(self):
+        """The regression: 1 refused batch must not become 100 more requests."""
+        calls = []
+
+        class _Fake:
+            def embed_content(self, **kwargs):
+                calls.append(kwargs["content"])
+                raise RateLimitBackoffTests._Quota()
+
+        with patch.object(emb.time, "sleep") as slept:
+            out = emb._embed_batch(_Fake(), ["a", "b", "c"], "m")
+
+        self.assertEqual(out, [None, None, None])
+        # Every call carried the whole batch — none was a single string.
+        self.assertTrue(all(isinstance(c, list) for c in calls))
+        self.assertEqual(len(calls), emb._RATE_LIMIT_RETRIES + 1)
+        self.assertEqual(slept.call_count, emb._RATE_LIMIT_RETRIES)
+
+    def test_backoff_grows_between_retries(self):
+        class _Fake:
+            def embed_content(self, **kwargs):
+                raise RateLimitBackoffTests._Quota()
+
+        with patch.object(emb.time, "sleep") as slept:
+            emb._embed_batch(_Fake(), ["a"], "m")
+        delays = [c.args[0] for c in slept.call_args_list]
+        self.assertEqual(delays, sorted(delays))
+        self.assertLess(delays[0], delays[-1])
+
+    def test_a_batch_that_recovers_after_a_pause_is_embedded(self):
+        state = {"n": 0}
+
+        class _Fake:
+            def embed_content(self, **kwargs):
+                state["n"] += 1
+                if state["n"] == 1:
+                    raise RateLimitBackoffTests._Quota()
+                return {"embedding": [[0.1] * emb.EMBED_DIMENSIONS] * len(kwargs["content"])}
+
+        with patch.object(emb.time, "sleep"):
+            out = emb._embed_batch(_Fake(), ["a", "b"], "m")
+        self.assertEqual(len(out), 2)
+        self.assertTrue(all(v is not None for v in out))
+
+    def test_a_non_quota_failure_still_falls_back_to_per_item(self):
+        """That fallback is the whole point when one chunk is malformed."""
+        seen = []
+
+        class _Fake:
+            def embed_content(self, **kwargs):
+                content = kwargs["content"]
+                seen.append(content)
+                if isinstance(content, list):
+                    raise ValueError("invalid content part")
+                return {"embedding": [0.1] * emb.EMBED_DIMENSIONS}
+
+        out = emb._embed_batch(_Fake(), ["a", "b"], "m")
+        self.assertEqual(len(out), 2)
+        self.assertTrue(all(v is not None for v in out))
+        # One failed batch call, then one call per item.
+        self.assertEqual(seen[1:], ["a", "b"])
