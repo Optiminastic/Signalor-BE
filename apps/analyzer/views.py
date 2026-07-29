@@ -1024,7 +1024,14 @@ class AnalysisRunBySlugView(APIView):
 
 
 class AnalysisRunListView(APIView):
+    # The analysing screen polls this every 3.5s to drive the progress bar, which
+    # is ~1000 requests/hour for one user watching one run. Without an explicit
+    # scope it inherited DEFAULT_THROTTLE_RATES["anon"] = 60/hour and ran out of
+    # budget about three minutes in: the bar froze at whatever checkpoint it had
+    # reached, and the 429s spilled onto every other anon-keyed endpoint for the
+    # rest of the hour because that bucket is shared per IP.
     permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
 
     def get(self, request):
         org_id = request.query_params.get("org_id")
@@ -1056,6 +1063,57 @@ class AnalysisRunListView(APIView):
 
         serializer = AnalysisRunListSerializer(page, many=True)
         return Response(serializer.data)
+
+
+class LatestRunProgressView(APIView):
+    """GET /runs/progress/?email= — just enough to drive the progress bar.
+
+    The analysing screen used to poll the full run *list* every 3.5s: a page of
+    up to 20 rows, each passed through ``maybe_fail_stale`` (which can write) and
+    a nine-field serializer, to read one integer off ``[0]``. That is the most
+    frequently hit query in the product doing ~20x the work it needs.
+
+    This reads one row, five columns, and heals only that row. Same polling
+    cadence costs a fraction of the database time and a fraction of the payload.
+
+    Still the wrong shape long-term - the run emits ~10 discrete checkpoints, so
+    a push (SSE) would deliver them in ~10 messages instead of ~85 requests - but
+    that needs an ASGI server, and this one is WSGI with 8 request slots total.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request):
+        from .run_guard import maybe_fail_stale
+
+        email = request.query_params.get("email", "").lower().strip()
+        if not email:
+            return Response(
+                {"error": "Email parameter is required."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        run = (
+            AnalysisRun.objects.filter(email=email)
+            .only("id", "slug", "status", "progress", "updated_at")
+            .order_by("-created_at")
+            .first()
+        )
+        if run is None:
+            return Response({"found": False})
+
+        # Heal a silently-orphaned run here too: this is now the endpoint the
+        # loading screen polls, so without it a dead run reports its last
+        # progress forever and the bar never recovers.
+        run = maybe_fail_stale(run)
+        return Response(
+            {
+                "found": True,
+                "slug": run.slug,
+                "status": run.status,
+                "progress": run.progress or 0,
+            }
+        )
 
 
 class AnalysisRunDetailView(APIView):

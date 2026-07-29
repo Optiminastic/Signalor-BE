@@ -6,6 +6,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.analyzer.onboarding_security import gate_onboarding_endpoint
+from core.throttling import PollingThrottle
 
 from .models import BrandProfile, Organization
 from .serializers import BrandProfileSerializer, OnboardSerializer, OrganizationSerializer
@@ -97,6 +98,7 @@ class OnboardView(APIView):
 
 class CheckOrganizationView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
 
     def get(self, request):
         email = request.query_params.get("email", "").lower().strip()
@@ -112,7 +114,12 @@ class CheckOrganizationView(APIView):
 
 
 class OrganizationListView(APIView):
+    # Every dashboard page load resolves the active project through here, so an
+    # explicit read scope is required: the DEFAULT_THROTTLE_RATES["anon"] fallback
+    # of 60/hour is shared per IP with every other unscoped endpoint, and once a
+    # run poll exhausted it the whole dashboard 429'd and hung on its spinner.
     permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
 
     def get(self, request):
         email = request.query_params.get("email", "").lower().strip()
@@ -137,6 +144,7 @@ class OrganizationListView(APIView):
 
 class OrganizationDetailView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
 
     def patch(self, request, pk):
         try:
