@@ -32,6 +32,7 @@ set, so local and CI runs cost nothing and need no configuration.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import threading
@@ -44,14 +45,33 @@ logger = logging.getLogger("apps")
 _MAX_INPUT_CHARS = 8000
 _MAX_OUTPUT_CHARS = 8000
 
+# The Langfuse SDK client is a *process*-level singleton, not per-request state:
+# it owns a background event buffer and an HTTP pool that must be shared across
+# the ~100 LLM calls in a run and flushed once. Rebuilding it per request would
+# defeat the buffering it exists to provide, and the SDK is itself designed as a
+# singleton. Per-*run* state lives in the ContextVar below, never here.
+#
+# Construction failure is cached deliberately: a missing SDK or bad credentials
+# must not re-attempt the import and constructor on every call.
 _client_lock = threading.Lock()
 _client = None
 _client_initialized = False
 
-# Current run context, mirroring how ``llm._collected_logs`` works: a module-level
-# value guarded by a lock, so worker threads spawned mid-run see it too.
-_context_lock = threading.Lock()
-_run_context: dict | None = None
+# Current run context.
+#
+# A ContextVar, not a module-level dict. Two analyses can run concurrently on one
+# Celery worker (default concurrency is >= 2), and with a shared global the second
+# run's ``start_run`` overwrote the first while its threads were still making
+# calls - so every generation after that point was filed under the wrong account.
+# Trace routing survived that (the trace id is derived from the run id), but
+# ``user_id`` is exactly what the per-user spend view aggregates on, so the cost
+# of one customer's run was attributed to another's.
+#
+# ``ThreadPoolExecutor`` workers do not inherit a ContextVar, so fan-outs must be
+# wrapped with ``llm.propagate`` to carry it across.
+_run_context: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "langfuse_run_context", default=None
+)
 
 
 def is_enabled() -> bool:
@@ -101,6 +121,32 @@ def _get_client():
         return _client
 
 
+def set_client(client) -> None:
+    """Install a client explicitly, bypassing construction from the environment.
+
+    The seam that makes this module testable and the transport swappable: pass a
+    fake to assert on what would have been shipped, or ``None`` to force the
+    disabled path, without setting real credentials or reaching the network.
+    """
+    global _client, _client_initialized
+    with _client_lock:
+        _client = client
+        _client_initialized = True
+
+
+def reset_client() -> None:
+    """Forget the cached client so the next call rebuilds it from the environment.
+
+    Needed because construction (and its failure) is cached for the life of the
+    process: a test that changes ``LANGFUSE_*`` would otherwise keep whatever the
+    first caller built.
+    """
+    global _client, _client_initialized
+    with _client_lock:
+        _client = None
+        _client_initialized = False
+
+
 def start_run(
     run_id,
     url: str = "",
@@ -128,9 +174,8 @@ def start_run(
         if client is None:
             return
         trace_id = client.create_trace_id(seed=f"analysis-run-{run_id}")
-        with _context_lock:
-            global _run_context
-            _run_context = {
+        _run_context.set(
+            {
                 "trace_id": trace_id,
                 "run_id": str(run_id),
                 "url": url,
@@ -140,6 +185,7 @@ def start_run(
                 "tags": list(tags or []),
                 "extra": extra or {},
             }
+        )
     except Exception:
         logger.warning("Langfuse start_run failed", exc_info=True)
 
@@ -151,9 +197,7 @@ def end_run() -> None:
     idle may hold events in its buffer for a while, and a worker that is
     redeployed mid-buffer loses them.
     """
-    with _context_lock:
-        global _run_context
-        _run_context = None
+    _run_context.set(None)
     try:
         client = _get_client()
         if client is not None:
@@ -163,8 +207,8 @@ def end_run() -> None:
 
 
 def _current_context() -> dict | None:
-    with _context_lock:
-        return dict(_run_context) if _run_context else None
+    ctx = _run_context.get()
+    return dict(ctx) if ctx else None
 
 
 def record_generation(

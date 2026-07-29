@@ -25,6 +25,7 @@ Two design points:
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 
 logger = logging.getLogger("apps")
@@ -32,6 +33,10 @@ logger = logging.getLogger("apps")
 # Ranked list length. Outreach is manual work; a list of eighty targets is a list
 # nobody starts.
 MAX_TARGETS = 15
+
+# Presence checks are IO-bound and independent. Capped rather than one-per-target
+# so a full list does not open MAX_TARGETS sockets at once.
+_VERIFY_WORKERS = 6
 
 # A domain must win at least this many prompts to be worth pitching. One is
 # usually a coincidence of a single answer.
@@ -128,11 +133,22 @@ def is_reachable_target(domain: str) -> bool:
 
 
 def collect_gaps(run) -> list[CitationGap]:
-    """Domains cited when the brand was not, ranked by how many prompts they win.
+    """Domains cited when the brand was not, ranked by how many prompts they win."""
+    return _scan(run)[0]
+
+
+def _scan(run) -> tuple[list[CitationGap], int]:
+    """``(ranked gaps, prompts actually lost)``.
 
     Only prompts the brand lost outright count. A prompt where the brand was
     already mentioned is not a gap, however many other sources were cited
     alongside it.
+
+    The lost-prompt total is returned separately because it must be counted over
+    every observed track before ``example_prompts`` is truncated to three and the
+    list is cut to ``MAX_TARGETS`` - those caps exist for display. Deriving the
+    headline number from them undercounted it, and counted prompt *text*, so two
+    tracks that happened to share wording collapsed into one.
     """
     from apps.analyzer.models import PromptTrack
 
@@ -184,7 +200,8 @@ def collect_gaps(run) -> list[CitationGap]:
         if len(track_ids) >= MIN_PROMPTS
     ]
     gaps.sort(key=lambda g: (-g.prompts_won, -g.citations, g.domain))
-    return gaps[:MAX_TARGETS]
+    lost = len({track_id for ids in prompts_by_domain.values() for track_id in ids})
+    return gaps[:MAX_TARGETS], lost
 
 
 def _stored_status(org, domains: list[str]) -> dict[str, tuple[str, str]]:
@@ -208,6 +225,24 @@ def _verify_live(brand: str, domain: str, industry: str = "") -> bool | None:
         return None
 
 
+def _verify_all(brand: str, gaps: list) -> None:
+    """Presence-check every gap concurrently, updating each in place. Never raises.
+
+    One outbound search per domain and up to ``MAX_TARGETS`` of them, so doing
+    this sequentially put ~15 round trips on a request thread. The checks are
+    independent and IO-bound, which is exactly the shape the rest of the codebase
+    fans out (see ``llm.ask_answer_engines``).
+    """
+    if not gaps:
+        return
+    with ThreadPoolExecutor(max_workers=min(_VERIFY_WORKERS, len(gaps))) as pool:
+        results = list(pool.map(lambda g: _verify_live(brand, g.domain), gaps))
+    for gap, present in zip(gaps, results, strict=True):
+        gap.brand_present = present
+        if present is True:
+            gap.status = LIVE
+
+
 def report_for_run(run, *, verify: bool = True) -> dict:
     """Ranked citation-gap outreach list for a run. Never raises.
 
@@ -215,7 +250,7 @@ def report_for_run(run, *, verify: bool = True) -> dict:
     each. Useful for a fast read where only the ranking matters.
     """
     try:
-        gaps = collect_gaps(run)
+        gaps, lost = _scan(run)
     except Exception:
         logger.exception("citation_gaps: collection failed for run %s", getattr(run, "id", "?"))
         return {"targets": [], "summary": {"total": 0, "prompts_lost": 0, "live": 0}}
@@ -224,18 +259,18 @@ def report_for_run(run, *, verify: bool = True) -> dict:
     stored = _stored_status(org, [g.domain for g in gaps])
     brand = (getattr(run, "brand_name", "") or "").strip()
 
+    pending = []
     for gap in gaps:
         status, note = stored.get(gap.domain, (IDENTIFIED, ""))
         gap.note = note
+        gap.status = status
         # A user may mark pitched or dismissed; "live" is only ever earned by
         # actually appearing on the domain.
         if verify and brand and status != DISMISSED:
-            gap.brand_present = _verify_live(brand, gap.domain)
-            gap.status = LIVE if gap.brand_present is True else status
-        else:
-            gap.status = status
+            pending.append(gap)
 
-    lost = len({p for g in gaps for p in g.example_prompts if p})
+    _verify_all(brand, pending)
+
     return {
         "targets": [g.as_dict() for g in gaps],
         "summary": {
@@ -255,7 +290,14 @@ def set_status(org, domain: str, status: str, note: str = "") -> dict:
     """
     from apps.analyzer.models import CitationOutreach
 
-    clean = (domain or "").strip().lower().removeprefix("www.")
+    # Types are checked, not assumed: these arrive straight from a JSON request
+    # body, so a client sending {"domain": 123} would otherwise reach .strip() and
+    # raise AttributeError - a 500 for what is plainly a bad request. ValueError is
+    # what the view already translates into a typed 400.
+    if not isinstance(domain, str) or not isinstance(note, str):
+        raise ValueError("domain and note must be strings")
+
+    clean = domain.strip().lower().removeprefix("www.")
     if not clean:
         raise ValueError("domain is required")
     if status not in USER_SETTABLE:

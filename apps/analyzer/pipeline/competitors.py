@@ -261,7 +261,7 @@ def _candidates_from_organic(
         normalized = _normalize_homepage_url(item.get("link") or "")
         if not normalized:
             continue
-        host = urlparse(normalized).netloc.lower().replace("www.", "")
+        host = _host_key(normalized)
         if not host or host in seen_hosts:
             continue
         if any(h in host for h in NON_COMPETITOR_HOST_HINTS):
@@ -939,11 +939,8 @@ def _format_candidates_block(web_candidates: list[dict]) -> str:
 
 def _candidate_hosts(web_candidates: list[dict]) -> set[str]:
     """Host allow-list built from the live search results."""
-    hosts = set()
-    for item in web_candidates:
-        host = urlparse(_normalize_homepage_url(item.get("url", ""))).netloc.lower()
-        if host:
-            hosts.add(host)
+    hosts = {_host_key(item.get("url", "")) for item in web_candidates}
+    hosts.discard("")
     return hosts
 
 
@@ -952,10 +949,14 @@ def _filter_to_allowed_hosts(competitors: list[dict], allowed_hosts: set[str]) -
 
     This is the hallucination gate: the model may only *choose* among domains the
     search engine actually returned, never introduce one from memory.
+
+    Compared through ``_host_key`` so the gate is www-insensitive: search returns
+    ``https://www.acme.com`` but a model routinely writes back ``acme.com``, and
+    a bare netloc comparison discarded that as a hallucination.
     """
     kept = []
     for comp in competitors:
-        host = urlparse(_normalize_homepage_url(comp.get("url", ""))).netloc.lower()
+        host = _host_key(comp.get("url", ""))
         if host in allowed_hosts:
             kept.append(comp)
         else:
@@ -1264,7 +1265,7 @@ def _discover_competitors_llm(
             )
 
         selected = list(gated)
-        existing_hosts = [urlparse(c["url"]).netloc.lower() for c in selected]
+        existing_hosts = [_host_key(c["url"]) for c in selected]
         # Only worth a refill call if the search returned candidates we haven't used
         # yet — otherwise the model has nothing left to legitimately pick from and
         # anything it returns would be filtered out as off-list anyway.
@@ -1358,6 +1359,22 @@ def _clean_site_context(text: str) -> str:
     compact = re.sub(r"[^\x20-\x7E]", " ", compact)
     compact = re.sub(r"\s+", " ", compact).strip()
     return compact[:800]
+
+
+def _host_key(url: str) -> str:
+    """Canonical host for comparing two URLs: lowercased, no scheme, no ``www.``.
+
+    The single definition of "same site" for this module. Discovery dedupes by
+    host, the hallucination gate matches against a host allow-list, and the
+    top-up prompt excludes hosts already chosen - all three must agree, or a
+    candidate found as ``www.acme.com`` is dropped when the model writes back
+    ``acme.com``.
+
+    ``removeprefix``, not ``replace``: the latter also rewrote hosts with an
+    interior "www." (``mywww.site.com`` -> ``mysite.com``).
+    """
+    host = urlparse(_normalize_homepage_url(url)).netloc.lower()
+    return host.removeprefix("www.")
 
 
 def _normalize_homepage_url(url: str) -> str:

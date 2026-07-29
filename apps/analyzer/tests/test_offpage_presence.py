@@ -13,6 +13,15 @@ from apps.analyzer.pipeline.offpage_presence import brand_present_on_domain
 
 
 class OffpagePresenceTests(SimpleTestCase):
+    def setUp(self):
+        # Results are cached per (brand, domain) for 7 days, and SimpleTestCase
+        # does not reset the cache between tests. Without this, a test that
+        # verifies a brand poisons every later test using the same pair - which
+        # is why the fail-safe assertions passed alone and failed in the suite.
+        from django.core.cache import cache
+
+        cache.clear()
+
     def test_unknown_without_serper_key(self):
         # No search configured → None (UNKNOWN) so the caller keeps the task.
         with patch.object(offpage_presence.serper, "is_configured", return_value=False):

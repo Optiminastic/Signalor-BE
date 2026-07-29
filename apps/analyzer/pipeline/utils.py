@@ -6,6 +6,8 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from ..url_guard import SSRFValidationError, guarded_session
+
 logger = logging.getLogger("apps")
 
 DEFAULT_USER_AGENT = (
@@ -27,26 +29,36 @@ def url_is_reachable(url: str, *, timeout: float = 3.0) -> bool:
         return False
 
     headers = {"User-Agent": DEFAULT_USER_AGENT}
+    # These URLs are model-generated, so the target is attacker-influenced. A bare
+    # request would happily probe 169.254.169.254 or an internal host and leak its
+    # existence through the kept/dropped decision. guarded_session re-validates
+    # every hop, so redirects cannot escape either.
+    session = guarded_session()
 
     def _get_ok() -> bool:
-        resp = requests.get(url, headers=headers, timeout=timeout + 1, allow_redirects=True, stream=True)
+        resp = session.get(url, headers=headers, timeout=timeout + 1, allow_redirects=True, stream=True)
         try:
             return resp.status_code < 400
         finally:
             resp.close()
 
     try:
-        resp = requests.head(url, headers=headers, timeout=timeout, allow_redirects=True)
+        resp = session.head(url, headers=headers, timeout=timeout, allow_redirects=True)
         if resp.status_code < 400:
             return True
         if resp.status_code in {403, 405}:
             return _get_ok()
         return False
+    except SSRFValidationError:
+        logger.info("Reachability check refused non-public URL: %s", url)
+        return False
     except requests.RequestException:
         try:
             return _get_ok()
-        except requests.RequestException:
+        except (requests.RequestException, SSRFValidationError):
             return False
+    finally:
+        session.close()
 
 
 def drop_unreachable(rows: list[dict], url_key: str) -> list[dict]:

@@ -55,3 +55,10 @@ origin.cert
 # concurrent-log-handler runtime lock files
 logs/*.lock
 deploy/stack.local.env
+# Editor/manual backups of the above. A suffix is all it took for
+# deploy/stack.local.env.bak to slip past the rules above and reach a commit.
+*.bak
+*.orig
+*~
+deploy/stack*.env
+!deploy/stack*.env.example

@@ -122,6 +122,43 @@ class HallucinationGateTests(SimpleTestCase):
         picked = [{"name": "Invented", "url": "https://nevar.ai"}]
         self.assertEqual(competitors._filter_to_allowed_hosts(picked, set()), [])
 
+    def test_the_gate_is_www_insensitive(self):
+        """Search returns www.rival.com; a model routinely writes back rival.com.
+
+        Comparing bare netlocs discarded that as a hallucination, silently losing
+        a legitimately discovered competitor.
+        """
+        allowed = competitors._candidate_hosts([{"url": "https://www.rival.com"}])
+        kept = competitors._filter_to_allowed_hosts([{"name": "Rival", "url": "https://rival.com"}], allowed)
+        self.assertEqual([c["name"] for c in kept], ["Rival"])
+
+    def test_the_gate_is_www_insensitive_in_the_other_direction(self):
+        allowed = competitors._candidate_hosts([{"url": "https://rival.com"}])
+        kept = competitors._filter_to_allowed_hosts(
+            [{"name": "Rival", "url": "https://www.rival.com"}], allowed
+        )
+        self.assertEqual([c["name"] for c in kept], ["Rival"])
+
+
+class HostKeyTests(SimpleTestCase):
+    """One definition of "same site" shared by discovery, the gate and the top-up."""
+
+    def test_www_and_bare_hosts_are_the_same_key(self):
+        self.assertEqual(
+            competitors._host_key("https://www.acme.com"), competitors._host_key("http://acme.com/x")
+        )
+
+    def test_an_interior_www_is_not_stripped(self):
+        """``replace`` turned mywww.site.com into mysite.com; ``removeprefix`` does not."""
+        self.assertEqual(competitors._host_key("https://mywww.site.com"), "mywww.site.com")
+
+    def test_a_subdomain_is_not_collapsed_into_its_parent(self):
+        self.assertEqual(competitors._host_key("https://blog.acme.com"), "blog.acme.com")
+
+    def test_junk_yields_an_empty_key(self):
+        for value in ("", "   ", None):
+            self.assertEqual(competitors._host_key(value), "")
+
     def test_no_llm_is_called_when_the_search_returns_nothing(self):
         """The core regression: an empty search must short-circuit, not prompt anyway."""
         with (

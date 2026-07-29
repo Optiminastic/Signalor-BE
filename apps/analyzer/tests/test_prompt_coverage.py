@@ -169,9 +169,15 @@ class EndpointTests(TestCase):
         from apps.analyzer.models import AnalysisRun, PromptTrack
         from apps.organizations.models import Organization
 
-        org = Organization.objects.create(name="Acme", owner_email="o@acme.com")
-        self.run = AnalysisRun.objects.create(url="https://acme.com", organization=org)
+        self.org = Organization.objects.create(name="Acme", owner_email="o@acme.com")
+        self.run = AnalysisRun.objects.create(url="https://acme.com", organization=self.org)
         self.track = PromptTrack.objects.create(analysis_run=self.run, prompt_text="what is GEO?")
+
+    def _owner(self):
+        """answer-block is billable, so it requires a verified owner."""
+        from apps.analyzer.tests.auth_helpers import signed_in
+
+        return signed_in(self.org.owner_email)
 
     def test_coverage_endpoint_returns_rows_and_summary(self):
         from django.urls import reverse
@@ -201,19 +207,40 @@ class EndpointTests(TestCase):
         from django.urls import reverse
 
         draft = {"prompt": "q", "heading": "h", "answer": "a", "mode": "new_page"}
-        with patch("apps.analyzer.services.answer_block.generate_for_prompt", return_value=draft):
+        with self._owner(), patch(
+            "apps.analyzer.services.answer_block.generate_for_prompt", return_value=draft
+        ):
             resp = self.client.post(
                 reverse("analyzer:prompt-answer-block", args=[self.run.slug, self.track.id])
             )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["heading"], "h")
 
+    def test_answer_block_refuses_a_caller_holding_only_the_slug(self):
+        """Billable, so the slug alone must not trigger it."""
+        from django.urls import reverse
+
+        url = reverse("analyzer:prompt-answer-block", args=[self.run.slug, self.track.id])
+        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"):
+            self.assertEqual(self.client.post(url).status_code, 401)
+
+    def test_answer_block_refuses_a_verified_stranger(self):
+        from django.urls import reverse
+
+        from apps.analyzer.tests.auth_helpers import signed_in
+
+        url = reverse("analyzer:prompt-answer-block", args=[self.run.slug, self.track.id])
+        with signed_in("stranger@example.com"):
+            self.assertEqual(self.client.post(url).status_code, 404)
+
     def test_a_failed_draft_is_reported_not_silently_empty(self):
         from unittest.mock import patch
 
         from django.urls import reverse
 
-        with patch("apps.analyzer.services.answer_block.generate_for_prompt", return_value=None):
+        with self._owner(), patch(
+            "apps.analyzer.services.answer_block.generate_for_prompt", return_value=None
+        ):
             resp = self.client.post(
                 reverse("analyzer:prompt-answer-block", args=[self.run.slug, self.track.id])
             )
@@ -228,7 +255,9 @@ class EndpointTests(TestCase):
 
         other = AnalysisRun.objects.create(url="https://other.com")
         foreign = PromptTrack.objects.create(analysis_run=other, prompt_text="x")
-        with patch("apps.analyzer.services.answer_block.generate_for_prompt", return_value={}):
+        with self._owner(), patch(
+            "apps.analyzer.services.answer_block.generate_for_prompt", return_value={}
+        ):
             resp = self.client.post(
                 reverse("analyzer:prompt-answer-block", args=[self.run.slug, foreign.id])
             )

@@ -357,6 +357,29 @@ def _budget_status(email: str):
         return None
 
 
+def _add_background_spend(run_id: int, spend: dict) -> None:
+    """Fold work that finished after the run into its recorded cost.
+
+    ``llm_cost_usd`` is what ``services.llm_spend`` sums for the budget window,
+    so spend that never lands there is spend the fuse cannot see.
+    """
+    cost = float((spend or {}).get("cost", 0.0) or 0.0)
+    if cost <= 0:
+        return
+    try:
+        from django.db.models import F
+
+        AnalysisRun.objects.filter(pk=run_id).update(llm_cost_usd=F("llm_cost_usd") + cost)
+        logger.info(
+            "Run %d: +$%.4f from %d background call(s) (competitive prompts)",
+            run_id,
+            cost,
+            (spend or {}).get("calls", 0),
+        )
+    except Exception:
+        logger.exception("Run %d: could not record background spend", run_id)
+
+
 def _record_spend(run) -> None:
     """Persist this run's LLM spend so it can be metered and capped per account."""
     try:
@@ -365,6 +388,34 @@ def _record_spend(run) -> None:
         record_run_cost(run)
     except Exception:
         logger.exception("Run %s: spend recording failed", getattr(run, "id", "?"))
+
+
+def _finalize_accounting(run, run_id: int) -> None:
+    """Drain, persist and meter a run's LLM spend, then flush its trace.
+
+    Runs from a ``finally``, so it must cover every exit: a run that crashed
+    halfway still made (and was billed for) real LLM calls, and skipping this
+    used to lose both the spend and the buffered Langfuse events.
+
+    Guarded on a non-empty drain because ``get_collected_logs()`` *clears* the
+    collector as it reads. The partial-analysis path drains and records its own
+    spend before returning, so an unconditional write here would overwrite its
+    ``llm_logs`` with an empty list and reset ``llm_cost_usd`` to zero - quietly
+    dropping that run out of the 30-day budget window.
+
+    The trace flush is outside the guarded block: a broken meter must not leave
+    buffered observability events stranded in a worker that is about to idle.
+    """
+    try:
+        logs = get_collected_logs()
+        if logs:
+            run.llm_logs = logs
+            run.save(update_fields=["llm_logs"])
+            _record_spend(run)
+            _log_run_cost(run_id, logs)
+    except Exception:
+        logger.exception("Run %s: cost accounting failed", run_id)
+    _end_trace(run_id)
 
 
 def _log_run_cost(run_id: int, logs: list[dict]) -> None:
@@ -1186,12 +1237,10 @@ def run_single_page_analysis(run_id: int):
         # Clear any stale error (e.g. a "stalled" message the watchdog set while
         # this run was waiting in the queue) — it completed cleanly after all.
         run.error_message = ""
-        run.llm_logs = get_collected_logs()
         run.save()
-        _record_spend(run)
-        _log_run_cost(run_id, run.llm_logs)
-        _end_trace(run_id)
         logger.info("Analysis complete for run %d: score %.1f", run_id, composite)
+        # Dispatched after finalization on purpose (it must not delay completion),
+        # so it meters its own spend rather than relying on this run's window.
         _generate_and_fire_competitive_prompts(run)
 
     except Exception as exc:
@@ -1199,6 +1248,8 @@ def run_single_page_analysis(run_id: int):
         run.status = AnalysisRun.Status.FAILED
         run.error_message = str(exc)
         run.save()
+    finally:
+        _finalize_accounting(run, run_id)
 
 
 def _domain_label(url: str) -> str:
@@ -1290,6 +1341,22 @@ def _generate_and_fire_competitive_prompts(run: AnalysisRun) -> None:
     the user having to trigger anything from the UI.
     """
     try:
+        # This fires up to 40 billable calls (10 prompts x 4 engines), so it is
+        # subject to the same budget as the analysis that triggered it. Without
+        # this an account whose allowance is exhausted could still spend
+        # unbounded amounts, once per completed run.
+        status = _budget_status(run.email)
+        if status is not None and not status.allowed:
+            logger.warning(
+                "Run %d: skipping competitive prompts, %s is over its LLM allowance "
+                "($%.2f of $%.2f)",
+                run.id,
+                status.email or "(anonymous)",
+                status.spent_usd,
+                status.limit_usd,
+            )
+            return
+
         # Idempotency: count-based, not existence-based. Onboarding can plant a
         # single COMPETITIVE-typed prompt (e.g. the hardcoded "Compare X with
         # competitors" fallback from GeneratePromptsView), which would trip a
@@ -1344,20 +1411,33 @@ def _generate_and_fire_competitive_prompts(run: AnalysisRun) -> None:
                 )
             )
 
-        def _fire_all():
-            # Parallel pool: 4 prompts in flight, each one fires its engines
-            # in parallel internally. Keeps total wall-clock to ~3x slowest
-            # engine round-trip instead of 10x.
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                futures = [pool.submit(_fire_competitive_prompt_fast, t, brand, url) for t in tracks]
-                for fut in as_completed(futures):
-                    try:
-                        fut.result()
-                    except Exception:
-                        # _fire_competitive_prompt_fast already logs internally.
-                        pass
+        from .pipeline.llm import cost_scope, propagate
 
-        threading.Thread(target=_fire_all, daemon=True).start()
+        def _fire_all():
+            # This work happens after the run was finalized and its logs drained,
+            # so it cannot ride on the run's collection window. A cost scope meters
+            # it independently and the total is added to the run afterwards, which
+            # is what puts it inside the 30-day window the budget fuse reads.
+            with cost_scope() as spend:
+                # Parallel pool: 4 prompts in flight, each one fires its engines
+                # in parallel internally. Keeps total wall-clock to ~3x slowest
+                # engine round-trip instead of 10x.
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    # Pool workers do not inherit contextvars, so the scope and the
+                    # Langfuse run identity have to be carried across explicitly.
+                    futures = [
+                        pool.submit(propagate(_fire_competitive_prompt_fast), t, brand, url)
+                        for t in tracks
+                    ]
+                    for fut in as_completed(futures):
+                        try:
+                            fut.result()
+                        except Exception:
+                            # _fire_competitive_prompt_fast already logs internally.
+                            pass
+            _add_background_spend(run.id, spend)
+
+        threading.Thread(target=propagate(_fire_all), daemon=True).start()
         logger.info(
             "Queued %d competitive prompts for run %d (runs=1, pool=4).",
             len(tracks),

@@ -262,6 +262,31 @@ class EndpointTests(TestCase):
     def test_unknown_slug_is_404_not_a_500(self):
         self.assertEqual(self.client.get(self._url("does-not-exist")).status_code, 404)
 
+    def test_a_verified_stranger_cannot_read_another_brands_report(self):
+        """A slug is not a credential: a signed-in caller is held to their own brands."""
+        from apps.analyzer.tests.auth_helpers import signed_in
+
+        with signed_in("stranger@example.com"):
+            self.assertEqual(self.client.get(self._url()).status_code, 404)
+
+    def test_the_owner_may_read(self):
+        from unittest.mock import patch
+
+        from apps.analyzer.tests.auth_helpers import signed_in
+
+        with signed_in(self.org.owner_email), patch(
+            "apps.analyzer.pipeline.crawler.fetch_file_content", return_value=BLOCK_ALL
+        ):
+            self.assertEqual(self.client.get(self._url()).status_code, 200)
+
+    def test_enforcing_verified_identity_closes_anonymous_reads(self):
+        from django.test import override_settings
+
+        with override_settings(
+            BETTER_AUTH_JWKS_URL="https://auth.example/jwks", REQUIRE_VERIFIED_IDENTITY=True
+        ):
+            self.assertEqual(self.client.get(self._url()).status_code, 401)
+
     def test_run_without_an_organization_is_rejected(self):
         from apps.analyzer.models import AnalysisRun
 

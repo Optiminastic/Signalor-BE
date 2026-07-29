@@ -52,29 +52,58 @@ class KeyTests(TestCase):
 
 
 class VerificationTests(TestCase):
+    """The key-file fetch goes through the SSRF-guarded session, not bare requests.
+
+    Patching ``requests.get`` here would silently stop intercepting if the fetch
+    were ever routed differently, so these patch the session factory itself.
+    """
+
+    def _session(self, **get_kwargs):
+        from unittest.mock import MagicMock
+
+        session = MagicMock()
+        session.get.configure_mock(**get_kwargs)
+        return patch.object(indexnow, "guarded_session", return_value=session), session
+
     def test_matching_key_file_verifies(self):
-        with patch.object(indexnow.requests, "get", return_value=_Resp(200, "abc\n")):
-            ok, _ = indexnow.verify_key_file("https://acme.com", "abc")
+        ctx, _ = self._session(return_value=_Resp(200, "abc\n"))
+        with ctx:
+            ok, _msg = indexnow.verify_key_file("https://acme.com", "abc")
         self.assertTrue(ok)
 
     def test_missing_key_file_fails_with_the_expected_location(self):
-        with patch.object(indexnow.requests, "get", return_value=_Resp(404)):
+        ctx, _ = self._session(return_value=_Resp(404))
+        with ctx:
             ok, message = indexnow.verify_key_file("https://acme.com", "abc")
         self.assertFalse(ok)
         self.assertIn("acme.com/abc.txt", message)
 
     def test_wrong_contents_fail(self):
-        with patch.object(indexnow.requests, "get", return_value=_Resp(200, "different")):
-            ok, _ = indexnow.verify_key_file("https://acme.com", "abc")
+        ctx, _ = self._session(return_value=_Resp(200, "different"))
+        with ctx:
+            ok, _msg = indexnow.verify_key_file("https://acme.com", "abc")
         self.assertFalse(ok)
 
     def test_network_failure_is_reported_not_raised(self):
-        with patch.object(
-            indexnow.requests, "get", side_effect=indexnow.requests.RequestException("timeout")
-        ):
+        ctx, _ = self._session(side_effect=indexnow.requests.RequestException("timeout"))
+        with ctx:
             ok, message = indexnow.verify_key_file("https://acme.com", "abc")
         self.assertFalse(ok)
         self.assertIn("timeout", message)
+
+    def test_a_non_public_target_is_refused_not_fetched(self):
+        """SSRF: a host that resolves internally must never be reached."""
+        ctx, _ = self._session(side_effect=indexnow.SSRFValidationError("private"))
+        with ctx:
+            ok, message = indexnow.verify_key_file("https://internal.local", "abc")
+        self.assertFalse(ok)
+        self.assertIn("public address", message)
+
+    def test_the_session_is_closed_even_on_failure(self):
+        ctx, session = self._session(side_effect=indexnow.requests.RequestException("boom"))
+        with ctx:
+            indexnow.verify_key_file("https://acme.com", "abc")
+        session.close.assert_called_once()
 
 
 class SubmissionTests(TestCase):
@@ -84,6 +113,17 @@ class SubmissionTests(TestCase):
         ), patch.object(indexnow.requests, "post", return_value=_Resp(status)) as post:
             result = indexnow.submit("https://acme.com", urls, key="abc")
         return result, post
+
+    def test_non_string_entries_are_skipped_not_crashed_on(self):
+        """``urls`` is a raw JSON array; an int entry must not 500 the endpoint."""
+        result, post = self._submit([None, 42, {"url": "x"}, "https://acme.com/a"])
+        self.assertTrue(result.ok)
+        self.assertEqual(post.call_args.kwargs["json"]["urlList"], ["https://acme.com/a"])
+
+    def test_an_all_non_string_list_is_reported_not_raised(self):
+        result, _ = self._submit([1, 2, 3])
+        self.assertFalse(result.ok)
+        self.assertEqual(result.submitted, 0)
 
     def test_a_valid_batch_is_submitted(self):
         result, post = self._submit(["https://acme.com/a", "https://acme.com/b"])
@@ -148,8 +188,14 @@ class SubmissionTests(TestCase):
 
 class EndpointTests(TestCase):
     def setUp(self):
-        org = Organization.objects.create(name="Acme", owner_email="o@acme.com")
-        self.run = AnalysisRun.objects.create(url="https://acme.com", organization=org)
+        self.org = Organization.objects.create(name="Acme", owner_email="o@acme.com")
+        self.run = AnalysisRun.objects.create(url="https://acme.com", organization=self.org)
+
+    def _owner(self):
+        """Submission pushes URLs to an external index, so it needs an owner."""
+        from apps.analyzer.tests.auth_helpers import signed_in
+
+        return signed_in(self.org.owner_email)
 
     def _url(self):
         from django.urls import reverse
@@ -157,7 +203,9 @@ class EndpointTests(TestCase):
         return reverse("analyzer:indexnow", args=[self.run.slug])
 
     def test_get_returns_setup_instructions(self):
-        with patch.object(indexnow, "verify_key_file", return_value=(False, "not hosted")):
+        with self._owner(), patch.object(
+            indexnow, "verify_key_file", return_value=(False, "not hosted")
+        ):
             resp = self.client.get(self._url())
         body = resp.json()
         self.assertEqual(resp.status_code, 200)
@@ -165,16 +213,40 @@ class EndpointTests(TestCase):
         self.assertIn(".txt", body["key_file_url"])
         self.assertFalse(body["verified"])
 
+    def test_the_key_is_never_returned_to_an_unauthenticated_caller(self):
+        """The key authorises submissions for the host, so a slug must not buy it."""
+        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"):
+            resp = self.client.get(self._url())
+        self.assertEqual(resp.status_code, 401)
+        self.assertNotIn("key", resp.json())
+
     def test_post_submits_the_runs_pages(self):
-        with patch.object(indexnow, "submit_run_pages", return_value={"ok": True, "submitted": 3}):
+        with self._owner(), patch.object(
+            indexnow, "submit_run_pages", return_value={"ok": True, "submitted": 3}
+        ):
             resp = self.client.post(self._url(), data={}, content_type="application/json")
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.json()["ok"])
 
+    def test_post_refuses_a_caller_holding_only_the_slug(self):
+        """Submissions burn the customer's own IndexNow key against engine quotas."""
+        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"), patch.object(
+            indexnow, "submit_run_pages", side_effect=AssertionError("must not submit")
+        ):
+            resp = self.client.post(self._url(), data={}, content_type="application/json")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_a_verified_stranger_cannot_read_the_submission_key(self):
+        from apps.analyzer.tests.auth_helpers import signed_in
+
+        with signed_in("stranger@example.com"):
+            self.assertEqual(self.client.get(self._url()).status_code, 404)
+
     def test_a_run_without_an_organization_is_handled(self):
         from django.urls import reverse
 
-        orphan = AnalysisRun.objects.create(url="https://x.com")
-        resp = self.client.get(reverse("analyzer:indexnow", args=[orphan.slug]))
+        orphan = AnalysisRun.objects.create(url="https://x.com", email=self.org.owner_email)
+        with self._owner():
+            resp = self.client.get(reverse("analyzer:indexnow", args=[orphan.slug]))
         self.assertEqual(resp.status_code, 200)
         self.assertFalse(resp.json()["configured"])

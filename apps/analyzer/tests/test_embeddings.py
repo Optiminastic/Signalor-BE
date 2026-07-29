@@ -24,6 +24,44 @@ class DimensionContractTests(SimpleTestCase):
 
         self.assertEqual(emb.EMBED_DIMENSIONS, EMBEDDING_DIMENSIONS)
 
+    def test_the_width_is_taken_from_the_column_not_a_literal(self):
+        """A duplicated 768 drifts; the column is the only authority."""
+        from unittest.mock import patch
+
+        with patch.dict("os.environ", {"CORPUS_EMBED_DIMENSIONS": ""}, clear=False):
+            from apps.organizations.models import EMBEDDING_DIMENSIONS
+
+            self.assertEqual(emb._embed_dimensions(), EMBEDDING_DIMENSIONS)
+
+    def test_a_mismatched_override_is_rejected_at_import_not_at_insert(self):
+        """Otherwise a whole run of embeddings is paid for before the INSERT fails."""
+        from unittest.mock import patch
+
+        from django.core.exceptions import ImproperlyConfigured
+
+        with patch.dict("os.environ", {"CORPUS_EMBED_DIMENSIONS": "1536"}, clear=False):
+            with self.assertRaises(ImproperlyConfigured):
+                emb._embed_dimensions()
+
+    def test_a_malformed_override_is_rejected(self):
+        from unittest.mock import patch
+
+        from django.core.exceptions import ImproperlyConfigured
+
+        with patch.dict("os.environ", {"CORPUS_EMBED_DIMENSIONS": "wide"}, clear=False):
+            with self.assertRaises(ImproperlyConfigured):
+                emb._embed_dimensions()
+
+    def test_a_matching_override_is_accepted(self):
+        from unittest.mock import patch
+
+        from apps.organizations.models import EMBEDDING_DIMENSIONS
+
+        with patch.dict(
+            "os.environ", {"CORPUS_EMBED_DIMENSIONS": str(EMBEDDING_DIMENSIONS)}, clear=False
+        ):
+            self.assertEqual(emb._embed_dimensions(), EMBEDDING_DIMENSIONS)
+
     def test_retired_model_is_not_the_default(self):
         self.assertNotIn("text-embedding-004", emb.DEFAULT_EMBED_MODEL)
 

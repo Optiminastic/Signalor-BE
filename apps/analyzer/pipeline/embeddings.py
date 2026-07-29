@@ -12,6 +12,8 @@ Callers store those chunks un-embedded and retry them on the next run.
 import logging
 import os
 
+from django.core.exceptions import ImproperlyConfigured
+
 logger = logging.getLogger("apps")
 
 # ``text-embedding-004`` was retired: the Gemini API now answers it with
@@ -25,8 +27,38 @@ logger = logging.getLogger("apps")
 # and no re-index. Override both together via env if you ever widen the column.
 DEFAULT_EMBED_MODEL = os.getenv("CORPUS_EMBED_MODEL", "models/gemini-embedding-001")
 
-# Must equal organizations.models.EMBEDDING_DIMENSIONS.
-EMBED_DIMENSIONS = int(os.getenv("CORPUS_EMBED_DIMENSIONS", "768"))
+def _embed_dimensions() -> int:
+    """Vector width, authoritative from the column the vectors are stored in.
+
+    ``BrandCorpusChunk.embedding`` is a fixed-width pgvector column, so the model
+    output width is not a free choice: a mismatch is only discovered at INSERT,
+    after a whole run's worth of embeddings has been paid for and computed.
+
+    ``CORPUS_EMBED_DIMENSIONS`` stays available for the widen-the-column case but
+    is validated here rather than trusted, so a stale env var fails loudly at
+    import instead of silently producing vectors that cannot be stored.
+    """
+    from apps.organizations.models import EMBEDDING_DIMENSIONS
+
+    raw = os.getenv("CORPUS_EMBED_DIMENSIONS", "").strip()
+    if not raw:
+        return EMBEDDING_DIMENSIONS
+    try:
+        override = int(raw)
+    except ValueError as exc:
+        raise ImproperlyConfigured(
+            f"CORPUS_EMBED_DIMENSIONS={raw!r} is not an integer."
+        ) from exc
+    if override != EMBEDDING_DIMENSIONS:
+        raise ImproperlyConfigured(
+            f"CORPUS_EMBED_DIMENSIONS={override} does not match the "
+            f"BrandCorpusChunk.embedding column width ({EMBEDDING_DIMENSIONS}). "
+            "Migrate the column first, or unset the override."
+        )
+    return override
+
+
+EMBED_DIMENSIONS = _embed_dimensions()
 
 # Gemini caps batch embedding requests; stay well under it.
 _MAX_BATCH = 100

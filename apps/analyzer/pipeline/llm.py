@@ -14,6 +14,8 @@ Falls back to direct Gemini API if no OpenRouter key (internal work only —
 answer-engine simulation requires OpenRouter for web search).
 """
 
+import contextlib
+import contextvars
 import logging
 import os
 import threading
@@ -30,6 +32,11 @@ DEFAULT_TIMEOUT_SEC = 30
 # A web-search call does retrieval before generation, so it needs a longer budget
 # than a plain completion. Measured runs land well inside this.
 WEB_SEARCH_TIMEOUT_SEC = 120
+# Ceiling for a web-search call made while an HTTP request waits on it. The 120s
+# budget above suits a queued Celery run, but on a request thread it outlives the
+# gunicorn worker timeout and every proxy in front of it - the user gets a 504
+# and the worker is still blocked. Better to give up first and report it.
+INTERACTIVE_TIMEOUT_SEC = 25
 
 # Default models.
 # OpenRouter model IDs change over time: "google/gemini-2.0-flash-001" was
@@ -186,6 +193,66 @@ _availability_cache = None
 _log_lock = threading.Lock()
 _collected_logs: list[dict] | None = None
 
+# ── Cost scopes ───────────────────────────────────────────────────────────
+# ``_collected_logs`` is a single process-global list, which is fine for the one
+# analysis a worker is running but cannot meter work that happens *outside* that
+# window - most importantly the competitive-prompt fire, which is dispatched to a
+# daemon thread after the run has already been finalized and its logs drained.
+# Those calls used to land on a ``None`` log and never reach ``llm_cost_usd`` or
+# the spend window the budget fuse reads.
+#
+# A cost scope is an independent accumulator. It is held in a ContextVar so
+# concurrent analyses on one worker cannot bleed into each other, and
+# ``propagate()`` copies the context into pool workers, which do NOT inherit it
+# on their own.
+_cost_scopes: contextvars.ContextVar[tuple[dict, ...]] = contextvars.ContextVar(
+    "llm_cost_scopes", default=()
+)
+
+
+@contextlib.contextmanager
+def cost_scope():
+    """Accumulate the exact USD cost of every LLM call made inside this block.
+
+    Yields a dict that fills in as calls complete::
+
+        with cost_scope() as spend:
+            ...
+        spend["cost"]  # USD actually billed
+
+    Nests safely: an inner scope does not steal from an outer one, both receive
+    every call made within the inner block.
+    """
+    scope = {"cost": 0.0, "calls": 0}
+    token = _cost_scopes.set((*_cost_scopes.get(), scope))
+    try:
+        yield scope
+    finally:
+        _cost_scopes.reset(token)
+
+
+def _record_scope_cost(usage: dict | None) -> None:
+    cost = float((usage or {}).get("cost", 0.0) or 0.0)
+    for scope in _cost_scopes.get():
+        scope["cost"] += cost
+        scope["calls"] += 1
+
+
+def propagate(fn):
+    """Wrap ``fn`` so it runs with the caller's context inside a pool worker.
+
+    ``ThreadPoolExecutor`` does not copy contextvars to its workers, so without
+    this a threaded fan-out loses both the cost scope and the Langfuse run
+    identity, and files its calls under whatever run happened to touch the
+    globals last.
+    """
+    ctx = contextvars.copy_context()
+
+    def _run(*args, **kwargs):
+        return ctx.run(fn, *args, **kwargs)
+
+    return _run
+
 
 def start_log_collection():
     """Start collecting LLM logs (thread-safe, works across ThreadPoolExecutor)."""
@@ -293,17 +360,24 @@ def _log_call(
     below, because the run-scoped log is opt-in per task while tracing should
     cover every call the process makes, including ones outside an analysis run.
     """
+    _record_scope_cost(usage)
+
     from .observability import record_generation
 
+    # Sanitized for the same reason the stored copy below is: a null byte or a
+    # lone surrogate from a model response is rejected by the Postgres JSON that
+    # backs Langfuse too, and there it fails silently in a background flush.
+    # Not truncated here - record_generation applies its own, larger limit, and
+    # the 1000/3000 caps below exist to bound a database column.
     record_generation(
         model=model,
         purpose=purpose,
-        prompt=prompt,
-        response=response,
+        prompt=_sanitize(prompt or ""),
+        response=_sanitize(response or ""),
         status=status,
         duration_ms=duration_ms,
         usage=usage,
-        system=system,
+        system=_sanitize(system) if system else system,
         web_search=web_search,
     )
 
@@ -464,6 +538,7 @@ def ask_llm_with_citations(
     model_override: str | None = None,
     web_search: str | None = None,
     allow_fallback: bool = True,
+    timeout: int | None = None,
 ) -> tuple[str, list[dict]]:
     """
     Send a prompt to an LLM and return (text, citations[]).
@@ -499,6 +574,7 @@ def ask_llm_with_citations(
             model_override=model_override,
             web_search=web_search,
             allow_fallback=allow_fallback,
+            timeout=timeout,
         )
     else:
         return (
@@ -794,6 +870,7 @@ def _call_openrouter(
     model_override: str | None = None,
     web_search: str | None = None,
     allow_fallback: bool = True,
+    timeout: int | None = None,
 ) -> tuple[str, list[dict]]:
     """Call OpenRouter API. Returns (text, citations[])."""
     model = model_override or _pick_model(preferred_provider, tier)
@@ -822,8 +899,10 @@ def _call_openrouter(
     logger.info('[LLM REQUEST] >> %s | %s | prompt: "%s..."', model, purpose, prompt_preview)
 
     # Web search adds a retrieval round trip before generation, so the 30s budget
-    # that suits a plain completion is not enough.
-    timeout = WEB_SEARCH_TIMEOUT_SEC if web_search else DEFAULT_TIMEOUT_SEC
+    # that suits a plain completion is not enough. An explicit timeout wins: a
+    # caller blocking an HTTP request needs a far shorter leash than a queued run.
+    if timeout is None:
+        timeout = WEB_SEARCH_TIMEOUT_SEC if web_search else DEFAULT_TIMEOUT_SEC
 
     t0 = time.time()
     try:
@@ -1009,6 +1088,8 @@ def ask_answer_engines(
     engines: list[str] | None = None,
     purpose: str = "",
     max_tokens: int = 1024,
+    *,
+    timeout: int | None = None,
 ) -> dict[str, dict]:
     """Ask each consumer answer engine the prompt **with web search enabled**.
 
@@ -1041,12 +1122,15 @@ def ask_answer_engines(
             model_override=spec["model"],
             web_search=spec["search"],
             allow_fallback=False,
+            timeout=timeout,
         )
         return nickname, {"text": text, "citations": citations, "model": spec["model"]}
 
     results: dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=max(1, len(selected))) as executor:
-        futures = {executor.submit(_call_engine, e): e for e in selected}
+        # Pool workers do not inherit contextvars; carry the cost scope and
+        # run identity across explicitly.
+        futures = {executor.submit(propagate(_call_engine), e): e for e in selected}
         for future in as_completed(futures):
             nickname = futures[future]
             try:

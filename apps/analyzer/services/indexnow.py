@@ -29,6 +29,8 @@ from dataclasses import asdict, dataclass, field
 import requests
 from django.core import signing
 
+from apps.analyzer.url_guard import SSRFValidationError, guarded_session
+
 logger = logging.getLogger("apps")
 
 # The shared IndexNow endpoint. Participating engines forward between themselves,
@@ -98,10 +100,18 @@ def verify_key_file(site_url: str, key: str) -> tuple[bool, str]:
     url = key_file_url(site_url, key)
     if not url:
         return False, "No site URL to check."
+    # The host comes from a stored run URL, which is validated at ingress - but
+    # DNS can be re-pointed after that check and a redirect can aim anywhere, so
+    # the fetch itself is guarded rather than trusting the earlier validation.
+    session = guarded_session()
     try:
-        resp = requests.get(url, timeout=TIMEOUT_SEC, allow_redirects=True)
+        resp = session.get(url, timeout=TIMEOUT_SEC, allow_redirects=True)
+    except SSRFValidationError:
+        return False, f"{url} does not resolve to a public address."
     except requests.RequestException as exc:
         return False, f"Could not fetch {url}: {exc}"
+    finally:
+        session.close()
     if resp.status_code != 200:
         return False, f"{url} returned HTTP {resp.status_code}. Host the key file there."
     if resp.text.strip() != key:
@@ -119,7 +129,11 @@ def submit(site_url: str, urls: list[str], *, key: str) -> SubmissionResult:
     from urllib.parse import urlparse
 
     host = urlparse(site_url or "").netloc
-    clean = [u for u in dict.fromkeys(urls or []) if u.startswith(("http://", "https://"))]
+    # ``urls`` is a raw JSON array from the request body, so entries may be any
+    # type; isinstance first, or a non-string entry raises AttributeError on
+    # .startswith and turns a bad request into a 500.
+    candidates = [u for u in (urls or []) if isinstance(u, str)]
+    clean = [u for u in dict.fromkeys(candidates) if u.startswith(("http://", "https://"))]
     # IndexNow rejects a batch containing a URL from another host, so filter
     # rather than let one stray URL fail the whole submission.
     clean = [u for u in clean if urlparse(u).netloc == host][:MAX_URLS]

@@ -143,3 +143,155 @@ class PlanBudgetTests(TestCase):
 
         with patch.dict("os.environ", {"LLM_BUDGET_USD_STARTER": "not-a-number"}):
             self.assertEqual(_plan_budget("STARTER", 25.0), 25.0)
+
+
+class CostScopeTests(TestCase):
+    """Work that runs outside a run's log-collection window must still be metered.
+
+    The competitive-prompt fire is dispatched to a daemon thread after the run is
+    finalized and its logs drained, so its calls used to land on a None log and
+    never reach llm_cost_usd or the 30-day budget window.
+    """
+
+    def test_scope_accumulates_call_cost(self):
+        from apps.analyzer.pipeline import llm
+
+        with llm.cost_scope() as spend:
+            llm._record_scope_cost({"cost": 0.01})
+            llm._record_scope_cost({"cost": 0.02})
+        self.assertAlmostEqual(spend["cost"], 0.03, places=6)
+        self.assertEqual(spend["calls"], 2)
+
+    def test_costs_outside_the_scope_are_not_counted(self):
+        from apps.analyzer.pipeline import llm
+
+        with llm.cost_scope() as spend:
+            pass
+        llm._record_scope_cost({"cost": 5.0})
+        self.assertEqual(spend["cost"], 0.0)
+
+    def test_nested_scopes_both_see_inner_calls(self):
+        from apps.analyzer.pipeline import llm
+
+        with llm.cost_scope() as outer:
+            llm._record_scope_cost({"cost": 1.0})
+            with llm.cost_scope() as inner:
+                llm._record_scope_cost({"cost": 2.0})
+        self.assertAlmostEqual(inner["cost"], 2.0, places=6)
+        self.assertAlmostEqual(outer["cost"], 3.0, places=6)
+
+    def test_missing_cost_is_treated_as_zero(self):
+        from apps.analyzer.pipeline import llm
+
+        with llm.cost_scope() as spend:
+            llm._record_scope_cost({})
+            llm._record_scope_cost(None)
+        self.assertEqual(spend["cost"], 0.0)
+
+    def test_propagate_carries_the_scope_into_a_pool_worker(self):
+        """ThreadPoolExecutor does not inherit contextvars on its own."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        from apps.analyzer.pipeline import llm
+
+        def _work(_):
+            llm._record_scope_cost({"cost": 0.25})
+
+        with llm.cost_scope() as spend:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                list(pool.map(llm.propagate(_work), range(2)))
+        self.assertAlmostEqual(spend["cost"], 0.5, places=6)
+
+    def test_without_propagate_a_pool_worker_is_not_counted(self):
+        """Pins the reason propagate() has to exist."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        from apps.analyzer.pipeline import llm
+
+        def _work(_):
+            llm._record_scope_cost({"cost": 0.25})
+
+        with llm.cost_scope() as spend:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                list(pool.map(_work, range(2)))
+        self.assertEqual(spend["cost"], 0.0)
+
+
+class FinalAccountingTests(TestCase):
+    """The run-level ``finally`` must not undo accounting a sub-path already did.
+
+    ``get_collected_logs()`` clears the collector as it reads. The partial
+    analysis path drains and records its own spend before returning, so a
+    second unconditional drain in ``finally`` would overwrite ``llm_logs`` with
+    an empty list and reset ``llm_cost_usd`` to zero - silently dropping that
+    run out of the 30-day budget window.
+    """
+
+    def _run(self):
+        return AnalysisRun.objects.create(url="https://a.com", email=EMAIL)
+
+    def test_an_empty_drain_does_not_erase_already_recorded_spend(self):
+        from apps.analyzer import tasks
+
+        run = self._run()
+        # Mirror _run_partial_analysis: it saves the drained logs, then meters them.
+        run.llm_logs = [{"purpose": "p", "model": "m", "usage": {"cost": 1.5}}]
+        run.save(update_fields=["llm_logs"])
+        llm_spend.record_run_cost(run)
+
+        # Simulate the partial path: logs already drained, so the collector is empty.
+        with patch.object(tasks, "get_collected_logs", return_value=[]):
+            with patch.object(tasks, "_end_trace"):
+                tasks._finalize_accounting(run, run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(len(run.llm_logs), 1)
+        self.assertAlmostEqual(run.llm_cost_usd, 1.5, places=6)
+        self.assertAlmostEqual(llm_spend.spend_since(EMAIL), 1.5, places=6)
+
+    def test_a_non_empty_drain_is_recorded(self):
+        from apps.analyzer import tasks
+
+        run = self._run()
+        logs = [{"purpose": "p", "model": "m", "usage": {"cost": 0.75}}]
+        with patch.object(tasks, "get_collected_logs", return_value=logs):
+            with patch.object(tasks, "_end_trace"):
+                tasks._finalize_accounting(run, run.id)
+
+        run.refresh_from_db()
+        self.assertAlmostEqual(run.llm_cost_usd, 0.75, places=6)
+
+    def test_accounting_failure_does_not_stop_the_trace_flush(self):
+        """A broken meter must not leave the Langfuse buffer unflushed."""
+        from apps.analyzer import tasks
+
+        run = self._run()
+        with patch.object(tasks, "get_collected_logs", side_effect=RuntimeError("boom")):
+            with patch.object(tasks, "_end_trace") as end_trace:
+                tasks._finalize_accounting(run, run.id)
+        end_trace.assert_called_once_with(run.id)
+
+
+class BackgroundSpendTests(TestCase):
+    def test_background_cost_is_added_to_the_run(self):
+        from apps.analyzer.tasks import _add_background_spend
+
+        run = AnalysisRun.objects.create(url="https://a.com", email=EMAIL, llm_cost_usd=1.0)
+        _add_background_spend(run.id, {"cost": 0.5, "calls": 4})
+        run.refresh_from_db()
+        self.assertAlmostEqual(run.llm_cost_usd, 1.5, places=6)
+
+    def test_background_spend_reaches_the_budget_window(self):
+        from apps.analyzer.tasks import _add_background_spend
+
+        run = AnalysisRun.objects.create(url="https://a.com", email=EMAIL, llm_cost_usd=0.0)
+        _add_background_spend(run.id, {"cost": 2.0, "calls": 1})
+        self.assertAlmostEqual(llm_spend.spend_since(EMAIL), 2.0, places=6)
+
+    def test_zero_cost_is_a_no_op(self):
+        from apps.analyzer.tasks import _add_background_spend
+
+        run = AnalysisRun.objects.create(url="https://a.com", email=EMAIL, llm_cost_usd=1.0)
+        _add_background_spend(run.id, {"cost": 0.0})
+        run.refresh_from_db()
+        self.assertAlmostEqual(run.llm_cost_usd, 1.0, places=6)

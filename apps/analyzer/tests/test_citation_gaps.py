@@ -49,6 +49,15 @@ class _Base(TestCase):
     def _gaps(self):
         return cg.collect_gaps(self.run)
 
+    def _as(self, email):
+        """Simulate a verified JWT principal (never a client-supplied claim)."""
+        from apps.accounts.authentication import VerifiedUser
+
+        return patch(
+            "rest_framework.request.Request.user",
+            new_callable=lambda: property(lambda _self: VerifiedUser(email=email)),
+        )
+
 
 class RankingTests(_Base):
     def test_domain_winning_more_prompts_ranks_higher(self):
@@ -169,6 +178,29 @@ class StatusStoreTests(_Base):
         with self.assertRaises(ValueError):
             cg.set_status(self.org, "  ", cg.PITCHED)
 
+    def test_a_non_string_domain_is_a_value_error_not_an_attribute_error(self):
+        """The view turns ValueError into a 400; anything else becomes a 500."""
+        for bad in (123, None, ["hubspot.com"], {"domain": "x"}):
+            with self.subTest(domain=bad), self.assertRaises(ValueError):
+                cg.set_status(self.org, bad, cg.PITCHED)
+
+    def test_a_non_string_note_is_a_value_error(self):
+        with self.assertRaises(ValueError):
+            cg.set_status(self.org, "hubspot.com", cg.PITCHED, note={"a": 1})
+
+    def test_a_non_string_domain_returns_400_not_500(self):
+        from django.urls import reverse
+
+        from apps.analyzer.tests.auth_helpers import signed_in
+
+        with signed_in(self.org.owner_email):
+            resp = self.client.patch(
+                reverse("analyzer:citation-gaps", args=[self.run.slug]),
+                data={"domain": 123, "status": "pitched"},
+                content_type="application/json",
+            )
+        self.assertEqual(resp.status_code, 400)
+
 
 class EndpointTests(_Base):
     def _url(self):
@@ -190,21 +222,99 @@ class EndpointTests(_Base):
         self.assertEqual(resp.status_code, 200)
 
     def test_patch_records_outreach_state(self):
-        resp = self.client.patch(
-            self._url(),
-            data={"domain": "hubspot.com", "status": "pitched"},
-            content_type="application/json",
-        )
+        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"), self._as(
+            self.org.owner_email
+        ):
+            resp = self.client.patch(
+                self._url(),
+                data={"domain": "hubspot.com", "status": "pitched"},
+                content_type="application/json",
+            )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["status"], "pitched")
 
     def test_patching_live_is_rejected(self):
-        resp = self.client.patch(
-            self._url(),
-            data={"domain": "hubspot.com", "status": "live"},
-            content_type="application/json",
-        )
+        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"), self._as(
+            self.org.owner_email
+        ):
+            resp = self.client.patch(
+                self._url(),
+                data={"domain": "hubspot.com", "status": "live"},
+                content_type="application/json",
+            )
         self.assertEqual(resp.status_code, 400)
+
+
+class PromptsLostTests(_Base):
+    """The headline metric counts every prompt lost, not the displayed examples.
+
+    ``example_prompts`` is capped at three per domain and the list at
+    MAX_TARGETS - both display concerns. Deriving the count from them both
+    undercounted and deduplicated by prompt *text*, so two distinct tracks that
+    happened to share wording collapsed into one.
+    """
+
+    def test_more_than_three_prompts_on_one_domain_are_all_counted(self):
+        for i in range(5):
+            self._prompt(f"q{i}", cites=["hubspot.com"])
+        with patch.object(cg, "_verify_live", return_value=False):
+            summary = cg.report_for_run(self.run)["summary"]
+        self.assertEqual(summary["prompts_lost"], 5)
+        # ...while the displayed examples stay capped.
+        self.assertEqual(len(self._gaps()[0].example_prompts), 3)
+
+    def test_two_prompts_with_identical_text_count_twice(self):
+        self._prompt("same question", cites=["hubspot.com"])
+        self._prompt("same question", cites=["hubspot.com"])
+        with patch.object(cg, "_verify_live", return_value=False):
+            self.assertEqual(cg.report_for_run(self.run)["summary"]["prompts_lost"], 2)
+
+    def test_a_prompt_lost_to_several_domains_counts_once(self):
+        self._prompt("q", cites=["hubspot.com", "semrush.com", "ahrefs.com"])
+        with patch.object(cg, "_verify_live", return_value=False):
+            self.assertEqual(cg.report_for_run(self.run)["summary"]["prompts_lost"], 1)
+
+
+class ConcurrentVerificationTests(_Base):
+    def test_every_eligible_domain_is_verified(self):
+        for i, domain in enumerate(["hubspot.com", "semrush.com", "ahrefs.com"]):
+            self._prompt(f"q{i}", cites=[domain])
+        with patch.object(cg, "_verify_live", return_value=False) as verify:
+            cg.report_for_run(self.run)
+        self.assertEqual(
+            {c.args[1] for c in verify.call_args_list},
+            {"hubspot.com", "semrush.com", "ahrefs.com"},
+        )
+
+    def test_a_dismissed_target_is_not_re_verified(self):
+        self._prompt("q", cites=["hubspot.com"])
+        cg.set_status(self.org, "hubspot.com", cg.DISMISSED)
+        with patch.object(cg, "_verify_live", side_effect=AssertionError("must not verify")):
+            report = cg.report_for_run(self.run)
+        self.assertEqual(report["targets"][0]["status"], cg.DISMISSED)
+
+    def test_a_verified_presence_wins_over_the_stored_status(self):
+        self._prompt("q", cites=["hubspot.com"])
+        cg.set_status(self.org, "hubspot.com", cg.PITCHED)
+        with patch.object(cg, "_verify_live", return_value=True):
+            report = cg.report_for_run(self.run)
+        self.assertEqual(report["targets"][0]["status"], cg.LIVE)
+        self.assertEqual(report["summary"]["live"], 1)
+
+    def test_one_failing_check_does_not_lose_the_others(self):
+        for i, domain in enumerate(["hubspot.com", "semrush.com"]):
+            self._prompt(f"q{i}", cites=[domain])
+
+        def _flaky(_brand, domain, industry=""):
+            if domain == "hubspot.com":
+                raise RuntimeError("search down")
+            return True
+
+        with patch("apps.analyzer.pipeline.offpage_presence.brand_present_on_domain", _flaky):
+            report = cg.report_for_run(self.run)
+        by_domain = {t["domain"]: t for t in report["targets"]}
+        self.assertIsNone(by_domain["hubspot.com"]["brand_present"])
+        self.assertTrue(by_domain["semrush.com"]["brand_present"])
 
 
 class ReachableTargetTests(_Base):
@@ -241,3 +351,127 @@ class ReachableTargetTests(_Base):
     def test_academic_citations_are_filtered_from_the_queue(self):
         self._prompt("q", cites=["sciencedirect.com", "blog.hubspot.com"])
         self.assertEqual([g.domain for g in self._gaps()], ["blog.hubspot.com"])
+
+
+class WriteAuthorizationTests(_Base):
+    """PATCH durably mutates CitationOutreach, so a slug alone must not authorize it.
+
+    A run slug is unguessable but it is not a credential: it travels in browser
+    history, support tickets and analytics tooling.
+    """
+
+    def _url(self):
+        from django.urls import reverse
+
+        return reverse("analyzer:citation-gaps", args=[self.run.slug])
+
+    def _patch(self, **body):
+        return self.client.patch(
+            self._url(),
+            data={"domain": "hubspot.com", "status": "pitched", **body},
+            content_type="application/json",
+        )
+
+    def test_anonymous_write_is_refused_when_auth_is_unconfigured(self):
+        """Fails closed, and says the server cannot authenticate rather than 401."""
+        with self.settings(BETTER_AUTH_JWKS_URL=""):
+            self.assertEqual(self._patch().status_code, 503)
+
+    def test_anonymous_write_is_401_when_auth_is_configured(self):
+        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"):
+            self.assertEqual(self._patch().status_code, 401)
+
+    def test_the_owner_may_write(self):
+        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"), self._as(
+            self.org.owner_email
+        ):
+            self.assertEqual(self._patch().status_code, 200)
+
+    def test_a_verified_non_owner_gets_404_not_403(self):
+        """403 would confirm the run exists to someone who should not know."""
+        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"), self._as(
+            "stranger@example.com"
+        ):
+            self.assertEqual(self._patch().status_code, 404)
+
+    def test_owner_match_is_case_insensitive(self):
+        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"), self._as(
+            self.org.owner_email.upper()
+        ):
+            self.assertEqual(self._patch().status_code, 200)
+
+    def test_an_agency_teammate_may_write(self):
+        """Teammates manage their agency's brands; owner_email is the agency's."""
+        from apps.accounts.models import AgencyMembership
+
+        AgencyMembership.objects.create(
+            agency_email=self.org.owner_email,
+            member_email="mate@agency.com",
+            status=AgencyMembership.Status.ACTIVE,
+        )
+        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"), self._as(
+            "mate@agency.com"
+        ):
+            self.assertEqual(self._patch().status_code, 200)
+
+    def test_an_invited_but_inactive_teammate_may_not_write(self):
+        from apps.accounts.models import AgencyMembership
+
+        AgencyMembership.objects.create(
+            agency_email=self.org.owner_email,
+            member_email="pending@agency.com",
+            status=AgencyMembership.Status.INVITED,
+        )
+        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"), self._as(
+            "pending@agency.com"
+        ):
+            self.assertEqual(self._patch().status_code, 404)
+
+
+class ReadScopingTests(_Base):
+    """Reads are scoped to the caller whenever a verified identity is present.
+
+    The slug-only path stays open until ``REQUIRE_VERIFIED_IDENTITY`` flips,
+    because the whole API shares that convention and closing it one view at a
+    time would just take features dark. But a *signed-in* caller is always held
+    to their own brands - that narrowing costs nothing and is the case that
+    actually leaks between paying customers.
+    """
+
+    def _url(self):
+        from django.urls import reverse
+
+        return reverse("analyzer:citation-gaps", args=[self.run.slug])
+
+    def _get(self):
+        return self.client.get(self._url(), {"verify": "0"})
+
+    def test_anonymous_reads_still_work_before_the_rollout(self):
+        with self.settings(BETTER_AUTH_JWKS_URL="", REQUIRE_VERIFIED_IDENTITY=False):
+            self.assertEqual(self._get().status_code, 200)
+
+    def test_the_owner_may_read(self):
+        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"), self._as(
+            self.org.owner_email
+        ):
+            self.assertEqual(self._get().status_code, 200)
+
+    def test_a_verified_stranger_cannot_read_another_brands_run(self):
+        """The cross-tenant leak, closed even with the rollout flag still off."""
+        with self.settings(
+            BETTER_AUTH_JWKS_URL="https://auth.example/jwks", REQUIRE_VERIFIED_IDENTITY=False
+        ), self._as("stranger@example.com"):
+            self.assertEqual(self._get().status_code, 404)
+
+    def test_flipping_the_rollout_flag_closes_anonymous_reads(self):
+        with self.settings(
+            BETTER_AUTH_JWKS_URL="https://auth.example/jwks", REQUIRE_VERIFIED_IDENTITY=True
+        ):
+            self.assertEqual(self._get().status_code, 401)
+
+    def test_an_unknown_slug_is_404_for_everyone(self):
+        from django.urls import reverse
+
+        self.assertEqual(
+            self.client.get(reverse("analyzer:citation-gaps", args=["nope"])).status_code, 404
+        )

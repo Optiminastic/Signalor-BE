@@ -153,7 +153,7 @@ def probe_identity(run, engines: list[str] | None = None) -> DisambiguationRepor
     Costs one call per engine and is therefore explicit: nothing calls this
     during a run without being asked.
     """
-    from apps.analyzer.pipeline.llm import ask_answer_engines
+    from apps.analyzer.pipeline.llm import INTERACTIVE_TIMEOUT_SEC, ask_answer_engines
 
     brand = (getattr(run, "brand_name", "") or "").strip()
     report = DisambiguationReport(brand=brand)
@@ -165,6 +165,11 @@ def probe_identity(run, engines: list[str] | None = None) -> DisambiguationRepor
         engines=engines,
         purpose="Entity Disambiguation",
         max_tokens=400,
+        # Called synchronously from an HTTP POST, so the queued-run web-search
+        # budget (120s) would outlive the worker timeout and every proxy in
+        # front of it. An engine that misses this deadline is reported as no
+        # answer, which the report already models.
+        timeout=INTERACTIVE_TIMEOUT_SEC,
     )
 
     engine_totals: Counter = Counter()

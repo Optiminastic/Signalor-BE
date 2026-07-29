@@ -6913,11 +6913,16 @@ class EntityResolutionView(APIView):
     throttle_classes = [ExpensiveThrottle]
 
     def post(self, request, slug):
-        from django.shortcuts import get_object_or_404
-
         from .services.entity_disambiguation import probe_identity
 
-        run = get_object_or_404(AnalysisRun, slug=slug)
+        # require_verified: this spends money per call, so it must not be
+        # reachable by anyone who merely holds the slug.
+        run, err = _scoped_run(request, slug, require_verified=True)
+        if err is not None:
+            return err
+        denied = _budget_denied(run)
+        if denied is not None:
+            return denied
         engines = request.data.get("engines") or None
         return Response(probe_identity(run, engines=engines).as_dict())
 
@@ -6936,19 +6941,151 @@ class IndexNowView(APIView):
     throttle_classes = [ExpensiveThrottle]
 
     def get(self, request, slug):
-        from django.shortcuts import get_object_or_404
-
         from .services.indexnow import setup_for_run
 
-        return Response(setup_for_run(get_object_or_404(AnalysisRun, slug=slug)))
+        # require_verified: the response carries the org's IndexNow key, which is
+        # a submission capability for that host - anyone holding it can push URLs
+        # to Bing/Yandex/Seznam/Naver as the customer. Gated to the same standard
+        # as the submission itself rather than handed to any slug holder.
+        run, err = _scoped_run(request, slug, require_verified=True)
+        if err is not None:
+            return err
+        return Response(setup_for_run(run))
 
     def post(self, request, slug):
-        from django.shortcuts import get_object_or_404
-
         from .services.indexnow import submit_run_pages
 
-        run = get_object_or_404(AnalysisRun, slug=slug)
+        # require_verified: this pushes URLs to an external index under the
+        # customer's key, and the engines rate-limit the key itself.
+        run, err = _scoped_run(request, slug, require_verified=True)
+        if err is not None:
+            return err
         return Response(submit_run_pages(run, request.data.get("urls") or None))
+
+
+def _budget_denied(run):
+    """Refuse billable work for an account over its LLM allowance.
+
+    These endpoints spend real money per call and are reachable with only a run
+    slug, so without this the budget fuse on ``start_analysis_task`` can be
+    walked around by hitting them directly. Fails open if the meter itself
+    errors - see services.llm_spend.
+    """
+    try:
+        from .services.llm_spend import check_budget
+
+        status_ = check_budget(run.email)
+    except Exception:
+        logger.exception("Budget lookup failed for %s; allowing", run.email)
+        return None
+    if status_.allowed:
+        return None
+    return Response(
+        {
+            "detail": (
+                "This account has reached its monthly AI usage allowance. "
+                "It resets on a rolling 30-day basis."
+            )
+        },
+        status=status.HTTP_402_PAYMENT_REQUIRED,
+    )
+
+
+def _acting_owner_email(email: str) -> str:
+    """The brand-owner identity ``email`` acts as.
+
+    An agency teammate legitimately manages their agency's brands, so ownership
+    resolves through ``get_agency_context`` exactly as ``ScheduleView._owned_org``
+    does. Comparing the caller's own address against ``owner_email`` directly
+    would lock those teammates out of brands they are paid to work on.
+    """
+    from apps.accounts.agency_utils import get_agency_context
+
+    normalized = (email or "").strip().lower()
+    ctx = get_agency_context(normalized)
+    return (ctx.agency_email if ctx else normalized).strip().lower()
+
+
+def _may_access_run(email: str, run) -> bool:
+    """Does ``email`` own the brand ``run`` belongs to?
+
+    Derived entirely from server records: the caller supplies no organization or
+    owner id, only a verified address that is mapped to an owner here.
+    """
+    if not email:
+        return False
+    acting = _acting_owner_email(email)
+    org = getattr(run, "organization", None)
+    # Runs predating organizations are owned by the address that started them.
+    owner = (org.owner_email if org is not None else run.email) or ""
+    return owner.strip().lower() == acting
+
+
+def _unauthenticated(action: str):
+    """Refusal for a request carrying no verified identity.
+
+    Distinguishes "you did not authenticate" from "this deployment cannot
+    authenticate anyone". Both refuse, but a bare 401 on a server with no JWKS
+    configured sends the operator hunting for a bad token that does not exist.
+    """
+    from django.conf import settings as _settings
+
+    if not getattr(_settings, "BETTER_AUTH_JWKS_URL", ""):
+        logger.error(
+            "Refusing %s: BETTER_AUTH_JWKS_URL is unset, so no caller can "
+            "authenticate. Set it to enable this endpoint.",
+            action,
+        )
+        return Response(
+            {"detail": "Authentication is not configured on this server."},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    return Response({"detail": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
+
+
+def _scoped_run(request, slug: str, *, require_verified: bool = False):
+    """Load a run by slug, scoped to the caller's verified identity.
+
+    Returns ``(run, error_response)``; callers do
+    ``run, err = _scoped_run(...); if err: return err``.
+
+    A run slug is unguessable but it is not a credential: it travels in browser
+    history, support tickets and analytics tooling. Holding one must not grant a
+    third party the brand's data forever.
+
+    Three cases, in order:
+
+    1. **Verified caller** - identity comes from ``request.user``, which
+       ``BetterAuthJWTAuthentication`` sets only after verifying a signed JWT.
+       Ownership is re-derived server-side and a mismatch is 404, not 403: a 403
+       confirms the run exists to someone who should not know that.
+    2. **No identity, enforcement required** - refused. ``require_verified``
+       is set on every mutation and every billable call, so those fail closed
+       regardless of the global rollout flag.
+    3. **No identity, enforcement not yet required** - the slug alone admits,
+       which is the pre-existing convention across this API. Flipping
+       ``REQUIRE_VERIFIED_IDENTITY`` closes this for every endpoint routed
+       through here at once, rather than one view at a time.
+
+    Case 1 is a real narrowing even before that flag flips: a signed-in customer
+    can no longer read another brand's run by pasting its slug.
+    """
+    from django.conf import settings as _settings
+    from django.shortcuts import get_object_or_404
+
+    from apps.accounts.identity import verified_email
+
+    run = get_object_or_404(AnalysisRun, slug=slug)
+
+    email = verified_email(request)
+    if email:
+        if not _may_access_run(email, run):
+            return None, Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        return run, None
+
+    if require_verified or getattr(_settings, "REQUIRE_VERIFIED_IDENTITY", False):
+        return None, _unauthenticated(f"{request.method} {request.path}")
+    return run, None
 
 
 class CitationGapsView(APIView):
@@ -6965,22 +7102,23 @@ class CitationGapsView(APIView):
     throttle_classes = [PollingThrottle]
 
     def get(self, request, slug):
-        from django.shortcuts import get_object_or_404
-
         from .services.citation_gaps import report_for_run
 
-        run = get_object_or_404(AnalysisRun, slug=slug)
+        run, err = _scoped_run(request, slug)
+        if err is not None:
+            return err
         # Verification costs one search per domain; let a caller skip it when
         # only the ranking is needed.
         verify = request.query_params.get("verify", "1") not in {"0", "false", "no"}
         return Response(report_for_run(run, verify=verify))
 
     def patch(self, request, slug):
-        from django.shortcuts import get_object_or_404
-
         from .services.citation_gaps import set_status
 
-        run = get_object_or_404(AnalysisRun, slug=slug)
+        # require_verified: this durably mutates CitationOutreach rows.
+        run, err = _scoped_run(request, slug, require_verified=True)
+        if err is not None:
+            return err
         if run.organization is None:
             return Response(
                 {"detail": "Run has no organization."}, status=status.HTTP_400_BAD_REQUEST
@@ -7011,11 +7149,11 @@ class PromptCoverageView(APIView):
     throttle_classes = [PollingThrottle]
 
     def get(self, request, slug):
-        from django.shortcuts import get_object_or_404
-
         from .services.prompt_coverage import report_for_run
 
-        run = get_object_or_404(AnalysisRun, slug=slug)
+        run, err = _scoped_run(request, slug)
+        if err is not None:
+            return err
         return Response(report_for_run(run))
 
 
@@ -7035,7 +7173,14 @@ class PromptAnswerBlockView(APIView):
 
         from .services.answer_block import generate_for_prompt
 
-        run = get_object_or_404(AnalysisRun, slug=slug)
+        # require_verified: generative, and billed on every call.
+        run, err = _scoped_run(request, slug, require_verified=True)
+        if err is not None:
+            return err
+        denied = _budget_denied(run)
+        if denied is not None:
+            return denied
+        # Scoped to the run, so a track id from another brand cannot be reached.
         track = get_object_or_404(PromptTrack, pk=track_id, analysis_run=run, deleted_at__isnull=True)
 
         draft = generate_for_prompt(track)
@@ -7064,11 +7209,11 @@ class CrawlerAccessView(APIView):
     throttle_classes = [PollingThrottle]
 
     def get(self, request, slug):
-        from django.shortcuts import get_object_or_404
-
         from .services.crawler_access import report_for_run
 
-        run = get_object_or_404(AnalysisRun, slug=slug)
+        run, err = _scoped_run(request, slug)
+        if err is not None:
+            return err
         if run.organization is None:
             return Response(
                 {"detail": "Run has no organization."}, status=status.HTTP_400_BAD_REQUEST
