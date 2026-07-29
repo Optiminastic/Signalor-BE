@@ -250,3 +250,35 @@ class EndpointTests(TestCase):
             resp = self.client.get(reverse("analyzer:indexnow", args=[orphan.slug]))
         self.assertEqual(resp.status_code, 200)
         self.assertFalse(resp.json()["configured"])
+
+
+class SubmitValidationTests(TestCase):
+    """POST body validation — malformed shapes are 400, not 500."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name="Acme", owner_email="o@acme.com")
+        self.run = AnalysisRun.objects.create(url="https://acme.com", organization=self.org)
+
+    def _post(self, body):
+        from django.urls import reverse
+
+        from apps.analyzer.tests.auth_helpers import signed_in
+
+        with signed_in(self.org.owner_email):
+            return self.client.post(
+                reverse("analyzer:indexnow", args=[self.run.slug]),
+                data=body,
+                content_type="application/json",
+            )
+
+    def test_a_scalar_urls_value_is_400(self):
+        self.assertEqual(self._post({"urls": 5}).status_code, 400)
+
+    def test_a_non_url_entry_is_400(self):
+        self.assertEqual(self._post({"urls": ["not a url"]}).status_code, 400)
+
+    def test_an_omitted_urls_key_means_every_known_page(self):
+        with patch.object(indexnow, "submit_run_pages", return_value={"ok": True}) as submit:
+            resp = self._post({})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNone(submit.call_args.args[1])

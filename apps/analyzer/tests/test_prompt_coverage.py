@@ -182,7 +182,8 @@ class EndpointTests(TestCase):
     def test_coverage_endpoint_returns_rows_and_summary(self):
         from django.urls import reverse
 
-        resp = self.client.get(reverse("analyzer:prompt-coverage", args=[self.run.slug]))
+        with self._owner():
+            resp = self.client.get(reverse("analyzer:prompt-coverage", args=[self.run.slug]))
         self.assertEqual(resp.status_code, 200)
         self.assertIn("summary", resp.json())
         self.assertIn("rows", resp.json())
@@ -190,9 +191,9 @@ class EndpointTests(TestCase):
     def test_coverage_unknown_slug_is_404(self):
         from django.urls import reverse
 
-        self.assertEqual(
-            self.client.get(reverse("analyzer:prompt-coverage", args=["nope"])).status_code, 404
-        )
+        with self._owner():
+            resp = self.client.get(reverse("analyzer:prompt-coverage", args=["nope"]))
+        self.assertEqual(resp.status_code, 404)
 
     def test_answer_block_is_a_post_not_a_get(self):
         """It costs money on every call, so it must not be triggerable by a page load."""

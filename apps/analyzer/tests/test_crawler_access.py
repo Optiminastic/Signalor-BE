@@ -253,14 +253,21 @@ class EndpointTests(TestCase):
     def test_returns_a_report(self):
         from unittest.mock import patch
 
-        with patch("apps.analyzer.pipeline.crawler.fetch_file_content", return_value=BLOCK_ALL):
+        from apps.analyzer.tests.auth_helpers import signed_in
+
+        with signed_in(self.org.owner_email), patch(
+            "apps.analyzer.pipeline.crawler.fetch_file_content", return_value=BLOCK_ALL
+        ):
             resp = self.client.get(self._url())
         self.assertEqual(resp.status_code, 200)
         self.assertIn("engines", resp.json())
         self.assertTrue(resp.json()["summary"]["blocked_engines"])
 
     def test_unknown_slug_is_404_not_a_500(self):
-        self.assertEqual(self.client.get(self._url("does-not-exist")).status_code, 404)
+        from apps.analyzer.tests.auth_helpers import signed_in
+
+        with signed_in(self.org.owner_email):
+            self.assertEqual(self.client.get(self._url("does-not-exist")).status_code, 404)
 
     def test_a_verified_stranger_cannot_read_another_brands_report(self):
         """A slug is not a credential: a signed-in caller is held to their own brands."""
@@ -279,25 +286,27 @@ class EndpointTests(TestCase):
         ):
             self.assertEqual(self.client.get(self._url()).status_code, 200)
 
-    def test_enforcing_verified_identity_closes_anonymous_reads(self):
+    def test_an_anonymous_read_is_refused(self):
         from django.test import override_settings
 
-        with override_settings(
-            BETTER_AUTH_JWKS_URL="https://auth.example/jwks", REQUIRE_VERIFIED_IDENTITY=True
-        ):
+        with override_settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"):
             self.assertEqual(self.client.get(self._url()).status_code, 401)
 
     def test_run_without_an_organization_is_rejected(self):
         from apps.analyzer.models import AnalysisRun
+        from apps.analyzer.tests.auth_helpers import signed_in
 
-        orphan = AnalysisRun.objects.create(url="https://x.com")
-        self.assertEqual(self.client.get(self._url(orphan.slug)).status_code, 400)
+        orphan = AnalysisRun.objects.create(url="https://x.com", email=self.org.owner_email)
+        with signed_in(self.org.owner_email):
+            self.assertEqual(self.client.get(self._url(orphan.slug)).status_code, 400)
 
     def test_a_failing_robots_fetch_still_returns_a_report(self):
         """Network trouble must degrade the verdict, not the endpoint."""
         from unittest.mock import patch
 
-        with patch(
+        from apps.analyzer.tests.auth_helpers import signed_in
+
+        with signed_in(self.org.owner_email), patch(
             "apps.analyzer.pipeline.crawler.fetch_file_content", side_effect=RuntimeError("timeout")
         ):
             resp = self.client.get(self._url())

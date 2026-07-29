@@ -294,8 +294,11 @@ def set_status(org, domain: str, status: str, note: str = "") -> dict:
     # body, so a client sending {"domain": 123} would otherwise reach .strip() and
     # raise AttributeError - a 500 for what is plainly a bad request. ValueError is
     # what the view already translates into a typed 400.
-    if not isinstance(domain, str) or not isinstance(note, str):
-        raise ValueError("domain and note must be strings")
+    # ``status`` is checked alongside them because ``x in <set>`` *raises*
+    # TypeError for an unhashable value: a body of {"status": ["pitched"]} never
+    # reached the membership verdict, it crashed on the way there.
+    if not isinstance(domain, str) or not isinstance(note, str) or not isinstance(status, str):
+        raise ValueError("domain, status and note must be strings")
 
     clean = domain.strip().lower().removeprefix("www.")
     if not clean:

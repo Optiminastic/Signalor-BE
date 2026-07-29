@@ -75,6 +75,8 @@ from .serializers import (
     BlogAutomationJobSerializer,
     CitationTrendPointSerializer,
     CreateUserActionSerializer,
+    EntityResolutionRequestSerializer,
+    IndexNowSubmitSerializer,
     PromptTrackSerializer,
     ShareOfVoiceSerializer,
     StartAnalysisSerializer,
@@ -6915,15 +6917,16 @@ class EntityResolutionView(APIView):
     def post(self, request, slug):
         from .services.entity_disambiguation import probe_identity
 
-        # require_verified: this spends money per call, so it must not be
-        # reachable by anyone who merely holds the slug.
-        run, err = _scoped_run(request, slug, require_verified=True)
+        # Billable: one live call per engine, so a slug holder must not fire it.
+        run, err = _scoped_run(request, slug)
         if err is not None:
             return err
         denied = _budget_denied(run)
         if denied is not None:
             return denied
-        engines = request.data.get("engines") or None
+        body = EntityResolutionRequestSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        engines = body.validated_data.get("engines") or None
         return Response(probe_identity(run, engines=engines).as_dict())
 
 
@@ -6943,11 +6946,10 @@ class IndexNowView(APIView):
     def get(self, request, slug):
         from .services.indexnow import setup_for_run
 
-        # require_verified: the response carries the org's IndexNow key, which is
-        # a submission capability for that host - anyone holding it can push URLs
-        # to Bing/Yandex/Seznam/Naver as the customer. Gated to the same standard
-        # as the submission itself rather than handed to any slug holder.
-        run, err = _scoped_run(request, slug, require_verified=True)
+        # The response carries the org's IndexNow key, which is a submission
+        # capability for that host: anyone holding it can push URLs to
+        # Bing/Yandex/Seznam/Naver as the customer.
+        run, err = _scoped_run(request, slug)
         if err is not None:
             return err
         return Response(setup_for_run(run))
@@ -6955,12 +6957,14 @@ class IndexNowView(APIView):
     def post(self, request, slug):
         from .services.indexnow import submit_run_pages
 
-        # require_verified: this pushes URLs to an external index under the
-        # customer's key, and the engines rate-limit the key itself.
-        run, err = _scoped_run(request, slug, require_verified=True)
+        # Pushes URLs to an external index under the customer's key, and the
+        # engines rate-limit that key itself.
+        run, err = _scoped_run(request, slug)
         if err is not None:
             return err
-        return Response(submit_run_pages(run, request.data.get("urls") or None))
+        body = IndexNowSubmitSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        return Response(submit_run_pages(run, body.validated_data.get("urls") or None))
 
 
 def _budget_denied(run):
@@ -7043,48 +7047,47 @@ def _unauthenticated(action: str):
     return Response({"detail": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
 
 
-def _scoped_run(request, slug: str, *, require_verified: bool = False):
-    """Load a run by slug, scoped to the caller's verified identity.
+def _scoped_run(request, slug: str):
+    """Load a run by slug, scoped to the caller's verified identity. Fails closed.
 
     Returns ``(run, error_response)``; callers do
-    ``run, err = _scoped_run(...); if err: return err``.
+    ``run, err = _scoped_run(request, slug); if err: return err``.
 
     A run slug is unguessable but it is not a credential: it travels in browser
     history, support tickets and analytics tooling. Holding one must not grant a
-    third party the brand's data forever.
+    third party the brand's data - not its citation gaps, not its crawler
+    posture, and not its IndexNow key.
 
-    Three cases, in order:
+    Two cases:
 
     1. **Verified caller** - identity comes from ``request.user``, which
        ``BetterAuthJWTAuthentication`` sets only after verifying a signed JWT.
        Ownership is re-derived server-side and a mismatch is 404, not 403: a 403
        confirms the run exists to someone who should not know that.
-    2. **No identity, enforcement required** - refused. ``require_verified``
-       is set on every mutation and every billable call, so those fail closed
-       regardless of the global rollout flag.
-    3. **No identity, enforcement not yet required** - the slug alone admits,
-       which is the pre-existing convention across this API. Flipping
-       ``REQUIRE_VERIFIED_IDENTITY`` closes this for every endpoint routed
-       through here at once, rather than one view at a time.
+    2. **No verified identity** - refused, for reads as well as writes.
 
-    Case 1 is a real narrowing even before that flag flips: a signed-in customer
-    can no longer read another brand's run by pasting its slug.
+    Reads are deliberately *not* gated behind ``REQUIRE_VERIFIED_IDENTITY``. That
+    flag governs migrating the ~78 pre-existing slug-only endpoints, which have
+    shipped clients that would break. Every endpoint routed through here is new
+    and has no such client, so there is nothing to stage: they ship authorized or
+    they do not ship. A staged read path here would only have widened the
+    unauthenticated surface this API is trying to shrink.
     """
-    from django.conf import settings as _settings
     from django.shortcuts import get_object_or_404
 
     from apps.accounts.identity import verified_email
 
-    run = get_object_or_404(AnalysisRun, slug=slug)
-
+    # Identity is resolved *before* the lookup on purpose. Fetching first would
+    # let an unauthenticated caller tell a real slug (401) from a made-up one
+    # (404), which is the same existence leak the 404-not-403 choice below
+    # avoids for authenticated callers.
     email = verified_email(request)
-    if email:
-        if not _may_access_run(email, run):
-            return None, Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        return run, None
-
-    if require_verified or getattr(_settings, "REQUIRE_VERIFIED_IDENTITY", False):
+    if not email:
         return None, _unauthenticated(f"{request.method} {request.path}")
+
+    run = get_object_or_404(AnalysisRun, slug=slug)
+    if not _may_access_run(email, run):
+        return None, Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
     return run, None
 
 
@@ -7115,8 +7118,8 @@ class CitationGapsView(APIView):
     def patch(self, request, slug):
         from .services.citation_gaps import set_status
 
-        # require_verified: this durably mutates CitationOutreach rows.
-        run, err = _scoped_run(request, slug, require_verified=True)
+        # Durably mutates CitationOutreach rows.
+        run, err = _scoped_run(request, slug)
         if err is not None:
             return err
         if run.organization is None:
@@ -7173,8 +7176,8 @@ class PromptAnswerBlockView(APIView):
 
         from .services.answer_block import generate_for_prompt
 
-        # require_verified: generative, and billed on every call.
-        run, err = _scoped_run(request, slug, require_verified=True)
+        # Generative, and billed on every call.
+        run, err = _scoped_run(request, slug)
         if err is not None:
             return err
         denied = _budget_denied(run)

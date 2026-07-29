@@ -16,11 +16,12 @@ from django.test import SimpleTestCase
 from apps.analyzer import views
 from core.throttling import ExpensiveThrottle, PollingThrottle
 
-# (view, expected throttle, methods that must refuse an unverified caller)
+# (view, expected throttle, handlers that must refuse an unverified caller).
+# Every handler is listed: _scoped_run fails closed, so reads are gated too.
 POLICY = [
-    (views.CitationGapsView, PollingThrottle, {"patch"}),
-    (views.PromptCoverageView, PollingThrottle, set()),
-    (views.CrawlerAccessView, PollingThrottle, set()),
+    (views.CitationGapsView, PollingThrottle, {"get", "patch"}),
+    (views.PromptCoverageView, PollingThrottle, {"get"}),
+    (views.CrawlerAccessView, PollingThrottle, {"get"}),
     (views.PromptAnswerBlockView, ExpensiveThrottle, {"post"}),
     (views.EntityResolutionView, ExpensiveThrottle, {"post"}),
     (views.IndexNowView, ExpensiveThrottle, {"get", "post"}),
@@ -52,11 +53,20 @@ class AuthorizationPolicyTests(SimpleTestCase):
                 self.assertIn("_scoped_run(", source)
                 self.assertNotIn("get_object_or_404(AnalysisRun", source)
 
-    def test_mutating_and_billable_handlers_require_a_verified_caller(self):
+    def test_every_handler_resolves_its_run_before_doing_any_work(self):
+        """_scoped_run fails closed, so reaching it first is the whole gate."""
         import inspect
 
-        for view, _, guarded in POLICY:
-            for method in guarded:
+        for view, _, handlers in POLICY:
+            for method in handlers:
                 with self.subTest(view=view.__name__, method=method):
                     source = inspect.getsource(getattr(view, method))
-                    self.assertIn("require_verified=True", source)
+                    self.assertIn("_scoped_run(request, slug)", source)
+                    self.assertIn("if err is not None:", source)
+
+    def test_the_scoping_seam_has_no_opt_out(self):
+        """A per-call flag is how reads drifted open once already."""
+        import inspect
+
+        signature = inspect.signature(views._scoped_run)
+        self.assertEqual(list(signature.parameters), ["request", "slug"])

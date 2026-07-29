@@ -15,7 +15,7 @@ confused) — both correct.
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from apps.analyzer.services import entity_disambiguation as ed
 
@@ -156,3 +156,68 @@ class TaskTests(SimpleTestCase):
         action = ed.to_recommendations(self._report(0.6))[0]["action"]
         self.assertIn("Wikidata", action)
         self.assertIn("sameAs", action)
+
+
+class EndpointValidationTests(TestCase):
+    """POST runs/s/<slug>/entity-resolution/ — malformed bodies are 400, not 500.
+
+    ``engines`` reached a ``for`` loop downstream, so a scalar raised TypeError
+    and surfaced as a server error for what is plainly a bad request. Each name
+    also costs one billable call, so the list is bounded to the known set.
+    """
+
+    def setUp(self):
+        from apps.analyzer.models import AnalysisRun
+        from apps.organizations.models import Organization
+
+        self.org = Organization.objects.create(name="Acme", owner_email="o@acme.com")
+        self.run = AnalysisRun.objects.create(
+            url="https://acme.com", organization=self.org, brand_name="Acme"
+        )
+
+    def _post(self, body):
+        from django.urls import reverse
+
+        from apps.analyzer.tests.auth_helpers import signed_in
+
+        with signed_in(self.org.owner_email):
+            return self.client.post(
+                reverse("analyzer:entity-resolution", args=[self.run.slug]),
+                data=body,
+                content_type="application/json",
+            )
+
+    def test_a_scalar_engines_value_is_400(self):
+        self.assertEqual(self._post({"engines": 5}).status_code, 400)
+
+    def test_a_string_engines_value_is_400(self):
+        """Previously iterated per character and silently probed nothing."""
+        self.assertEqual(self._post({"engines": "gpt"}).status_code, 400)
+
+    def test_an_unknown_engine_name_is_400(self):
+        self.assertEqual(self._post({"engines": ["not-an-engine"]}).status_code, 400)
+
+    def test_an_empty_engines_list_is_400_rather_than_meaning_all(self):
+        self.assertEqual(self._post({"engines": []}).status_code, 400)
+
+    def test_a_known_engine_is_accepted(self):
+        from unittest.mock import patch
+
+        with patch(
+            "apps.analyzer.services.entity_disambiguation.probe_identity"
+        ) as probe:
+            probe.return_value.as_dict.return_value = {"ok": True}
+            resp = self._post({"engines": ["gpt"]})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(probe.call_args.kwargs["engines"], ["gpt"])
+
+    def test_an_omitted_engines_key_means_every_engine(self):
+        from unittest.mock import patch
+
+        with patch(
+            "apps.analyzer.services.entity_disambiguation.probe_identity"
+        ) as probe:
+            probe.return_value.as_dict.return_value = {"ok": True}
+            resp = self._post({})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNone(probe.call_args.kwargs["engines"])

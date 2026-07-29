@@ -188,6 +188,25 @@ class StatusStoreTests(_Base):
         with self.assertRaises(ValueError):
             cg.set_status(self.org, "hubspot.com", cg.PITCHED, note={"a": 1})
 
+    def test_an_unhashable_status_is_a_value_error_not_a_type_error(self):
+        """``x in <set>`` *raises* for a list, so it never reached the verdict."""
+        for bad in (["pitched"], {"status": "pitched"}, 1):
+            with self.subTest(status=bad), self.assertRaises(ValueError):
+                cg.set_status(self.org, "hubspot.com", bad)
+
+    def test_an_unhashable_status_returns_400_not_500(self):
+        from django.urls import reverse
+
+        from apps.analyzer.tests.auth_helpers import signed_in
+
+        with signed_in(self.org.owner_email):
+            resp = self.client.patch(
+                reverse("analyzer:citation-gaps", args=[self.run.slug]),
+                data={"domain": "hubspot.com", "status": ["pitched"]},
+                content_type="application/json",
+            )
+        self.assertEqual(resp.status_code, 400)
+
     def test_a_non_string_domain_returns_400_not_500(self):
         from django.urls import reverse
 
@@ -208,16 +227,23 @@ class EndpointTests(_Base):
 
         return reverse("analyzer:citation-gaps", args=[self.run.slug])
 
+    def _as_owner(self):
+        from apps.analyzer.tests.auth_helpers import signed_in
+
+        return signed_in(self.org.owner_email)
+
     def test_get_returns_ranked_targets(self):
         self._prompt("q", cites=["hubspot.com"])
-        with patch.object(cg, "_verify_live", return_value=False):
+        with self._as_owner(), patch.object(cg, "_verify_live", return_value=False):
             resp = self.client.get(self._url())
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["targets"][0]["domain"], "hubspot.com")
 
     def test_get_can_skip_verification(self):
         self._prompt("q", cites=["hubspot.com"])
-        with patch.object(cg, "_verify_live", side_effect=AssertionError("should not verify")):
+        with self._as_owner(), patch.object(
+            cg, "_verify_live", side_effect=AssertionError("should not verify")
+        ):
             resp = self.client.get(self._url(), {"verify": "0"})
         self.assertEqual(resp.status_code, 200)
 
@@ -429,26 +455,35 @@ class WriteAuthorizationTests(_Base):
 
 
 class ReadScopingTests(_Base):
-    """Reads are scoped to the caller whenever a verified identity is present.
+    """Reads fail closed, exactly like writes.
 
-    The slug-only path stays open until ``REQUIRE_VERIFIED_IDENTITY`` flips,
-    because the whole API shares that convention and closing it one view at a
-    time would just take features dark. But a *signed-in* caller is always held
-    to their own brands - that narrowing costs nothing and is the case that
-    actually leaks between paying customers.
+    A slug is not a credential. These endpoints are new and have no shipped
+    client, so there was nothing to stage: gating reads on the rollout flag would
+    only have widened the unauthenticated surface this API is shrinking.
     """
 
-    def _url(self):
+    def _url(self, slug=None):
         from django.urls import reverse
 
-        return reverse("analyzer:citation-gaps", args=[self.run.slug])
+        return reverse("analyzer:citation-gaps", args=[slug or self.run.slug])
 
-    def _get(self):
-        return self.client.get(self._url(), {"verify": "0"})
+    def _get(self, slug=None):
+        return self.client.get(self._url(slug), {"verify": "0"})
 
-    def test_anonymous_reads_still_work_before_the_rollout(self):
-        with self.settings(BETTER_AUTH_JWKS_URL="", REQUIRE_VERIFIED_IDENTITY=False):
-            self.assertEqual(self._get().status_code, 200)
+    def test_an_anonymous_read_is_refused(self):
+        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"):
+            self.assertEqual(self._get().status_code, 401)
+
+    def test_an_anonymous_read_is_refused_even_with_the_rollout_flag_off(self):
+        """The flag governs the ~78 legacy endpoints, not these."""
+        with self.settings(
+            BETTER_AUTH_JWKS_URL="https://auth.example/jwks", REQUIRE_VERIFIED_IDENTITY=False
+        ):
+            self.assertEqual(self._get().status_code, 401)
+
+    def test_an_unconfigured_deployment_says_so_rather_than_401(self):
+        with self.settings(BETTER_AUTH_JWKS_URL=""):
+            self.assertEqual(self._get().status_code, 503)
 
     def test_the_owner_may_read(self):
         with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"), self._as(
@@ -457,21 +492,18 @@ class ReadScopingTests(_Base):
             self.assertEqual(self._get().status_code, 200)
 
     def test_a_verified_stranger_cannot_read_another_brands_run(self):
-        """The cross-tenant leak, closed even with the rollout flag still off."""
-        with self.settings(
-            BETTER_AUTH_JWKS_URL="https://auth.example/jwks", REQUIRE_VERIFIED_IDENTITY=False
-        ), self._as("stranger@example.com"):
+        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"), self._as(
+            "stranger@example.com"
+        ):
             self.assertEqual(self._get().status_code, 404)
 
-    def test_flipping_the_rollout_flag_closes_anonymous_reads(self):
-        with self.settings(
-            BETTER_AUTH_JWKS_URL="https://auth.example/jwks", REQUIRE_VERIFIED_IDENTITY=True
+    def test_an_unknown_slug_is_404_for_a_verified_caller(self):
+        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"), self._as(
+            self.org.owner_email
         ):
-            self.assertEqual(self._get().status_code, 401)
+            self.assertEqual(self._get("nope").status_code, 404)
 
-    def test_an_unknown_slug_is_404_for_everyone(self):
-        from django.urls import reverse
-
-        self.assertEqual(
-            self.client.get(reverse("analyzer:citation-gaps", args=["nope"])).status_code, 404
-        )
+    def test_an_anonymous_caller_cannot_tell_a_real_slug_from_a_fake_one(self):
+        """Both 401: looking the run up first would leak which slugs exist."""
+        with self.settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"):
+            self.assertEqual(self._get().status_code, self._get("nope").status_code)
