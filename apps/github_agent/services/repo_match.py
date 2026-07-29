@@ -48,7 +48,6 @@ _GENERIC_HOST_LABELS = frozenset(
         "co",
         "uk",
         "dev",
-        "app",
         "xyz",
         "me",
         "info",

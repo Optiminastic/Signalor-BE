@@ -271,6 +271,90 @@ class FinalAccountingTests(TestCase):
                 tasks._finalize_accounting(run, run.id)
         end_trace.assert_called_once_with(run.id)
 
+    def test_a_second_call_does_not_write_over_the_first(self):
+        """The success path records early, so the finally call must be a no-op."""
+        from apps.analyzer import tasks
+
+        run = self._run()
+        logs = [{"purpose": "p", "model": "m", "usage": {"cost": 0.9}}]
+        with patch.object(tasks, "get_collected_logs", return_value=logs):
+            tasks._record_run_spend(run, run.id)
+        # Second drain is empty, exactly as the real collector behaves.
+        with patch.object(tasks, "get_collected_logs", return_value=[]):
+            with patch.object(tasks, "_end_trace"):
+                tasks._finalize_accounting(run, run.id)
+
+        run.refresh_from_db()
+        self.assertAlmostEqual(run.llm_cost_usd, 0.9, places=6)
+
+
+class CompetitiveDispatchBudgetTests(TestCase):
+    """The competitive-prompt fuse must see the run that just finished.
+
+    ~40 billable calls are dispatched once an analysis completes. The gate reads
+    llm_cost_usd back from the database, so recording this run's cost after the
+    dispatch let an account sitting just under its cap spend straight through it.
+    """
+
+    def _run(self, cost_recorded=0.0):
+        return AnalysisRun.objects.create(
+            url="https://a.com", email=EMAIL, llm_cost_usd=cost_recorded
+        )
+
+    def test_this_runs_cost_counts_against_the_dispatch_budget(self):
+        from apps.analyzer import tasks
+
+        AnalysisRun.objects.create(url="https://old.com", email=EMAIL, llm_cost_usd=19.5)
+        run = self._run()
+        logs = [{"purpose": "p", "model": "m", "usage": {"cost": 1.5}}]
+
+        with patch.object(tasks, "get_collected_logs", return_value=logs):
+            tasks._record_run_spend(run, run.id)
+
+        with patch.object(llm_spend, "limit_for", return_value=20.0):
+            self.assertFalse(tasks._budget_status(EMAIL).allowed)
+
+    def test_an_account_still_under_its_cap_is_allowed(self):
+        from apps.analyzer import tasks
+
+        AnalysisRun.objects.create(url="https://old.com", email=EMAIL, llm_cost_usd=5.0)
+        run = self._run()
+        logs = [{"purpose": "p", "model": "m", "usage": {"cost": 1.5}}]
+
+        with patch.object(tasks, "get_collected_logs", return_value=logs):
+            tasks._record_run_spend(run, run.id)
+
+        with patch.object(llm_spend, "limit_for", return_value=20.0):
+            self.assertTrue(tasks._budget_status(EMAIL).allowed)
+
+    def test_spend_is_recorded_before_the_dispatch_is_attempted(self):
+        """Pins the ordering itself, not just the arithmetic."""
+        import inspect
+
+        from apps.analyzer import tasks
+
+        source = inspect.getsource(tasks.run_single_page_analysis)
+        record_at = source.index("_record_run_spend(run, run_id)")
+        dispatch_at = source.index("_generate_and_fire_competitive_prompts(run)")
+        self.assertLess(record_at, dispatch_at)
+
+    def test_background_spend_is_not_clobbered_by_the_run_total(self):
+        """record_run_cost writes absolutely; _add_background_spend increments."""
+        from apps.analyzer import tasks
+
+        run = self._run()
+        logs = [{"purpose": "p", "model": "m", "usage": {"cost": 1.0}}]
+        with patch.object(tasks, "get_collected_logs", return_value=logs):
+            tasks._record_run_spend(run, run.id)
+        tasks._add_background_spend(run.id, {"cost": 0.4, "calls": 40})
+        # The finally call lands last and must not undo the increment.
+        with patch.object(tasks, "get_collected_logs", return_value=[]):
+            with patch.object(tasks, "_end_trace"):
+                tasks._finalize_accounting(run, run.id)
+
+        run.refresh_from_db()
+        self.assertAlmostEqual(run.llm_cost_usd, 1.4, places=6)
+
 
 class BackgroundSpendTests(TestCase):
     def test_background_cost_is_added_to_the_run(self):

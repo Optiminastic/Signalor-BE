@@ -127,7 +127,7 @@ def _parse_kit_response(raw: str) -> dict | None:
     if not isinstance(data, dict):
         logger.warning("brand_kit JSON parse failed; raw=%r", (raw or "")[:300])
         return None
-    return data if isinstance(data, dict) else None
+    return data
 
 
 def _normalize_kit(data: dict, run: AnalysisRun) -> dict[str, Any]:

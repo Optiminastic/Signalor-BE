@@ -390,21 +390,23 @@ def _record_spend(run) -> None:
         logger.exception("Run %s: spend recording failed", getattr(run, "id", "?"))
 
 
-def _finalize_accounting(run, run_id: int) -> None:
-    """Drain, persist and meter a run's LLM spend, then flush its trace.
-
-    Runs from a ``finally``, so it must cover every exit: a run that crashed
-    halfway still made (and was billed for) real LLM calls, and skipping this
-    used to lose both the spend and the buffered Langfuse events.
+def _record_run_spend(run, run_id: int) -> None:
+    """Drain, persist and meter this run's LLM spend. Idempotent.
 
     Guarded on a non-empty drain because ``get_collected_logs()`` *clears* the
-    collector as it reads. The partial-analysis path drains and records its own
-    spend before returning, so an unconditional write here would overwrite its
-    ``llm_logs`` with an empty list and reset ``llm_cost_usd`` to zero - quietly
-    dropping that run out of the 30-day budget window.
+    collector as it reads. Two callers rely on that guard:
 
-    The trace flush is outside the guarded block: a broken meter must not leave
-    buffered observability events stranded in a worker that is about to idle.
+    * the partial-analysis path drains and records its own spend before
+      returning, so an unconditional write here would overwrite its
+      ``llm_logs`` with an empty list and reset ``llm_cost_usd`` to zero;
+    * the success path calls this *before* dispatching competitive prompts, so
+      the ``finally`` call that follows must be a no-op rather than a second,
+      empty write.
+
+    Writing ``llm_cost_usd`` absolutely (via ``record_run_cost``) is also why
+    ordering matters against ``_add_background_spend``, which increments it with
+    an ``F()`` expression. Recording first and incrementing later is safe; the
+    reverse would silently clobber the background charge.
     """
     try:
         logs = get_collected_logs()
@@ -415,6 +417,24 @@ def _finalize_accounting(run, run_id: int) -> None:
             _log_run_cost(run_id, logs)
     except Exception:
         logger.exception("Run %s: cost accounting failed", run_id)
+
+
+def _finalize_accounting(run, run_id: int) -> None:
+    """Record spend and flush the trace. Runs from a ``finally``.
+
+    Must cover every exit: a run that crashed halfway still made (and was billed
+    for) real LLM calls, and skipping this used to lose both the spend and the
+    buffered Langfuse events.
+
+    ``_end_trace`` is deliberately *not* folded into ``_record_run_spend``. The
+    success path records spend early, before dispatching competitive prompts,
+    but the trace has to stay open across that dispatch: the daemon thread
+    captures the run context when it is wrapped, so ending the trace first would
+    strip user and trace attribution from those ~40 calls. It also runs outside
+    the guarded block, so a broken meter cannot strand buffered events in a
+    worker about to idle.
+    """
+    _record_run_spend(run, run_id)
     _end_trace(run_id)
 
 
@@ -1239,6 +1259,11 @@ def run_single_page_analysis(run_id: int):
         run.error_message = ""
         run.save()
         logger.info("Analysis complete for run %d: score %.1f", run_id, composite)
+        # Meter this run *before* dispatching more billable work. The budget gate
+        # inside reads llm_cost_usd back from the database, and until this call
+        # lands the just-completed run still reads as $0 there - so an account
+        # sitting just under its cap looked clear and fired 40 more calls.
+        _record_run_spend(run, run_id)
         # Dispatched after finalization on purpose (it must not delay completion),
         # so it meters its own spend rather than relying on this run's window.
         _generate_and_fire_competitive_prompts(run)

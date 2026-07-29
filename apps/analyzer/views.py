@@ -798,13 +798,19 @@ class OnboardingStartView(APIView):
     ``X-Onboarding-Token`` header.
 
     Body (optional):
-      { "turnstile_token": "<cf turnstile response>" }
+      { "turnstile_token": "<cf turnstile response>" }  # accepted, not verified
 
-    If ``TURNSTILE_SECRET`` is configured server-side, ``turnstile_token`` is
-    required and verified against Cloudflare. Without it, /onboarding-start
-    only requires passing the global IP middleware + this throttle — that
-    alone breaks rotating-IP wallet-drain on /generate-prompts since each
-    fresh IP must round-trip here first (heavily throttled).
+    **Turnstile is currently disabled.** ``onboarding_security.turnstile_enabled``
+    returns False unconditionally - the Cloudflare check was removed - so
+    ``turnstile_token`` is accepted and ignored, and ``turnstile_enabled`` in the
+    response is always False. Setting ``TURNSTILE_SECRET`` does *not* re-enable
+    it; that function has to change first. The docstring previously claimed the
+    opposite, which read as bot protection that is not actually running.
+
+    What does defend this endpoint today: the global IP middleware plus this
+    throttle. That still breaks rotating-IP wallet-drain on /generate-prompts,
+    because each fresh IP must round-trip here first (heavily throttled) - but
+    it is IP-based only, with no proof-of-humanity.
     """
 
     permission_classes = [AllowAny]

@@ -8,8 +8,16 @@ Usage:
 Removes all rows from all tables but keeps the schema. Uses TRUNCATE CASCADE
 for PostgreSQL to handle foreign keys correctly.
 """
-from django.core.management.base import BaseCommand
+import re
+
+from django.core.management.base import BaseCommand, CommandError
 from django.db import connection
+
+# A schema-qualified identifier as quote_ident() emits it: bare word, or
+# double-quoted with any embedded quotes doubled. Anything else is not something
+# this command is willing to splice into a TRUNCATE.
+_IDENT = r'(?:[A-Za-z_][A-Za-z0-9_$]*|"(?:[^"]|"")+")'
+_SAFE_QUALIFIED_IDENT = re.compile(rf"{_IDENT}\.{_IDENT}")
 
 
 class Command(BaseCommand):
@@ -53,9 +61,19 @@ class Command(BaseCommand):
             tables = [row[0] for row in cursor.fetchall()]
         if not tables:
             return
-        tables_sql = ", ".join(tables)
+        # SQL identifiers cannot be bound as parameters, so TRUNCATE over a
+        # discovered table list has to interpolate. The names are already
+        # quote_ident()-ed by Postgres above; this re-checks the shape in Python
+        # so the safety is asserted here rather than inferred from a query three
+        # statements away, and anything unexpected stops the command instead of
+        # being concatenated into DDL.
+        safe = [t for t in tables if _SAFE_QUALIFIED_IDENT.fullmatch(t)]
+        if len(safe) != len(tables):
+            rejected = sorted(set(tables) - set(safe))
+            raise CommandError(f"Refusing to TRUNCATE unexpected identifiers: {rejected}")
+        tables_sql = ", ".join(safe)
         with connection.cursor() as cursor:
-            cursor.execute(f"TRUNCATE {tables_sql} RESTART IDENTITY CASCADE")
+            cursor.execute(f"TRUNCATE {tables_sql} RESTART IDENTITY CASCADE")  # NOSONAR: identifiers validated above
 
     def _flush_default(self):
         """Fallback for SQLite and other backends."""
