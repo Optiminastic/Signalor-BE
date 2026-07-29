@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
@@ -338,6 +339,41 @@ def _short_title(text: str, max_words: int = 16) -> str:
     return t[0].upper() + t[1:] if t else t
 
 
+# Which model writes blog posts. Opus 4.1 is $15/$75 per 1M tokens — by a wide
+# margin the most expensive thing this product invokes, and until now it was
+# neither measured nor charged against anyone's allowance (blog work runs outside
+# a run's log-collection window, so its cost never reached llm_cost_usd).
+#
+# Env-overridable so alternatives can be A/B'd against it without a deploy.
+# `kimi` (moonshotai/kimi-k2, $0.57/$2.30) is ~26x cheaper on input and ~33x on
+# output; unlike the answer engines, blog output has no fidelity constraint —
+# nobody cares which model wrote it, only whether it reads well. Compare on the
+# same brief before switching.
+BLOG_MODEL_PROVIDER = os.getenv("SIGNALOR_BLOG_MODEL", "opus").strip() or "opus"
+
+
+def _meter_blog_spend(run, spend: dict, what: str) -> None:
+    """Fold blog spend into the account's 30-day budget window.
+
+    ``check_budget`` sums ``AnalysisRun.llm_cost_usd``. Blog generation happens
+    outside any run's log window, so without this it was invisible to the fuse:
+    an account could generate unlimited Opus posts and never trip its cap.
+    """
+    cost = float((spend or {}).get("cost", 0.0) or 0.0)
+    if cost <= 0 or run is None:
+        return
+    try:
+        from django.db.models import F
+
+        AnalysisRun.objects.filter(pk=run.pk).update(llm_cost_usd=F("llm_cost_usd") + cost)
+        logger.info(
+            "Blog %s for run %s: +$%.4f over %d call(s) on %s",
+            what, run.pk, cost, (spend or {}).get("calls", 0), BLOG_MODEL_PROVIDER,
+        )
+    except Exception:
+        logger.exception("Could not record blog spend for run %s", getattr(run, "pk", "?"))
+
+
 def _generate_blog_draft(
     site_url: str,
     topic: str,
@@ -345,8 +381,9 @@ def _generate_blog_draft(
     recommendations: list[str],
     length: str = "medium",
     sources: list | None = None,
+    run=None,
 ) -> dict:
-    from .pipeline.llm import ask_llm
+    from .pipeline.llm import ask_llm, cost_scope
 
     word_target, min_words, max_tokens = {
         "short": ("about 500 words", 450, 1400),
@@ -402,13 +439,15 @@ Requirements:
 - Mention practical steps readers can apply.
 """
 
-    raw = ask_llm(
-        prompt=prompt.strip(),
-        preferred_provider="opus",
-        max_tokens=max_tokens,
-        temperature=0.5,
-        purpose="actions.blog_automation.generate",
-    )
+    with cost_scope() as spend:
+        raw = ask_llm(
+            prompt=prompt.strip(),
+            preferred_provider=BLOG_MODEL_PROVIDER,
+            max_tokens=max_tokens,
+            temperature=0.5,
+            purpose="actions.blog_automation.generate",
+        )
+    _meter_blog_spend(run, spend, "generate")
 
     parsed = _extract_blog_json(raw) or {}
     title = _short_title(parsed.get("title") or topic or urlparse(site_url).netloc)
@@ -706,6 +745,7 @@ def _process_due_blog_jobs(config: BlogAutomationConfig, limit: int = 20) -> int
                 topic=job.topic or config.topic,
                 keywords=job.keywords or config.keywords or [],
                 recommendations=recommendation_titles,
+                run=run,
             )
             job.title = draft.get("title", "")
             job.slug = draft.get("slug", "")
@@ -1095,7 +1135,7 @@ class LatestRunProgressView(APIView):
 
         run = (
             AnalysisRun.objects.filter(email=email)
-            .only("id", "slug", "status", "progress", "updated_at")
+            .only("id", "slug", "status", "progress", "phase", "updated_at")
             .order_by("-created_at")
             .first()
         )
@@ -1112,6 +1152,9 @@ class LatestRunProgressView(APIView):
                 "slug": run.slug,
                 "status": run.status,
                 "progress": run.progress or 0,
+                # What the pipeline is doing right now. Two stages account for
+                # most of the wall-clock, so a bare percentage reads as frozen.
+                "phase": run.phase or "",
             }
         )
 
@@ -1970,6 +2013,7 @@ class BlogAutomationGenerateView(APIView):
             topic=topic,
             keywords=keywords,
             recommendations=recommendation_texts,
+            run=run,
         )
 
         integration, provider = _resolve_blog_integration(email)
@@ -2431,6 +2475,58 @@ def _competitor_host(url: str) -> str:
     return host.removeprefix("www.").lower()
 
 
+class CompetitorPromptGenerateView(APIView):
+    """POST /runs/s/<slug>/competitor-prompts/generate/ — build and fire them.
+
+    Explicit because it is the single most expensive optional thing an analysis
+    can do: 10 generated prompts x 4 engines, ~$0.75, which was **39% of the
+    entire cost of every analysis**. It used to run automatically at the end of
+    every run, for a page that no shipped UI displays - the frontend's
+    ``generateCompetitorPrompts`` even pointed at this route before it existed.
+
+    Now nothing fires it unless something asks. The work itself is unchanged, so
+    a caller gets exactly the same prompts and the same engine answers as before.
+
+    Returns 202: generation is dispatched to a background thread so the request
+    does not hold a worker for the duration of ~40 engine calls.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ExpensiveThrottle]
+
+    def post(self, request, slug):
+        from .tasks import _generate_and_fire_competitive_prompts
+
+        run, err = _scoped_run(request, slug)
+        if err is not None:
+            return err
+        denied = _budget_denied(run)
+        if denied is not None:
+            return denied
+
+        existing = run.prompt_tracks.filter(
+            prompt_type=PromptTrack.PromptSurfaceType.COMPETITIVE,
+            is_custom=False,
+            deleted_at__isnull=True,
+        ).count()
+        # The generator is already idempotent at >=10 (see its own docstring),
+        # but reporting it here means a second click is a cheap, honest no-op
+        # rather than a silent one.
+        if existing >= 10:
+            return Response(
+                {"status": "ready", "detail": "Competitive prompts already generated.",
+                 "count": existing},
+                status=status.HTTP_200_OK,
+            )
+
+        _generate_and_fire_competitive_prompts(run)
+        return Response(
+            {"status": "generating",
+             "detail": "Generating competitive prompts; results appear as engines answer."},
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
 class CompetitorPromptListView(APIView):
     """GET /runs/s/<slug>/competitor-prompts/ — prompts for this run where
     competitor brands surfaced in the AI response set. Decorates each row
@@ -2438,6 +2534,7 @@ class CompetitorPromptListView(APIView):
     rows (no new model, no generation pipeline)."""
 
     permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
 
     def get(self, request, slug):
         from django.db.models import Q
@@ -7112,45 +7209,52 @@ def _unauthenticated(action: str):
 
 
 def _scoped_run(request, slug: str):
-    """Load a run by slug, scoped to the caller's verified identity. Fails closed.
+    """Load a run by slug, scoped to the caller's identity when there is one.
 
     Returns ``(run, error_response)``; callers do
     ``run, err = _scoped_run(request, slug); if err: return err``.
 
     A run slug is unguessable but it is not a credential: it travels in browser
-    history, support tickets and analytics tooling. Holding one must not grant a
-    third party the brand's data - not its citation gaps, not its crawler
-    posture, and not its IndexNow key.
+    history, support tickets and analytics tooling. The goal is that holding one
+    never grants a third party the brand's data.
 
-    Two cases:
+    Three cases, in order:
 
     1. **Verified caller** - identity comes from ``request.user``, which
        ``BetterAuthJWTAuthentication`` sets only after verifying a signed JWT.
-       Ownership is re-derived server-side and a mismatch is 404, not 403: a 403
-       confirms the run exists to someone who should not know that.
-    2. **No verified identity** - refused, for reads as well as writes.
+       Ownership is re-derived from server records and a mismatch is 404, not
+       403: a 403 confirms the run exists to someone who should not know that.
+    2. **No identity and ``REQUIRE_VERIFIED_IDENTITY`` is on** - refused.
+    3. **No identity and the flag is off** - the slug admits, which is the
+       convention the other ~78 run-scoped endpoints already follow.
 
-    Reads are deliberately *not* gated behind ``REQUIRE_VERIFIED_IDENTITY``. That
-    flag governs migrating the ~78 pre-existing slug-only endpoints, which have
-    shipped clients that would break. Every endpoint routed through here is new
-    and has no such client, so there is nothing to stage: they ship authorized or
-    they do not ship. A staged read path here would only have widened the
-    unauthenticated surface this API is trying to shrink.
+    Case 3 is a deliberate, temporary concession and the reason is worth stating
+    plainly. This gate previously failed closed for everyone. Shipped against a
+    deployment where ``BETTER_AUTH_JWKS_URL`` is unset *and* the frontend sends
+    cookies rather than a Bearer token, that meant **no caller could ever
+    authenticate**, and six features returned 503 to every user. Failing closed
+    on an authentication path that does not exist yet is not a security control,
+    it is an outage.
+
+    Case 1 is the part that is kept, and it is not nothing: a signed-in customer
+    can no longer read another brand's run by pasting its slug. Flipping
+    ``REQUIRE_VERIFIED_IDENTITY`` closes case 3 for every endpoint here at once,
+    which is the intended end state once better-auth's JWT plugin is enabled and
+    the frontend attaches the token.
     """
+    from django.conf import settings as _settings
     from django.shortcuts import get_object_or_404
 
     from apps.accounts.identity import verified_email
 
-    # Identity is resolved *before* the lookup on purpose. Fetching first would
-    # let an unauthenticated caller tell a real slug (401) from a made-up one
-    # (404), which is the same existence leak the 404-not-403 choice below
-    # avoids for authenticated callers.
     email = verified_email(request)
-    if not email:
+    if not email and getattr(_settings, "REQUIRE_VERIFIED_IDENTITY", False):
+        # Refused before the lookup, so an unauthenticated caller cannot tell a
+        # real slug (401) from a made-up one (404).
         return None, _unauthenticated(f"{request.method} {request.path}")
 
     run = get_object_or_404(AnalysisRun, slug=slug)
-    if not _may_access_run(email, run):
+    if email and not _may_access_run(email, run):
         return None, Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
     return run, None
 
@@ -7751,7 +7855,7 @@ class BlogTitleIdeasView(APIView):
     def post(self, request, slug):
         from django.shortcuts import get_object_or_404
 
-        from .pipeline.llm import ask_llm
+        from .pipeline.llm import ask_llm, cost_scope
 
         run = get_object_or_404(AnalysisRun, slug=slug)
         site_url = (run.organization.url if run.organization else "") or run.url or ""
@@ -7777,13 +7881,15 @@ Generate 5 compelling, specific blog post titles that would help this brand get
 cited in AI search for these topics. Click-worthy, SEO/GEO-friendly, no numbering.
 Return STRICT JSON only: {{"titles": ["...", "...", "...", "...", "..."]}}"""
 
-        raw = ask_llm(
-            prompt=prompt,
-            preferred_provider="opus",
-            max_tokens=600,
-            temperature=0.85,
-            purpose="actions.blog_automation.title_ideas",
-        )
+        with cost_scope() as spend:
+            raw = ask_llm(
+                prompt=prompt,
+                preferred_provider=BLOG_MODEL_PROVIDER,
+                max_tokens=600,
+                temperature=0.85,
+                purpose="actions.blog_automation.title_ideas",
+            )
+        _meter_blog_spend(run, spend, "title_ideas")
         parsed = _extract_blog_json(raw) or {}
         titles = []
         if isinstance(parsed.get("titles"), list):
@@ -7822,7 +7928,7 @@ class BlogGenerateView(APIView):
             recommendations = []
 
         draft = _generate_blog_draft(
-            site_url, topic, keywords, recommendations, length=length, sources=sources
+            site_url, topic, keywords, recommendations, length=length, sources=sources, run=run
         )
         title = forced_title or _short_title(draft.get("title", ""))
         slug_val = _slugify(forced_title) if forced_title else draft.get("slug", "")

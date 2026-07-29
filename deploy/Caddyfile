@@ -14,6 +14,19 @@
 api.signalor.ai {
 	encode zstd gzip
 	tls /etc/caddy/certs/cloudflare-origin.pem /etc/caddy/certs/cloudflare-origin.key
+	# Access logging is off by default in Caddy, which meant the edge had no
+	# record of a rate-limit incident: Django logged the handler errors but
+	# nothing showed which paths were 429ing, how often, or from where. Status
+	# and latency per request is the log you want *before* the next incident,
+	# not after.
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 50MiB
+			roll_keep 5
+			roll_keep_for 168h
+		}
+		format json
+	}
 	# reverse_proxy forwards the original Host and sets X-Forwarded-Proto=https,
 	# which Django's SECURE_PROXY_SSL_HEADER / USE_X_FORWARDED_HOST rely on.
 	reverse_proxy web:8000

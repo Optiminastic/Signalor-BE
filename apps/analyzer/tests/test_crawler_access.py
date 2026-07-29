@@ -286,10 +286,12 @@ class EndpointTests(TestCase):
         ):
             self.assertEqual(self.client.get(self._url()).status_code, 200)
 
-    def test_an_anonymous_read_is_refused(self):
+    def test_flipping_the_rollout_flag_closes_the_anonymous_path(self):
         from django.test import override_settings
 
-        with override_settings(BETTER_AUTH_JWKS_URL="https://auth.example/jwks"):
+        with override_settings(
+            BETTER_AUTH_JWKS_URL="https://auth.example/jwks", REQUIRE_VERIFIED_IDENTITY=True
+        ):
             self.assertEqual(self.client.get(self._url()).status_code, 401)
 
     def test_run_without_an_organization_is_rejected(self):

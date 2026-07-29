@@ -180,9 +180,20 @@ REST_FRAMEWORK = {
     # via ScopedRateThrottle on the views themselves — see scopes below.
     "DEFAULT_THROTTLE_RATES": {
         # Global ceiling for any AllowAny view that doesn't pick a scoped throttle.
-        # Tight enough that an unauth attacker can't cheaply hammer the API,
-        # generous enough for a real visitor opening a few pages.
-        "anon": "60/hour",
+        #
+        # This was 60/hour, sized for "a visitor opening a few pages". It is the
+        # wrong shape for this API: the dashboard makes 10-20 calls per page load
+        # and the frontend does not yet send a Bearer token, so *every* signed-in
+        # customer is keyed as anon — and the bucket is per IP, so an office
+        # shares one. 60/hour meant roughly four page loads before a hard lockout,
+        # and one analysing screen (polling every 3.5s) drained it in about three
+        # minutes and took the whole dashboard down with it.
+        #
+        # Raising this does not open the expensive surface: LLM calls, analyses,
+        # auto-fix, blog generation, vendor-billed routes and auth sends all carry
+        # their own tighter scopes below. This ceiling only governs cheap reads.
+        # Tighten it once the frontend authenticates and real users key as `user`.
+        "anon": "600/hour",
         # Authed user ceiling. Per-route scoped throttles below override these.
         "user": "600/hour",
         # Cost-incurring routes (LLM, full re-analysis, auto-fix, blog gen).
