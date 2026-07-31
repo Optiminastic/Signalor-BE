@@ -1,9 +1,17 @@
 name: Deploy backend (main)
 
-# Build the image on push to main, push it to GHCR, then deploy to the Hetzner
-# VPS. The `deploy` job targets the `production` GitHub Environment — add a
-# required-reviewer protection rule there to make the deploy step a one-click
-# manual approval (see be/deploy/DEPLOY.md § CI/CD).
+# Build the image on push to main, push it to GHCR, then trigger a Coolify
+# deployment (signalor now runs under Coolify — dashboard at deploy.signalor.ai —
+# NOT the old standalone docker-compose stack). Coolify pulls the freshly built
+# `:latest` image and recreates the web/worker/analysis-worker containers.
+#
+# Required repo secret:
+#   COOLIFY_TOKEN  — Coolify API token with the `deploy` ability.
+# Non-secret config is inlined in `env` below (URL + service uuid).
+#
+# The box must be able to pull the private GHCR image: run
+#   docker login ghcr.io  (with a read:packages token)
+# once on the server so Coolify's pull succeeds.
 
 on:
   push:
@@ -20,6 +28,8 @@ permissions:
 
 env:
   IMAGE: ghcr.io/optiminastic/signalor-be
+  COOLIFY_URL: https://deploy.signalor.ai
+  COOLIFY_SERVICE_UUID: d11oz4lylx5pgz8rtuj1ho3d
 
 jobs:
   build:
@@ -60,35 +70,18 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    # Manual approval gate: configure required reviewers on this Environment.
+    # Manual approval gate (optional): configure required reviewers on this
+    # GitHub Environment to make the deploy step a one-click approval.
     environment: production
     steps:
-      - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1
+      - name: Trigger Coolify deployment
         env:
-          APP_TAG: ${{ needs.build.outputs.tag }}
-          GHCR_USER: ${{ github.actor }}
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.SSH_PORT || 22 }}
-          envs: APP_TAG,GHCR_USER,GHCR_TOKEN
-          script: |
-            set -euo pipefail
-            # Sync compose / Caddyfile / scripts to the commit we built. stack.env
-            # and .env are gitignored, so secrets and APP_TAG survive the reset.
-            cd /opt/signalor
-            git fetch --quiet origin main
-            git reset --hard origin/main
-            cd deploy
-            # Authenticate to GHCR with the workflow's ephemeral token (valid for
-            # this run only) so the box can pull the private image.
-            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-            # Pin compose to the exact commit we just built.
-            echo "APP_TAG=$APP_TAG" > .env
-            docker compose pull web worker
-            docker compose up -d
-            docker image prune -f
-            docker logout ghcr.io
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /tmp/coolify-resp -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
+            "${COOLIFY_URL}/api/v1/deploy?uuid=${COOLIFY_SERVICE_UUID}&force=true")
+          echo "Coolify deploy HTTP ${code}"
+          cat /tmp/coolify-resp; echo
+          test "${code}" = "200"
