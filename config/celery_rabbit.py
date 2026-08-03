@@ -32,6 +32,13 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.development")
 
 analysis_app = Celery("signalor_analysis")
 
+# `celery -A config.celery_rabbit` resolves the app by looking for `.app`, then
+# `.celery`, then by scanning the module. Without this alias that search can
+# bind config.celery's Redis-backed app instead, so the worker silently consumes
+# the wrong broker while the web tier publishes to RabbitMQ - no error anywhere,
+# tasks simply never arrive. Name it explicitly.
+app = analysis_app
+
 # Configured directly (not via the shared ``CELERY_*`` settings namespace) so
 # the existing Redis-Celery config in config/settings/base.py is left untouched.
 analysis_app.conf.broker_url = os.getenv("RABBITMQ_URL", "")  # amqp://user:pass@host:5672//
