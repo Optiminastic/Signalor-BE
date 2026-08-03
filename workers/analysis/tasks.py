@@ -52,6 +52,7 @@ def run_analysis_task(self, run_id: int) -> None:
     from apps.analyzer.models import AnalysisRun
     from apps.analyzer.tasks import run_single_page_analysis
 
+
     close_old_connections()
     try:
         run_single_page_analysis(run_id)
