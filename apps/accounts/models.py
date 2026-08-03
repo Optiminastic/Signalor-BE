@@ -74,7 +74,8 @@ def _plan_count(env_prefix: str, plan: str, default: int) -> int:
 PLAN_LIMITS = {
     "starter": {
         "label": "Self-Serve Brand",
-        "price_gbp": 69.99,
+        # Dodo "Signalor Brand Starter Plan" (DODO_PRODUCT_ID_STARTER).
+        "price_gbp": 79.99,
         "max_projects": 1,
         "max_agency_projects": _plan_count("AGENCY_PROJECTS", "STARTER", 5),
         "max_prompts": 10,
@@ -96,7 +97,34 @@ PLAN_LIMITS = {
             "Recommendations & improvement guidance",
         ],
     },
+    "agency": {
+        # Dodo "Signalor Agency Starter Plan" (DODO_PRODUCT_ID_AGENCY).
+        # Cheaper per brand than the individual plan — the agency discount.
+        "label": "Agency Starter",
+        "price_gbp": 69.99,
+        # Individual base; the multi-brand allowance below is what actually
+        # applies, since only agency-typed accounts can hold this plan.
+        "max_projects": 1,
+        "max_agency_projects": _plan_count("AGENCY_PROJECTS", "AGENCY", 5),
+        "max_prompts": 10,
+        "max_llm_spend_usd": _plan_budget("AGENCY", 25.0),
+        "max_autofixes_per_month": _plan_count("AUTOFIX_MONTHLY", "AGENCY", 30),
+        "max_autofixes_per_day": _plan_count("AUTOFIX_DAILY", "AGENCY", 10),
+        "max_autofix_regens": _plan_count("AUTOFIX_REGENS", "AGENCY", 3),
+        "max_analyses_per_month": _plan_count("ANALYSES_MONTHLY", "AGENCY", 8),
+        "engines": _ALL_ENGINES,
+        "features": [
+            "Multiple client brands",
+            "10 prompts to rank & track per brand",
+            "AI visibility score",
+            "Prompt ranking across AI engines",
+            "Competitor visibility tracking",
+            "Recommendations & improvement guidance",
+        ],
+    },
     "pro": {
+        # Retired from sale alongside "business" — kept so existing rows keep
+        # resolving limits. Not offered at checkout or on the pricing page.
         "label": "Managed Growth Brand",
         "price_gbp": 99.69,
         "max_projects": 1,
@@ -282,6 +310,7 @@ class Subscription(models.Model):
         # Value strings are stable contracts (live rows, Dodo metadata, product_map);
         # only the human labels track the new packaging.
         STARTER = "starter", "Self-Serve Brand"
+        AGENCY = "agency", "Agency Starter"
         PRO = "pro", "Managed Growth Brand"
         BUSINESS = "business", "Max"
 

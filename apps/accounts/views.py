@@ -33,7 +33,7 @@ from .dodo_invoice import (
     retrieve_payment,
 )
 from .invoice_pdf import resolve_invoice_pdf
-from .models import PLAN_LIMITS, InvoiceRecord, Subscription
+from .models import AGENCY_MAX_PROJECTS, PLAN_LIMITS, InvoiceRecord, Subscription
 from .subscription_utils import get_account_type, is_free_email, is_internal_email
 
 
@@ -72,6 +72,12 @@ logger = logging.getLogger("apps")
 
 FRONTEND_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000").rstrip("/")
 
+# Plans a customer can buy without talking to sales: one brand, one agency.
+SELLABLE_PLANS = ("starter", "agency")
+# Every plan key the webhook will accept from Dodo metadata. Wider than
+# SELLABLE_PLANS so renewals on retired tiers keep resolving.
+KNOWN_PLANS = ("starter", "agency", "pro", "business")
+
 
 def _get_dodo():
     """Initialize Dodo Payments client (official SDK uses environment= test_mode | live_mode)."""
@@ -107,10 +113,11 @@ class CreateCheckoutSessionView(APIView):
         if not email:
             return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Only the public Individual plans are self-serve checkout-able. "business"
-        # (legacy Max) is retired from sale, and Enterprise goes through the
-        # Contact Sales form — neither gets a Dodo checkout here.
-        if plan not in ("starter", "pro"):
+        # Exactly two plans are sold self-serve: "starter" (brand) and "agency".
+        # "pro"/"business" are retired from sale but kept as plan keys so existing
+        # subscriber rows still resolve limits; Enterprise goes through Contact
+        # Sales. None of those get a Dodo checkout here.
+        if plan not in SELLABLE_PLANS:
             return Response({"error": "Invalid plan."}, status=status.HTTP_400_BAD_REQUEST)
 
         dodo = _get_dodo()
@@ -121,10 +128,29 @@ class CreateCheckoutSessionView(APIView):
 
         product_map = {
             "starter": os.getenv("DODO_PRODUCT_ID_STARTER", os.getenv("DODO_PRODUCT_ID", "")).strip(),
+            "agency": os.getenv("DODO_PRODUCT_ID_AGENCY", "").strip(),
             "pro": os.getenv("DODO_PRODUCT_ID_PRO", "").strip(),
             "business": os.getenv("DODO_PRODUCT_ID_BUSINESS", "").strip(),
         }
         product_id = product_map.get(plan, "")
+
+        # Agency accounts buy the agency-priced per-brand product when one is
+        # configured (e.g. Agency Starter at £69.99 vs Individual £79.99). The
+        # account type is re-derived server-side, never taken from the request.
+        # Webhooks set Subscription.plan from checkout METADATA (still
+        # starter/pro), so swapping the product here changes only the price.
+        is_agency_account = False
+        try:
+            is_agency_account = get_account_type(email) == "agency"
+        except Exception:
+            logger.exception("account type lookup failed at checkout email=%s", email)
+        agency_product_used = False
+        if is_agency_account:
+            agency_product = os.getenv(f"DODO_PRODUCT_ID_AGENCY_{plan.upper()}", "").strip()
+            if agency_product:
+                product_id = agency_product
+                agency_product_used = True
+
         if not product_id:
             return Response(
                 {"error": f"Product not configured for {plan} plan."},
@@ -133,10 +159,11 @@ class CreateCheckoutSessionView(APIView):
 
         sub, _ = Subscription.objects.get_or_create(email=email)
 
-        # Auto-apply the 10%-off discount. Two paths can supply it:
+        # Auto-apply a discount. Three paths can supply one (first match wins):
         #   1) Active affiliate attribution (creator program) — wins by last-click
         #   2) Pending Referral (user-to-user) — only if no affiliate attribution
-        # Both paths use the same Dodo discount (DODO_REFEREE_DISCOUNT_CODE).
+        #   3) Agency account type — DODO_AGENCY_DISCOUNT_CODE (15% per-brand promise)
+        # Paths 1-2 use the same Dodo discount (DODO_REFEREE_DISCOUNT_CODE).
         # Note: checkout_sessions.create takes the human discount_code (e.g.
         # "VSV4K3RN2DD"), NOT the dsc_... ID. The ID is for subscriptions.update.
         discount_code_to_apply = ""
@@ -169,6 +196,17 @@ class CreateCheckoutSessionView(APIView):
                     discount_source = "referral"
             except Exception:
                 logger.exception("referrals: lookup failed at checkout for email=%s", email)
+
+        # 3) Agency accounts: the pricing page promises "15% off every brand you
+        # onboard". When a dedicated agency-priced product was used above, the
+        # discount is already baked into its price — applying a code on top
+        # would double-discount. The code path only covers plans that still
+        # check out with the standard Individual product.
+        if not discount_code_to_apply and is_agency_account and not agency_product_used:
+            agency_code_env = os.getenv("DODO_AGENCY_DISCOUNT_CODE", "").strip()
+            if agency_code_env:
+                discount_code_to_apply = agency_code_env
+                discount_source = "agency"
 
         try:
             # Current Dodo Python SDK: checkout_sessions (not subscriptions.create with payment_link).
@@ -716,7 +754,7 @@ class DodoWebhookView(APIView):
 
         # Set plan from metadata if present
         metadata = data.get("metadata", {})
-        if isinstance(metadata, dict) and metadata.get("plan") in ("starter", "pro", "business"):
+        if isinstance(metadata, dict) and metadata.get("plan") in KNOWN_PLANS:
             sub.plan = metadata["plan"]
 
         next_billing = data.get("next_billing_date")
@@ -1168,6 +1206,13 @@ class UsageView(APIView):
             """Plan cap for display. 0 = uncapped; internal accounts read as 0."""
             return 0 if is_internal else int(limits.get(key, 0) or 0)
 
+        # Brand/prompt caps follow the same "0 = unlimited" contract as the
+        # count quotas above. Without this the UI rendered the internal sentinel
+        # verbatim — "1 / 1000 projects, 0%" — which reads as a real allowance
+        # nobody sells. AGENCY_MAX_PROJECTS is the uncapped marker, not a limit.
+        projects_cap = 0 if (is_internal or max_projects >= AGENCY_MAX_PROJECTS) else max_projects
+        prompts_cap = _cap("max_prompts")
+
         return Response(
             {
                 "plan": "business"
@@ -1176,8 +1221,9 @@ class UsageView(APIView):
                 "account_type": get_account_type(email),
                 "window_days": QUOTA_WINDOW_DAYS,
                 "limits": {
-                    "max_projects": max_projects,
-                    "max_prompts": limits["max_prompts"],
+                    # 0 = unlimited (see projects_cap / prompts_cap above).
+                    "max_projects": projects_cap,
+                    "max_prompts": prompts_cap,
                     "engines": allowed_engines,
                     # Per-brand count quotas (0 = unlimited).
                     "max_analyses_per_month": _cap("max_analyses_per_month"),
@@ -1195,8 +1241,10 @@ class UsageView(APIView):
                 },
                 "ai_allowance": ai_allowance,
                 "at_limit": {
-                    "projects": projects_used >= max_projects,
-                    "prompts": prompts_used >= limits["max_prompts"],
+                    # An unlimited cap is 0, so guard before comparing — a bare
+                    # ">= 0" would report every uncapped account as at its limit.
+                    "projects": bool(projects_cap) and projects_used >= projects_cap,
+                    "prompts": bool(prompts_cap) and prompts_used >= prompts_cap,
                 },
             }
         )
@@ -1268,6 +1316,7 @@ class PlanPricesView(APIView):
 
         product_map = {
             "starter": os.getenv("DODO_PRODUCT_ID_STARTER", os.getenv("DODO_PRODUCT_ID", "")).strip(),
+            "agency": os.getenv("DODO_PRODUCT_ID_AGENCY", "").strip(),
             "pro": os.getenv("DODO_PRODUCT_ID_PRO", "").strip(),
             "business": os.getenv("DODO_PRODUCT_ID_BUSINESS", "").strip(),
         }

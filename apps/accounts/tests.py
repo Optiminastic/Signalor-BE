@@ -147,3 +147,62 @@ class ProjectLimitReachedTests(TestCase):
         reached, msg = project_limit_reached("")
         self.assertTrue(reached)
         self.assertEqual(msg, "Email is required.")
+
+
+class AgencyCheckoutTests(TestCase):
+    """Agency accounts check out with the agency-priced product (or the
+    fallback discount code), Individuals with the standard one."""
+
+    AGENCY = "ops@some-agency.com"
+    ENV = {
+        "DODO_PRODUCT_ID_STARTER": "pdt_individual_starter",
+        "DODO_PRODUCT_ID_AGENCY_STARTER": "",
+        "DODO_AGENCY_DISCOUNT_CODE": "",
+    }
+
+    def _checkout(self, email):
+        from unittest.mock import MagicMock
+
+        dodo = MagicMock()
+        dodo.checkout_sessions.create.return_value = MagicMock(checkout_url="https://dodo/x")
+        with mock.patch("apps.accounts.views._get_dodo", return_value=dodo):
+            resp = self.client.post(
+                "/api/payments/create-checkout/",
+                {"email": email, "plan": "starter"},
+                content_type="application/json",
+            )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        return dodo.checkout_sessions.create.call_args.kwargs
+
+    def _make_agency(self):
+        AccountProfile.objects.create(email=self.AGENCY, account_type="agency")
+
+    def test_agency_gets_the_agency_priced_product(self):
+        self._make_agency()
+        env = {**self.ENV, "DODO_PRODUCT_ID_AGENCY_STARTER": "pdt_agency_starter"}
+        with mock.patch.dict(os.environ, env):
+            kwargs = self._checkout(self.AGENCY)
+        self.assertEqual(kwargs["product_cart"][0]["product_id"], "pdt_agency_starter")
+        # Price is already agency-priced — no extra discount stacking.
+        self.assertNotIn("discount_code", kwargs)
+        # Webhooks map the plan from metadata, independent of the product.
+        self.assertEqual(kwargs["metadata"]["plan"], "starter")
+
+    def test_agency_without_agency_product_falls_back_to_discount_code(self):
+        self._make_agency()
+        env = {**self.ENV, "DODO_AGENCY_DISCOUNT_CODE": "AGENCY15"}
+        with mock.patch.dict(os.environ, env):
+            kwargs = self._checkout(self.AGENCY)
+        self.assertEqual(kwargs["product_cart"][0]["product_id"], "pdt_individual_starter")
+        self.assertEqual(kwargs["discount_code"], "AGENCY15")
+
+    def test_individual_gets_the_standard_product_with_no_agency_discount(self):
+        env = {
+            **self.ENV,
+            "DODO_PRODUCT_ID_AGENCY_STARTER": "pdt_agency_starter",
+            "DODO_AGENCY_DISCOUNT_CODE": "AGENCY15",
+        }
+        with mock.patch.dict(os.environ, env):
+            kwargs = self._checkout(CUSTOMER)
+        self.assertEqual(kwargs["product_cart"][0]["product_id"], "pdt_individual_starter")
+        self.assertNotIn("discount_code", kwargs)

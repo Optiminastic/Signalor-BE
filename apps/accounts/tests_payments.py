@@ -17,11 +17,14 @@ from unittest import mock
 from django.test import TestCase
 from django.urls import reverse
 
-from apps.accounts.models import Subscription
+from apps.accounts.models import AccountProfile, Subscription
 from apps.accounts.views import WEBHOOK_SIGNATURE_MAX_AGE_SEC
+from apps.organizations.models import Organization
 
 WEBHOOK_SECRET = "whsec_" + base64.b64encode(b"test-secret-material").decode()
 BUYER = "buyer@acme-brand.com"
+INTERNAL = "devops@optiminastic.com"
+AGENCY = "owner@acme-agency.com"
 
 
 def _sign(body: bytes, *, msg_id: str = "msg_1", timestamp: str | None = None) -> dict:
@@ -82,7 +85,16 @@ class DodoWebhookSignatureTests(TestCase):
         """A forged/renamed plan must not create an unknown tier."""
         body = _subscription_active_event(plan="enterprise-unlimited")
         self.client.post(self.url, body, content_type="application/json", **_sign(body))
-        self.assertIn(Subscription.objects.get(email=BUYER).plan, ("starter", "pro", "business"))
+        self.assertIn(
+            Subscription.objects.get(email=BUYER).plan,
+            ("starter", "agency", "pro", "business"),
+        )
+
+    def test_agency_purchase_activates_on_the_agency_plan(self):
+        """An agency buyer must not silently land on the brand plan."""
+        body = _subscription_active_event(plan="agency")
+        self.client.post(self.url, body, content_type="application/json", **_sign(body))
+        self.assertEqual(Subscription.objects.get(email=BUYER).plan, "agency")
 
     def test_tampered_body_is_rejected(self):
         body = _subscription_active_event()
@@ -178,6 +190,19 @@ class CreateCheckoutSessionTests(TestCase):
     def test_enterprise_is_not_self_serve(self):
         self.assertEqual(self._post(email=BUYER, plan="enterprise").status_code, 400)
 
+    def test_retired_pro_plan_is_not_sellable(self):
+        """Only the brand and agency plans are sold; pro is grandfathered."""
+        self.assertEqual(self._post(email=BUYER, plan="pro").status_code, 400)
+
+    @mock.patch.dict(os.environ, {"DODO_PRODUCT_ID_AGENCY": ""}, clear=False)
+    @mock.patch("apps.accounts.views._get_dodo")
+    def test_agency_plan_is_sellable(self, get_dodo):
+        """Reaching the product lookup proves 'agency' passed the allowlist."""
+        get_dodo.return_value = object()
+        resp = self._post(email=BUYER, plan="agency")
+        self.assertEqual(resp.status_code, 500)
+        self.assertIn("agency", resp.json().get("error", "").lower())
+
     def test_retired_business_plan_is_not_sellable(self):
         """'business' is grandfathered-only and must not be purchasable."""
         self.assertEqual(self._post(email=BUYER, plan="business").status_code, 400)
@@ -189,3 +214,26 @@ class CreateCheckoutSessionTests(TestCase):
         resp = self._post(email=BUYER, plan="starter")
         self.assertEqual(resp.status_code, 500)
         self.assertIn("not configured", resp.json().get("error", "").lower())
+
+
+@mock.patch.dict(os.environ, {"DISABLE_PAYMENT": "false", "ENFORCE_PLAN_LIMITS": "true"})
+class UsageCapDisplayTests(TestCase):
+    def _usage(self, email):
+        r = self.client.get(reverse("accounts:usage"), {"email": email})
+        self.assertEqual(r.status_code, 200)
+        return r.json()
+
+    def test_internal_reports_unlimited_not_the_sentinel(self):
+        Organization.objects.create(name="S", url="https://s.ai", owner_email=INTERNAL)
+        d = self._usage(INTERNAL)
+        self.assertEqual(d["limits"]["max_projects"], 0)
+        self.assertEqual(d["limits"]["max_prompts"], 0)
+        self.assertFalse(d["at_limit"]["projects"])
+        self.assertFalse(d["at_limit"]["prompts"])
+
+    def test_paid_agency_reports_its_real_plan_cap(self):
+        AccountProfile.objects.create(email=AGENCY, account_type=AccountProfile.AccountType.AGENCY)
+        Subscription.objects.create(email=AGENCY, plan="starter", status=Subscription.Status.ACTIVE)
+        d = self._usage(AGENCY)
+        self.assertEqual(d["limits"]["max_projects"], 5)
+        self.assertLess(d["limits"]["max_projects"], 1000)
