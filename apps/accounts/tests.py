@@ -206,3 +206,64 @@ class AgencyCheckoutTests(TestCase):
             kwargs = self._checkout(CUSTOMER)
         self.assertEqual(kwargs["product_cart"][0]["product_id"], "pdt_individual_starter")
         self.assertNotIn("discount_code", kwargs)
+
+
+class VerifyCheckoutTests(TestCase):
+    """Webhook-independent activation: Dodo's record is the only trusted input."""
+
+    EMAIL = "payer@brand.com"
+    SUB_ID = "sub_dodo_123"
+
+    def _remote(self, status="active", email=None, plan="starter"):
+        remote = mock.MagicMock()
+        remote.status = status
+        remote.subscription_id = self.SUB_ID
+        remote.customer = mock.MagicMock()
+        remote.customer.email = email if email is not None else self.EMAIL
+        remote.customer.customer_id = "cus_1"
+        remote.metadata = {"email": email if email is not None else self.EMAIL, "plan": plan}
+        remote.next_billing_date = ""
+        return remote
+
+    def _verify(self, remote, email=None, subscription_id=None):
+        dodo = mock.MagicMock()
+        dodo.subscriptions.retrieve.return_value = remote
+        with mock.patch("apps.accounts.views._get_dodo", return_value=dodo):
+            return self.client.post(
+                "/api/payments/verify-checkout/",
+                {"email": email or self.EMAIL, "subscription_id": subscription_id or self.SUB_ID},
+                content_type="application/json",
+            )
+
+    def test_active_dodo_subscription_activates_locally(self):
+        resp = self._verify(self._remote())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.json()["is_active"])
+        sub = Subscription.objects.get(email=self.EMAIL)
+        self.assertEqual(sub.status, "active")
+        self.assertEqual(sub.plan, "starter")
+        self.assertEqual(sub.payment_subscription_id, self.SUB_ID)
+
+    def test_pending_dodo_subscription_does_not_activate(self):
+        resp = self._verify(self._remote(status="pending"))
+        self.assertFalse(resp.json()["is_active"])
+        sub = Subscription.objects.filter(email=self.EMAIL).first()
+        self.assertTrue(sub is None or not sub.is_active)
+
+    def test_someone_elses_subscription_id_cannot_activate_the_caller(self):
+        resp = self._verify(self._remote(email="victim@other.com"), email=self.EMAIL)
+        self.assertFalse(resp.json()["is_active"])
+        self.assertFalse(Subscription.objects.filter(email=self.EMAIL, status="active").exists())
+        # And the real payer was not activated on the attacker's behalf either.
+        self.assertFalse(Subscription.objects.filter(email="victim@other.com").exists())
+
+    def test_already_active_short_circuits_without_calling_dodo(self):
+        Subscription.objects.create(email=self.EMAIL, status="active")
+        with mock.patch("apps.accounts.views._get_dodo") as get_dodo:
+            resp = self.client.post(
+                "/api/payments/verify-checkout/",
+                {"email": self.EMAIL, "subscription_id": self.SUB_ID},
+                content_type="application/json",
+            )
+        self.assertTrue(resp.json()["is_active"])
+        get_dodo.assert_not_called()

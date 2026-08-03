@@ -21,6 +21,7 @@ from .views import (
     SubscriptionStatusView,
     TerminateAccountView,
     UsageView,
+    VerifyCheckoutView,
 )
 
 app_name = "accounts"
@@ -34,6 +35,7 @@ urlpatterns = [
     path("payments/invoice/", DownloadInvoiceView.as_view(), name="download-invoice"),
     path("payments/invoices/", InvoiceListView.as_view(), name="invoice-list"),
     path("payments/webhook/", DodoWebhookView.as_view(), name="dodo-webhook"),
+    path("payments/verify-checkout/", VerifyCheckoutView.as_view(), name="verify-checkout"),
     path("account/terminate/", TerminateAccountView.as_view(), name="terminate-account"),
     path("account/cancel-termination/", CancelTerminationView.as_view(), name="cancel-termination"),
     path("account/delete/", DeleteAccountView.as_view(), name="delete-account"),

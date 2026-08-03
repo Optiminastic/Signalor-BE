@@ -1105,6 +1105,92 @@ class DodoWebhookView(APIView):
         )
 
 
+class VerifyCheckoutView(APIView):
+    """POST /api/payments/verify-checkout/ — webhook-independent activation.
+
+    Activation used to depend entirely on the ``subscription.active`` webhook.
+    When that webhook is delayed, misconfigured, or unreachable (always the
+    case in local dev), /payments/success spun on "Confirming your payment"
+    forever and the just-paid customer stayed paywalled. This endpoint closes
+    that gap: given the ``subscription_id`` Dodo appends to the return URL, it
+    asks Dodo's API directly and, if Dodo says the subscription is active,
+    runs the SAME activation path the webhook would have (plan from metadata,
+    idempotent billing emails, referral/partner hooks).
+
+    Trust model: the caller supplies ids, but every fact comes from Dodo's
+    record — the activated email is the one Dodo has on the subscription, so
+    posting someone else's subscription_id cannot activate the caller's
+    account, and replaying it is a no-op (already active).
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def post(self, request):
+        email = (request.data.get("email") or "").lower().strip()
+        subscription_id = (request.data.get("subscription_id") or "").strip()
+        if not email:
+            return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        sub = Subscription.objects.filter(email=email).first()
+        if sub and sub.is_active:
+            return Response({"is_active": True, "status": sub.status})
+
+        if not subscription_id:
+            # Nothing to reconcile against — report current state; the client
+            # keeps polling for the webhook.
+            return Response({"is_active": False, "status": sub.status if sub else "none"})
+
+        dodo = _get_dodo()
+        if not dodo:
+            return Response({"is_active": False, "status": "unconfigured"})
+
+        try:
+            remote = dodo.subscriptions.retrieve(subscription_id)
+        except Exception:
+            logger.exception("verify-checkout: Dodo retrieve failed id=%s", subscription_id)
+            return Response({"is_active": False, "status": sub.status if sub else "none"})
+
+        remote_status = str(getattr(remote, "status", "") or "").lower()
+        if remote_status not in ("active", "trialing"):
+            return Response({"is_active": False, "status": remote_status or "pending"})
+
+        customer = getattr(remote, "customer", None)
+        payer_email = str(getattr(customer, "email", "") or "").lower().strip()
+        metadata = dict(getattr(remote, "metadata", None) or {})
+        if not payer_email:
+            payer_email = str(metadata.get("email", "") or "").lower().strip()
+        if payer_email != email:
+            # Someone else's subscription id — never activate the caller from it.
+            logger.warning(
+                "verify-checkout: payer mismatch (request=%s, dodo=%s)", email, payer_email
+            )
+            return Response({"is_active": False, "status": sub.status if sub else "none"})
+
+        # Webhook-shaped payload built from Dodo's own record, fed through the
+        # exact activation path the webhook uses (idempotent on payment ids).
+        data = {
+            "subscription_id": str(getattr(remote, "subscription_id", "") or subscription_id),
+            "customer": {
+                "customer_id": str(getattr(customer, "customer_id", "") or ""),
+                "email": payer_email,
+            },
+            "metadata": metadata,
+            "next_billing_date": str(getattr(remote, "next_billing_date", "") or ""),
+        }
+        try:
+            DodoWebhookView()._handle_subscription_active(data)
+            logger.info("verify-checkout: reconciled activation for %s (no webhook)", email)
+        except Exception:
+            logger.exception("verify-checkout: activation failed for %s", email)
+            return Response({"is_active": False, "status": sub.status if sub else "none"})
+
+        sub = Subscription.objects.filter(email=email).first()
+        return Response(
+            {"is_active": bool(sub and sub.is_active), "status": sub.status if sub else "none"}
+        )
+
+
 class UsageView(APIView):
     """GET /api/payments/usage/?email= — current usage vs plan limits."""
 
