@@ -22,6 +22,31 @@ logger = logging.getLogger("apps")
 # ─── LLM helper ──────────────────────────────────────────────────────────────
 
 
+def _meter_geo_spend(run, spend: dict) -> None:
+    """Fold GEO-improvement LLM spend into the run's cost ledger.
+
+    ``llm_cost_usd`` is what ``services.llm_spend`` sums for the budget fuse,
+    so spend that never lands there is spend the fuse cannot see.
+    """
+    cost = float((spend or {}).get("cost", 0.0) or 0.0)
+    if cost <= 0 or run is None:
+        return
+    try:
+        from django.db.models import F
+
+        from apps.analyzer.models import AnalysisRun
+
+        AnalysisRun.objects.filter(pk=run.pk).update(llm_cost_usd=F("llm_cost_usd") + cost)
+        logger.info(
+            "GeoImprovement: run %s +$%.4f over %d LLM call(s)",
+            run.pk,
+            cost,
+            (spend or {}).get("calls", 0),
+        )
+    except Exception:
+        logger.exception("GeoImprovement: could not record spend for run %s", getattr(run, "pk", "?"))
+
+
 def _llm_generate(prompt: str) -> str:
     """Generate text via the shared LLM client. Routes to the medium tier
     (claude-haiku-4.5, matching the previous hardcoded model) at temperature 0.3.
@@ -846,19 +871,28 @@ def run_geo_improvements(run_id: int) -> int:
         "GeoImprovement: run %d has %d issues, provider=%s", run_id, len(issues), integration.provider
     )
 
-    # Apply platform-specific improvements
+    # Apply platform-specific improvements. Metered: each fix is LLM-generated,
+    # and this path runs outside any log window, so without the cost scope the
+    # spend never reached ``llm_cost_usd`` / the budget fuse (same blind spot as
+    # blog generation - see services.blog_automation._meter_blog_spend).
+    from core.llm.client import cost_scope
+
+    spend = {"cost": 0.0, "calls": 0}
     try:
-        if integration.provider == Integration.Provider.SHOPIFY:
-            raw_improvements = _apply_shopify_improvements(run, integration, issues)
-        elif integration.provider == Integration.Provider.WORDPRESS:
-            raw_improvements = _apply_wordpress_improvements(run, integration, issues)
-        else:
-            raw_improvements = []
+        with cost_scope() as spend:
+            if integration.provider == Integration.Provider.SHOPIFY:
+                raw_improvements = _apply_shopify_improvements(run, integration, issues)
+            elif integration.provider == Integration.Provider.WORDPRESS:
+                raw_improvements = _apply_wordpress_improvements(run, integration, issues)
+            else:
+                raw_improvements = []
     except Exception as exc:
         logger.error(
             "GeoImprovement: applying improvements failed for run %d: %s", run_id, exc, exc_info=True
         )
         return 0
+    finally:
+        _meter_geo_spend(run, spend)
 
     # Persist each improvement
     now = django_timezone.now()

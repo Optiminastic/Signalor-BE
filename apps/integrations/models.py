@@ -35,6 +35,9 @@ class Integration(models.Model):
         # a per-vendor copy of this table that docs/app-boundaries.md §10.1
         # folds back in.
         GITHUB = "github", "GitHub"
+        # Notification target rather than a data source: the bot token lives in
+        # access_token_encrypted, the workspace/channel in metadata.
+        SLACK = "slack", "Slack"
 
     organization = models.ForeignKey(
         "organizations.Organization",

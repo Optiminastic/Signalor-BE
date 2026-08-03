@@ -30,7 +30,13 @@ from kombu import Exchange, Queue
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.development")
 
-analysis_app = Celery("signalor_analysis")
+# The broker MUST be a constructor argument, not a later `conf.broker_url =`
+# assignment. `autodiscover_tasks()` below triggers Django setup, which imports
+# config/celery.py and runs `config_from_object("django.conf:settings")` with
+# CELERY_BROKER_URL pointing at Redis - that clobbers a plain assignment and the
+# worker silently ends up on the wrong broker. Constructor args land in the
+# app's `_preconf`, which outranks any config source loaded afterwards.
+analysis_app = Celery("signalor_analysis", broker=os.getenv("RABBITMQ_URL", ""))
 
 # `celery -A config.celery_rabbit` resolves the app by looking for `.app`, then
 # `.celery`, then by scanning the module. Without this alias that search can
@@ -41,7 +47,6 @@ app = analysis_app
 
 # Configured directly (not via the shared ``CELERY_*`` settings namespace) so
 # the existing Redis-Celery config in config/settings/base.py is left untouched.
-analysis_app.conf.broker_url = os.getenv("RABBITMQ_URL", "")  # amqp://user:pass@host:5672//
 analysis_app.conf.task_always_eager = not bool(analysis_app.conf.broker_url)
 analysis_app.conf.task_eager_propagates = True
 analysis_app.conf.task_acks_late = True

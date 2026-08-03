@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 
 from apps.accounts.subscription_utils import (
     analysis_allowed_for_email,
+    analysis_count_limit_reached,
     plan_limit_error_response_dict,
     project_limit_reached,
     prompt_batch_would_exceed,
@@ -141,9 +142,17 @@ class StartAnalysisView(APIView):
             if org_err:
                 return org_err
 
-        allowed, sub_err = analysis_allowed_for_email(email)
-        if not allowed:
-            return Response({"error": sub_err}, status=status.HTTP_403_FORBIDDEN)
+        # Subscription gate applies to ACCOUNT-scoped runs only. Anonymous
+        # submissions (no email) are the free audit tool — "no sign-up required"
+        # is the product promise — and their abuse gate is the onboarding token
+        # above (single-use, minted via a heavily throttled endpoint), plus the
+        # per-IP ExpensiveThrottle on this view. With SUBSCRIPTION_REQUIRED=true
+        # an unconditional check here 403'd every free-tool scan with
+        # "Email is required", which the tool cannot ever satisfy.
+        if email:
+            allowed, sub_err = analysis_allowed_for_email(email)
+            if not allowed:
+                return Response({"error": sub_err}, status=status.HTTP_403_FORBIDDEN)
 
         # Project cap: if the caller is at their plan's project limit AND this
         # analysis would land in a fresh org (no existing org for this email),
@@ -226,6 +235,16 @@ class StartAnalysisView(APIView):
                     "next_allowed_at": ready_at.isoformat(),
                 },
                 status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        # Plan cap: analyses per brand per trailing 30 days. Each one is the
+        # most expensive unit of work (measured $0.30-$3 in LLM spend), so the
+        # 24h cooldown alone still allows ~30/month on every plan.
+        count_reached, count_msg = analysis_count_limit_reached(email, org)
+        if count_reached:
+            return Response(
+                plan_limit_error_response_dict(count_msg),
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         run = AnalysisRun.objects.create(

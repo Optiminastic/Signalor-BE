@@ -7,6 +7,9 @@ from rest_framework.views import APIView
 
 from apps.accounts.subscription_utils import (
     analysis_allowed_for_email,
+    analysis_count_limit_reached,
+    autofix_limit_reached,
+    autofix_regen_limit_reached,
     plan_limit_error_response_dict,
     prompt_batch_would_exceed,
 )
@@ -21,8 +24,18 @@ from ..models import (
 )
 from ..tasks import start_analysis_task
 from ._shared import (
+    _budget_denied,
     logger,
 )
+
+
+def _quota_email(run, org) -> str:
+    """Server-derived identity the quota is charged to.
+
+    Never the request-body email (untrusted); the run's owner, falling back to
+    the brand owner, is what plan limits and the budget fuse key off.
+    """
+    return (run.email or "").strip().lower() or (getattr(org, "owner_email", "") or "").strip().lower()
 
 
 class AutoFixView(APIView):
@@ -106,9 +119,18 @@ class AutoFixView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        recommendations = Recommendation.objects.filter(id__in=recommendation_ids, analysis_run=run)
+        recommendations = list(Recommendation.objects.filter(id__in=recommendation_ids, analysis_run=run))
 
-        results = apply_fixes(run, integration, list(recommendations))
+        # Every fix in the batch is an LLM generation — gate on the USD fuse
+        # and the per-brand count quota before spending anything.
+        denied = _budget_denied(run)
+        if denied is not None:
+            return denied
+        reached, quota_msg = autofix_limit_reached(_quota_email(run, org), org, additional=len(recommendations))
+        if reached:
+            return Response(plan_limit_error_response_dict(quota_msg), status=status.HTTP_403_FORBIDDEN)
+
+        results = apply_fixes(run, integration, recommendations)
         return Response(results)
 
 class AutoFixPreviewView(APIView):
@@ -167,17 +189,32 @@ class AutoFixPreviewView(APIView):
             if cached and cached.response_data:
                 return Response({**cached.response_data, "cached": True})
 
+        # Past the cache — this call WILL generate. Gate on the USD fuse, the
+        # per-recommendation regen cap (the realistic abuse loop), and the
+        # per-brand count quota, in that order of specificity.
+        denied = _budget_denied(run)
+        if denied is not None:
+            return denied
+        quota_email = _quota_email(run, org)
+        reached, quota_msg = autofix_regen_limit_reached(quota_email, rec)
+        if reached:
+            return Response(plan_limit_error_response_dict(quota_msg), status=status.HTTP_403_FORBIDDEN)
+        reached, quota_msg = autofix_limit_reached(quota_email, org)
+        if reached:
+            return Response(plan_limit_error_response_dict(quota_msg), status=status.HTTP_403_FORBIDDEN)
+
         preview = generate_fix_preview(run, integration, rec)
         try:
-            AutoFixJob.objects.update_or_create(
+            # One row per actual generation (not update_or_create): each row is
+            # the audit unit the regen cap and the 30-day quota count. The
+            # cached read above keeps returning the latest row.
+            AutoFixJob.objects.create(
                 analysis_run=run,
                 recommendation=rec,
                 status=AutoFixJob.Status.PREVIEW,
-                defaults={
-                    "integration": integration,
-                    "fix_type": preview.get("fix_type", "content"),
-                    "response_data": preview,
-                },
+                integration=integration,
+                fix_type=preview.get("fix_type", "content"),
+                response_data=preview,
             )
         except Exception:
             logger.exception("Failed to persist AutoFixJob preview (run=%s rec=%s)", run.id, rec.id)
@@ -233,6 +270,10 @@ class AutoFixApproveView(APIView):
                 integration=integration,
                 fix_type=fix_type,
                 status=job_status,
+                # Marks this row as an apply of already-generated content, so
+                # the auto-fix generation quota does not count it a second time
+                # (see subscription_utils._autofix_generation_qs).
+                payload_sent={"source": "approve"},
                 response_data=result,
                 error_message=err_msg,
             )
@@ -355,6 +396,11 @@ class ApplyGeoFixesAndReanalyzeView(APIView):
         run = get_object_or_404(AnalysisRun, slug=slug)
         reanalyze = bool(request.data.get("reanalyze", False))
 
+        # GEO improvements are LLM-generated per fix — same fuse as auto-fix.
+        denied = _budget_denied(run)
+        if denied is not None:
+            return denied
+
         applied = run_geo_improvements(run.id)
         plan_len = len(get_all_recommendations_fix_plan(run))
 
@@ -368,6 +414,13 @@ class ApplyGeoFixesAndReanalyzeView(APIView):
             if batch_exceeds:
                 return Response(
                     plan_limit_error_response_dict(batch_msg),
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            count_reached, count_msg = analysis_count_limit_reached(run.email or "", run.organization)
+            if count_reached:
+                return Response(
+                    plan_limit_error_response_dict(count_msg),
                     status=status.HTTP_403_FORBIDDEN,
                 )
 

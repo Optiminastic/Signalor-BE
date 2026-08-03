@@ -11,6 +11,9 @@ class IntegrationsConfig(AppConfig):
         # against redirect_uri_mismatch). Import for the @register side effect only.
         from . import checks  # noqa: F401
 
+        # Post-analysis notifications (Slack today, more later).
+        from . import signals  # noqa: F401
+
         self._register_remediation_providers()
 
     @staticmethod

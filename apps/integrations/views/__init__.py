@@ -113,3 +113,11 @@ __all__ = [
     "WordPressDisconnectView",
     "WordPressSyncView",
 ]
+
+from .slack import (  # noqa: F401
+    SlackAuthURLView,
+    SlackCallbackView,
+    SlackChannelsView,
+    SlackDisconnectView,
+    SlackSelectChannelView,
+)

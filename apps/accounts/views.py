@@ -3,6 +3,7 @@ import hmac
 import json
 import logging
 import os
+import time
 from datetime import timedelta
 
 from django.http import HttpResponse
@@ -356,12 +357,26 @@ class AccountTypeView(APIView):
         )
 
     def post(self, request):
+        from core.auth.identity import resolve_request_email, verified_email
+
         from .models import AccountProfile
 
-        email = (request.data.get("email") or "").lower().strip()
+        # Account type raises the brand cap, so it must only ever be settable
+        # for the caller's OWN account. Resolve through the identity seam: a
+        # JWT-authenticated caller is pinned to their verified address, and
+        # flipping REQUIRE_VERIFIED_IDENTITY closes the legacy body-email path
+        # here along with everything else.
+        email, err = resolve_request_email(request)
+        if err:
+            return err
+        claimed = (request.data.get("email") or "").lower().strip()
+        if verified_email(request) and claimed and claimed != email:
+            return Response(
+                {"error": "Cannot change the account type of another account."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         account_type = (request.data.get("account_type") or "").lower().strip()
-        if not email:
-            return Response({"error": "Email required."}, status=status.HTTP_400_BAD_REQUEST)
         if account_type not in AccountProfile.AccountType.values:
             return Response({"error": "Invalid account_type."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -576,6 +591,27 @@ class InvoiceListView(APIView):
         return Response({"items": out})
 
 
+# Freshness window for Dodo webhook signatures. Matches the Standard Webhooks
+# recommendation (and the Slack verifier in apps/integrations) — long enough for
+# provider retries and clock skew, short enough that a captured request expires.
+WEBHOOK_SIGNATURE_MAX_AGE_SEC = 60 * 5
+
+
+def _webhook_timestamp_fresh(raw: str, *, now: float | None = None) -> bool:
+    """Whether a Standard Webhooks timestamp header is inside the tolerance.
+
+    Fails closed: a non-numeric or absent timestamp is not fresh. Future-dated
+    stamps are bounded by the same window so a forged-ahead clock cannot mint a
+    long-lived request.
+    """
+    try:
+        sent = float(raw)
+    except (TypeError, ValueError):
+        return False
+    current = time.time() if now is None else now
+    return abs(current - sent) <= WEBHOOK_SIGNATURE_MAX_AGE_SEC
+
+
 @method_decorator(csrf_exempt, name="dispatch")
 class DodoWebhookView(APIView):
     """POST /api/payments/webhook/ — Dodo Payments webhook handler.
@@ -600,6 +636,16 @@ class DodoWebhookView(APIView):
 
         if not signature or not timestamp:
             logger.warning("Missing webhook signature headers")
+            return HttpResponse(status=400)
+
+        # Replay protection (Standard Webhooks §"Timestamp"). The timestamp is
+        # inside the signed payload, so it cannot be edited without breaking the
+        # signature — but without a freshness window a captured request stays
+        # valid forever, and re-posting one `subscription.active` would keep
+        # reactivating a cancelled subscription. Dodo retries within minutes, so
+        # the tolerance is wide enough to survive ordinary clock skew.
+        if not _webhook_timestamp_fresh(timestamp):
+            logger.warning("Dodo webhook timestamp outside tolerance")
             return HttpResponse(status=400)
 
         # Standard Webhooks verification: HMAC-SHA256 of "{msg_id}.{timestamp}.{body}".
@@ -1069,8 +1115,58 @@ class UsageView(APIView):
             created_at__month=now.month,
         ).count()
 
+        # Count quotas use trailing windows (see subscription_utils
+        # QUOTA_WINDOW_DAYS), not calendar months — the numbers here must match
+        # what the enforcement helpers actually count or the bars will drift
+        # from the 403s. Usage is aggregated across the account's brands;
+        # the caps themselves apply PER BRAND.
+        from datetime import timedelta
+
+        from .subscription_utils import QUOTA_WINDOW_DAYS, autofix_generations
+
+        window_start = now - timedelta(days=QUOTA_WINDOW_DAYS)
+        analyses_30d = AnalysisRun.objects.filter(
+            email__iexact=email, created_at__gte=window_start
+        ).count()
+
+        # Same row filter as enforcement, aggregated across all owned brands.
+        org_ids = list(Organization.objects.filter(owner_email=email).values_list("id", flat=True))
+        if org_ids:
+            autofixes_30d = (
+                autofix_generations(window_start)
+                .filter(analysis_run__organization_id__in=org_ids)
+                .count()
+            )
+            autofixes_today = (
+                autofix_generations(now - timedelta(days=1))
+                .filter(analysis_run__organization_id__in=org_ids)
+                .count()
+            )
+        else:
+            autofixes_30d = 0
+            autofixes_today = 0
+
+        # AI allowance: expose the fraction used, never raw USD — the budget is
+        # a cost-control internal, not a priced feature.
+        ai_allowance = {"uncapped": True, "used_pct": 0}
+        try:
+            from apps.analyzer.services.llm_spend import check_budget
+
+            budget = check_budget(email)
+            if not budget.uncapped:
+                ai_allowance = {
+                    "uncapped": False,
+                    "used_pct": min(100, round(100 * budget.spent_usd / budget.limit_usd)),
+                }
+        except Exception:
+            logger.exception("Usage: AI allowance lookup failed for %s", email)
+
         # Engines allowed on current plan
         allowed_engines = limits.get("engines", [])
+
+        def _cap(key: str) -> int:
+            """Plan cap for display. 0 = uncapped; internal accounts read as 0."""
+            return 0 if is_internal else int(limits.get(key, 0) or 0)
 
         return Response(
             {
@@ -1078,16 +1174,26 @@ class UsageView(APIView):
                 if is_internal
                 else (_get_sub_plan(email) if not is_internal else "business"),
                 "account_type": get_account_type(email),
+                "window_days": QUOTA_WINDOW_DAYS,
                 "limits": {
                     "max_projects": max_projects,
                     "max_prompts": limits["max_prompts"],
                     "engines": allowed_engines,
+                    # Per-brand count quotas (0 = unlimited).
+                    "max_analyses_per_month": _cap("max_analyses_per_month"),
+                    "max_autofixes_per_month": _cap("max_autofixes_per_month"),
+                    "max_autofixes_per_day": _cap("max_autofixes_per_day"),
+                    "max_autofix_regens": _cap("max_autofix_regens"),
                 },
                 "usage": {
                     "projects": projects_used,
                     "prompts": prompts_used,
                     "runs_this_month": runs_this_month,
+                    "analyses_30d": analyses_30d,
+                    "autofixes_30d": autofixes_30d,
+                    "autofixes_today": autofixes_today,
                 },
+                "ai_allowance": ai_allowance,
                 "at_limit": {
                     "projects": projects_used >= max_projects,
                     "prompts": prompts_used >= limits["max_prompts"],

@@ -1,5 +1,8 @@
+import contextlib
+import hashlib
 import logging
 
+from django.db import connection, transaction
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -14,6 +17,32 @@ from .throttling import OnboardEmailThrottle
 from .utils import normalize_url
 
 logger = logging.getLogger("apps")
+
+# Postgres advisory locks are keyed by bigint, so hash the email down to one.
+# Signed 63-bit range — pg_advisory_xact_lock takes a signed bigint.
+_LOCK_KEY_MASK = (1 << 63) - 1
+
+
+@contextlib.contextmanager
+def _serialize_brand_creation(email: str):
+    """Serialize brand creation for one email so the plan cap can't be raced.
+
+    The cap is a check-then-create, so two concurrent onboards could both read
+    "0 brands, limit 1" and both insert. A transaction-scoped advisory lock
+    keyed on the email makes the check and the insert atomic against each other
+    without locking anything else.
+
+    Postgres only. On sqlite (tests) this is a no-op: that backend serializes
+    writes anyway and has no advisory-lock equivalent.
+    """
+    if connection.vendor != "postgresql":
+        yield
+        return
+    digest = hashlib.sha256(email.encode("utf-8")).digest()
+    key = int.from_bytes(digest[:8], "big") & _LOCK_KEY_MASK
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_xact_lock(%s)", [key])
+    yield
 
 
 class OnboardView(APIView):
@@ -79,15 +108,17 @@ class OnboardView(APIView):
                     status=status.HTTP_409_CONFLICT,
                 )
 
-        # Only a genuinely new brand counts against the plan limit.
-        reached, msg = project_limit_reached(email)
-        if reached:
-            return Response(
-                plan_limit_error_response_dict(msg),
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        org = serializer.save()
+        # Only a genuinely new brand counts against the plan limit. The check
+        # and the insert share one transaction + advisory lock so concurrent
+        # onboards for the same email can't both pass a cap of N.
+        with transaction.atomic(), _serialize_brand_creation(email):
+            reached, msg = project_limit_reached(email)
+            if reached:
+                return Response(
+                    plan_limit_error_response_dict(msg),
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            org = serializer.save()
         logger.info("Organization created: %s for %s", org.name, email)
 
         return Response(

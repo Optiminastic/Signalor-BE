@@ -15,8 +15,16 @@ import os
 from datetime import timedelta
 
 from django.conf import settings
+from django.db.models import Q
+from django.utils import timezone
 
-from .models import AGENCY_MAX_PROJECTS, PLAN_LIMITS, AccountProfile, Subscription
+from .models import (
+    AGENCY_MAX_PROJECTS,
+    AGENCY_UNPAID_MAX_PROJECTS,
+    PLAN_LIMITS,
+    AccountProfile,
+    Subscription,
+)
 
 # ── Internal / Free Emails ────────────────────────────────────────────────
 INTERNAL_DOMAINS = {"optiminastic.com"}
@@ -273,26 +281,44 @@ def is_agency(email: str | None) -> bool:
 
 
 def effective_max_projects(email: str | None) -> int:
-    """max_projects after applying account type.
+    """max_projects after applying account type and plan.
 
     A brand IS a project, and paying Individual accounts are single-brand by
     design — so they are capped at exactly one, regardless of plan. Agencies are
     the multi-brand tier: this is the single seam that unlocks multiple projects
-    for them (and where a later per-brand-billing phase will swap the constant
-    for a count of active per-brand subscriptions).
+    for them.
 
-    Internal accounts are exempt from the individual cap. ``is_internal_email``
-    grants business-tier access with no payment, and the team's own workspaces
-    hold several test/demo brands — a hard cap of one there is the "Max
-    (Internal)" account being unable to add a second brand.
+    Agency capacity is derived from the plan, NOT from a flat constant. Two
+    rules matter, and both used to be missing:
+
+      - An agency with no ACTIVE subscription gets AGENCY_UNPAID_MAX_PROJECTS.
+        ``get_plan_limits`` falls back to starter limits for an account with no
+        Subscription row, so keying off the plan alone silently handed a full
+        agency allowance to accounts that had never paid.
+      - A paying agency gets its plan's ``max_agency_projects`` (0 = uncapped,
+        for grandfathered "business" rows).
+
+    Internal accounts are exempt from all of it. ``is_internal_email`` grants
+    business-tier access with no payment, and the team's own workspaces hold
+    several test/demo brands — a hard cap of one there is the "Max (Internal)"
+    account being unable to add a second brand.
     """
     if is_internal_email(email):
         return AGENCY_MAX_PROJECTS
     if not is_agency(email):
         return 1
-    # Paid agencies get the interim AGENCY_MAX_PROJECTS ceiling (never below
-    # their plan's base).
-    return max(get_plan_limits(email)["max_projects"], AGENCY_MAX_PROJECTS)
+
+    sub = _get_sub(email)
+    if not (sub and sub.is_active):
+        return AGENCY_UNPAID_MAX_PROJECTS
+
+    limits = get_plan_limits(email)
+    allowance = int(limits.get("max_agency_projects", 0) or 0)
+    if allowance <= 0:  # 0 = uncapped (grandfathered / internal-tier plans)
+        return AGENCY_MAX_PROJECTS
+    # Never below the plan's own individual base, so an agency can't end up with
+    # fewer brands than the same plan grants an individual.
+    return max(limits["max_projects"], allowance)
 
 
 def _tracked_prompt_count(email: str) -> int:
@@ -347,18 +373,29 @@ def project_limit_reached(email: str | None) -> tuple[bool, str]:
         return False, ""
 
     # Agencies: honour the plan-limit enforcement toggle, then compare against
-    # the effective (multi-brand) cap.
+    # the effective (plan-derived, multi-brand) cap.
     if not is_plan_limits_enforcement_enabled():
         return False, ""
 
-    limits = get_plan_limits(email)
     max_projects = effective_max_projects(email)
-    if count >= max_projects:
-        pk = _effective_plan_key(email)
+    if count < max_projects:
+        return False, ""
+
+    # An agency with no active subscription has no plan to name — telling them
+    # "your Self-Serve Brand plan allows 1 project" would be wrong on both
+    # counts, since get_plan_limits() only defaulted them to starter.
+    sub = _get_sub(email)
+    if not (sub and sub.is_active):
         return True, (
-            f"Your {limits['label']} plan allows {max_projects} project(s).{_upgrade_hint_for_plan(pk)}"
+            f"Agency accounts include {max_projects} brand(s) before checkout. "
+            "Subscribe to add more client brands."
         )
-    return False, ""
+
+    limits = get_plan_limits(email)
+    return True, (
+        f"Your {limits['label']} plan allows {max_projects} brand(s)."
+        f"{_upgrade_hint_for_plan(_effective_plan_key(email))}"
+    )
 
 
 def prompt_limit_reached(email: str | None, run_id: int | None = None) -> tuple[bool, str]:
@@ -403,6 +440,164 @@ def prompt_batch_would_exceed(email: str | None, additional: int) -> tuple[bool,
             f"This run would exceed your {limits['label']} plan limit of {max_prompts} tracked prompts "
             f"(you have {count}, adding {additional})."
             f"{_upgrade_hint_for_plan(pk)}"
+        )
+    return False, ""
+
+
+# ── Auto-fix / Analysis Count Quotas ──────────────────────────────────────
+#
+# The countable layer of cost control: a customer can reason about "30
+# auto-fixes / 30 days" in a way they cannot about "$25 of LLM". The USD fuse
+# (services.llm_spend.check_budget) stays the backstop for cost outliers.
+#
+# Quotas are scoped PER BRAND (organization), not per email: an agency's
+# allowance is the sum of its brands' allowances, which maps onto the planned
+# per-brand billing (see AGENCY_MAX_PROJECTS). Trailing windows, not calendar
+# months, for the same anti-gaming reason as llm_spend.WINDOW_DAYS.
+#
+# Unlike the USD fuse these fail CLOSED past the cap: a row count cannot be
+# ambiguously wrong the way a missed provider charge can.
+
+QUOTA_WINDOW_DAYS = 30
+
+
+def autofix_generations(since):
+    """Auto-fix jobs that consumed an LLM generation, unscoped.
+
+    Excludes rows that never call the LLM: verification audit rows,
+    manual-walkthrough rows, and approve rows (marked via ``payload_sent`` —
+    approving applies already-generated content, so it must not consume the
+    generation quota a second time). Callers scope this to a brand
+    (enforcement) or to an account's brands (the usage endpoint).
+    """
+    from apps.analyzer.models import AutoFixJob
+
+    return (
+        AutoFixJob.objects.filter(created_at__gte=since)
+        .exclude(fix_type__in=("manual", "verification"))
+        # Not ``payload_sent__contains`` (sqlite cannot compile it, so the quota
+        # tests could never run) and not a bare ``.exclude(payload_sent__source=...)``:
+        # ``payload_sent`` defaults to {}, so the key is SQL NULL on normal rows and
+        # ``NOT (NULL = 'approve')`` is NULL, which would drop every generation row
+        # instead of keeping it. Spelling the NULL case out keeps those rows on both
+        # backends.
+        .filter(Q(payload_sent__source__isnull=True) | ~Q(payload_sent__source="approve"))
+    )
+
+
+def _autofix_generation_qs(organization, since):
+    """``autofix_generations`` scoped to one brand (the quota unit)."""
+    return autofix_generations(since).filter(analysis_run__organization=organization)
+
+
+def autofix_limit_reached(
+    email: str | None, organization, additional: int = 1
+) -> tuple[bool, str]:
+    """Whether generating ``additional`` more auto-fixes would exceed the
+    brand's daily or 30-day quota."""
+    if is_internal_email(email):
+        return False, ""
+    if not is_plan_limits_enforcement_enabled():
+        return False, ""
+    if organization is None:
+        return True, "No brand linked to this run."
+
+    limits = get_plan_limits(email)
+    pk = _effective_plan_key(email)
+
+    monthly_cap = int(limits.get("max_autofixes_per_month", 0) or 0)
+    if monthly_cap > 0:
+        since = timezone.now() - timedelta(days=QUOTA_WINDOW_DAYS)
+        used = _autofix_generation_qs(organization, since).count()
+        if used + additional > monthly_cap:
+            return True, (
+                f"Your {limits['label']} plan includes {monthly_cap} auto-fixes per "
+                f"{QUOTA_WINDOW_DAYS} days for this brand (you have used {used})."
+                f"{_upgrade_hint_for_plan(pk)}"
+            )
+
+    daily_cap = int(limits.get("max_autofixes_per_day", 0) or 0)
+    if daily_cap > 0:
+        since = timezone.now() - timedelta(days=1)
+        used = _autofix_generation_qs(organization, since).count()
+        if used + additional > daily_cap:
+            return True, (
+                f"Your {limits['label']} plan allows {daily_cap} auto-fixes per day "
+                f"for this brand. Try again tomorrow.{_upgrade_hint_for_plan(pk)}"
+            )
+
+    return False, ""
+
+
+def autofix_regen_limit_reached(email: str | None, recommendation) -> tuple[bool, str]:
+    """Whether this recommendation has exhausted its preview regenerations.
+
+    The realistic abuse pattern is regenerating one preview in a loop, so the
+    cap is per recommendation: 1 initial generation + ``max_autofix_regens``
+    retries. Counts persisted preview rows (one row per actual generation).
+    """
+    if is_internal_email(email):
+        return False, ""
+    if not is_plan_limits_enforcement_enabled():
+        return False, ""
+
+    limits = get_plan_limits(email)
+    max_regens = int(limits.get("max_autofix_regens", 0) or 0)
+    if max_regens <= 0:
+        return False, ""
+
+    from apps.analyzer.models import AutoFixJob
+
+    generations = (
+        AutoFixJob.objects.filter(recommendation=recommendation, status=AutoFixJob.Status.PREVIEW)
+        .exclude(fix_type="manual")  # manual walkthroughs never call the LLM
+        .count()
+    )
+    if generations >= 1 + max_regens:
+        return True, (
+            f"This fix has already been generated {generations} times. Your "
+            f"{limits['label']} plan allows {max_regens} regenerations per "
+            f"recommendation.{_upgrade_hint_for_plan(_effective_plan_key(email))}"
+        )
+    return False, ""
+
+
+def analysis_count_limit_reached(email: str | None, organization) -> tuple[bool, str]:
+    """Whether starting one more analysis would exceed the brand's 30-day cap.
+
+    Analyses are the expensive unit (measured $0.30-$3 each), so they get their
+    own count separate from auto-fixes. Scoped to the organization when known;
+    anonymous scans (no org) fall back to the email scope, and callers with
+    neither are left to the throttles.
+    """
+    if is_internal_email(email):
+        return False, ""
+    if not is_plan_limits_enforcement_enabled():
+        return False, ""
+
+    limits = get_plan_limits(email)
+    cap = int(limits.get("max_analyses_per_month", 0) or 0)
+    if cap <= 0:
+        return False, ""
+
+    from apps.analyzer.models import AnalysisRun
+
+    since = timezone.now() - timedelta(days=QUOTA_WINDOW_DAYS)
+    qs = AnalysisRun.objects.filter(created_at__gte=since)
+    if organization is not None:
+        qs = qs.filter(organization=organization)
+    else:
+        em = (email or "").strip().lower()
+        if not em:
+            return False, ""
+        qs = qs.filter(email__iexact=em)
+
+    used = qs.count()
+    if used >= cap:
+        return True, (
+            f"Your {limits['label']} plan includes {cap} analyses per "
+            f"{QUOTA_WINDOW_DAYS} days for this brand (you have used {used})."
+            f"{_upgrade_hint_for_plan(_effective_plan_key(email))}"
         )
     return False, ""
 

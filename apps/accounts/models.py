@@ -14,11 +14,27 @@ from django.db import models
 # differentiators, not engine access.
 _ALL_ENGINES = ["chatgpt", "gemini", "perplexity", "claude", "deepseek", "grok", "llama", "google", "bing"]
 
-# Interim project cap for Agency accounts — effectively "unlimited" until
-# per-brand Dodo billing lands (each added client brand becomes a paid line
-# item, and this constant is replaced by a count of active per-brand
-# subscriptions). See AccountProfile + subscription_utils.effective_max_projects.
+# Ceiling for accounts that are exempt from per-plan agency caps: internal
+# emails and grandfathered "business" subscribers. Effectively "unlimited".
+#
+# NOTE: this is deliberately NOT the cap for paying agencies any more. It used
+# to be, which meant any account typed as `agency` got 1000 brands regardless of
+# plan — and because get_plan_limits() falls back to starter for accounts with no
+# Subscription row at all, an agency that had never paid got them too. Paying
+# agencies now come off `max_agency_projects` below; see
+# subscription_utils.effective_max_projects.
 AGENCY_MAX_PROJECTS = 1000
+
+# Brands an agency may manage, per plan. Env-overridable
+# (AGENCY_PROJECTS_STARTER / _PRO / _BUSINESS) so capacity can be granted to a
+# specific customer without a deploy. 0 means uncapped.
+#
+# Interim: agency packaging is per-brand, so the honest long-term cap is a count
+# of active per-brand subscriptions. Until that billing lands these are flat
+# per-plan allowances, and an agency with no active subscription is held to
+# AGENCY_UNPAID_MAX_PROJECTS — enough to onboard and see the product, not enough
+# to run a roster for free.
+AGENCY_UNPAID_MAX_PROJECTS = 1
 
 def _plan_budget(plan: str, default: float) -> float:
     """Monthly LLM spend ceiling in USD for a plan, env-overridable.
@@ -38,13 +54,38 @@ def _plan_budget(plan: str, default: float) -> float:
         return default
 
 
+def _plan_count(env_prefix: str, plan: str, default: int) -> int:
+    """Integer usage quota for a plan, env-overridable via ``<ENV_PREFIX>_<PLAN>``.
+
+    Count quotas are the customer-legible layer of cost control (e.g. "30
+    auto-fixes / 30 days"); the USD budget (``max_llm_spend_usd``) stays the
+    backstop for pathological per-call costs. 0 means uncapped — internal and
+    grandfathered accounts must never be blocked by a self-serve quota.
+    """
+    import os as _os
+
+    raw = _os.getenv(f"{env_prefix}_{plan}", "").strip()
+    try:
+        return int(raw) if raw else default
+    except ValueError:
+        return default
+
+
 PLAN_LIMITS = {
     "starter": {
         "label": "Self-Serve Brand",
         "price_gbp": 69.99,
         "max_projects": 1,
+        "max_agency_projects": _plan_count("AGENCY_PROJECTS", "STARTER", 5),
         "max_prompts": 10,
         "max_llm_spend_usd": _plan_budget("STARTER", 25.0),
+        # Count quotas — per brand, trailing 30 days (day cap: trailing 24h).
+        # Sized so the count binds before the USD fuse in normal use; the fuse
+        # only catches cost outliers. 0 = uncapped.
+        "max_autofixes_per_month": _plan_count("AUTOFIX_MONTHLY", "STARTER", 30),
+        "max_autofixes_per_day": _plan_count("AUTOFIX_DAILY", "STARTER", 10),
+        "max_autofix_regens": _plan_count("AUTOFIX_REGENS", "STARTER", 3),
+        "max_analyses_per_month": _plan_count("ANALYSES_MONTHLY", "STARTER", 8),
         "engines": _ALL_ENGINES,
         "features": [
             "1 brand / domain",
@@ -59,8 +100,13 @@ PLAN_LIMITS = {
         "label": "Managed Growth Brand",
         "price_gbp": 99.69,
         "max_projects": 1,
+        "max_agency_projects": _plan_count("AGENCY_PROJECTS", "PRO", 25),
         "max_prompts": 25,
         "max_llm_spend_usd": _plan_budget("PRO", 40.0),
+        "max_autofixes_per_month": _plan_count("AUTOFIX_MONTHLY", "PRO", 75),
+        "max_autofixes_per_day": _plan_count("AUTOFIX_DAILY", "PRO", 20),
+        "max_autofix_regens": _plan_count("AUTOFIX_REGENS", "PRO", 3),
+        "max_analyses_per_month": _plan_count("ANALYSES_MONTHLY", "PRO", 20),
         "engines": _ALL_ENGINES,
         "features": [
             "1 brand / domain",
@@ -76,10 +122,17 @@ PLAN_LIMITS = {
         "label": "Max",
         "price_gbp": 59.99,
         "max_projects": 6,
+        # 0 = uncapped: grandfathered/internal accounts are never held to a
+        # self-serve agency allowance.
+        "max_agency_projects": _plan_count("AGENCY_PROJECTS", "BUSINESS", 0),
         "max_prompts": 200,
         # 0 = uncapped. Internal/grandfathered accounts must never be blocked by
         # a cost ceiling meant for self-serve customers.
         "max_llm_spend_usd": _plan_budget("BUSINESS", 0.0),
+        "max_autofixes_per_month": _plan_count("AUTOFIX_MONTHLY", "BUSINESS", 0),
+        "max_autofixes_per_day": _plan_count("AUTOFIX_DAILY", "BUSINESS", 0),
+        "max_autofix_regens": _plan_count("AUTOFIX_REGENS", "BUSINESS", 0),
+        "max_analyses_per_month": _plan_count("ANALYSES_MONTHLY", "BUSINESS", 0),
         "engines": _ALL_ENGINES,
         "features": [
             "6 projects",

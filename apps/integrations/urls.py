@@ -24,6 +24,11 @@ from .views import (
     GSCSyncView,
     GSCUrlInspectView,
     IntegrationStatusView,
+    SlackAuthURLView,
+    SlackCallbackView,
+    SlackChannelsView,
+    SlackDisconnectView,
+    SlackSelectChannelView,
     ScoreTrafficCorrelationView,
     ShopifyAppUninstalledWebhookView,
     ShopifyAuthURLView,
@@ -237,4 +242,10 @@ urlpatterns = [
     path("woocommerce/data/", WooCommerceDataView.as_view(), name="woocommerce-data"),
     # Status
     path("status/", IntegrationStatusView.as_view(), name="status"),
+    # Slack — report delivery. Connect, choose a channel, disconnect.
+    path("slack/auth-url/", SlackAuthURLView.as_view(), name="slack-auth-url"),
+    path("slack/callback/", SlackCallbackView.as_view(), name="slack-callback"),
+    path("slack/channels/", SlackChannelsView.as_view(), name="slack-channels"),
+    path("slack/select-channel/", SlackSelectChannelView.as_view(), name="slack-select-channel"),
+    path("slack/disconnect/", SlackDisconnectView.as_view(), name="slack-disconnect"),
 ]

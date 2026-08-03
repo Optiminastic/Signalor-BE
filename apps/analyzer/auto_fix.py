@@ -428,6 +428,44 @@ def _generate_fix_content(fix_type: str, run, recommendation) -> tuple[str, str 
         return "", f"Unknown fix type: {fix_type}"
 
 
+def _meter_autofix_spend(run, spend: dict, what: str) -> None:
+    """Fold auto-fix generation spend into the account's 30-day budget window.
+
+    ``check_budget`` sums ``AnalysisRun.llm_cost_usd``. Auto-fix generation
+    happens outside any run's log window (same blind spot ``_meter_blog_spend``
+    closed for blog posts), so without this the fixes were free as far as the
+    fuse could see.
+    """
+    cost = float((spend or {}).get("cost", 0.0) or 0.0)
+    if cost <= 0 or run is None:
+        return
+    try:
+        from django.db.models import F
+
+        from .models import AnalysisRun
+
+        AnalysisRun.objects.filter(pk=run.pk).update(llm_cost_usd=F("llm_cost_usd") + cost)
+        logger.info(
+            "Auto-fix %s for run %s: +$%.4f over %d call(s)",
+            what,
+            run.pk,
+            cost,
+            (spend or {}).get("calls", 0),
+        )
+    except Exception:
+        logger.exception("Could not record auto-fix spend for run %s", getattr(run, "pk", "?"))
+
+
+def _generate_fix_content_metered(fix_type: str, run, recommendation) -> tuple[str, str | None]:
+    """``_generate_fix_content`` with its exact LLM cost folded into the run."""
+    from core.llm.client import cost_scope
+
+    with cost_scope() as spend:
+        result = _generate_fix_content(fix_type, run, recommendation)
+    _meter_autofix_spend(run, spend, f"generate:{fix_type}")
+    return result
+
+
 # ── Orchestrator ─────────────────────────────────────────────────────────
 
 
@@ -697,7 +735,7 @@ def apply_fixes(run, integration, recommendations: list[Recommendation]) -> list
         # Shopify homepage: content/meta/schema/faq — generate content + give copy-paste instructions
         if is_shopify and is_homepage and fix_type in _HOMEPAGE_MANUAL_FIX_TYPES:
             try:
-                generated, gen_err = _generate_fix_content(fix_type, run, rec)
+                generated, gen_err = _generate_fix_content_metered(fix_type, run, rec)
             except Exception as e:
                 generated, gen_err = "", str(e)
 
@@ -743,7 +781,7 @@ def apply_fixes(run, integration, recommendations: list[Recommendation]) -> list
 
         try:
             # Step 1: Generate fix content via LLM
-            content, err = _generate_fix_content(fix_type, run, rec)
+            content, err = _generate_fix_content_metered(fix_type, run, rec)
             if err:
                 job.status = "failed"
                 job.error_message = err
@@ -814,7 +852,7 @@ def generate_fix_preview(run, integration, recommendation) -> dict:
         }
 
     # Generate fix content
-    content, err = _generate_fix_content(fix_type, run, recommendation)
+    content, err = _generate_fix_content_metered(fix_type, run, recommendation)
     if err:
         return {"status": "error", "message": err}
 
