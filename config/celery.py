@@ -5,7 +5,7 @@ Lives at ``config.celery:app`` so the standard Celery worker invocation
 ``CELERY_*`` keys in ``config.settings`` and autodiscovers tasks from any
 ``apps.<x>.celery_tasks`` module.
 
-Only enabled task today: ``apps.analyzer.celery_tasks.run_sitemap_audit_task``.
+Only enabled task today: ``workers.crawling.tasks.run_sitemap_audit_task``.
 """
 
 from __future__ import annotations
@@ -22,3 +22,6 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 # default `tasks` module) so we don't accidentally pick up threading-only
 # helpers that live in `apps/<x>/tasks.py`.
 app.autodiscover_tasks(related_name="celery_tasks")
+# Workers live outside apps/, which autodiscovery cannot see, so register them
+# explicitly. Missing this means a task queues and no worker ever claims it.
+app.conf.imports = tuple(app.conf.imports or ()) + ("workers.crawling.tasks",)

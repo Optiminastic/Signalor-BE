@@ -35,30 +35,14 @@ MAX_ROUTES = 12
 def get_config(run) -> dict | None:
     """Latest snapshot-capable deployment for the run's org, or None.
 
-    Used for both deploy-triggered runs and ad-hoc re-analysis (we just look up
-    the most recent deployment that advertised the snapshot route).
+    The lookup itself lives in ``public_api`` (its table) and is reached through
+    ``core.ports.snapshot``. Unregistered means "no snapshot available", which is
+    the right answer for the great majority of sites, so the crawler falls back
+    to fetching the live page.
     """
-    if not getattr(run, "organization_id", None):
-        return None
-    from apps.public_api.models import NextJsDeployment
+    from core.ports import snapshot
 
-    dep = (
-        NextJsDeployment.objects.filter(
-            organization_id=run.organization_id,
-            snapshot_supported=True,
-        )
-        .exclude(snapshot_origin="")
-        .exclude(signing_key_hash="")
-        .order_by("-created_at")
-        .first()
-    )
-    if dep is None:
-        return None
-    return {
-        "origin": dep.snapshot_origin.rstrip("/"),
-        "routes": list(dep.snapshot_routes or []),
-        "key_hash": dep.signing_key_hash,
-    }
+    return snapshot.get_config(run)
 
 
 def is_available(run) -> bool:

@@ -18,7 +18,7 @@ from rest_framework.views import APIView
 
 from apps.partners.services import get_active_attribution
 from apps.referrals.models import Referral
-from core.throttling import PollingThrottle
+from core.permissions.throttling import PollingThrottle
 
 from .billing_emails import send_billing_emails
 from .dodo_env import (
@@ -1350,7 +1350,7 @@ class DeleteAccountView(APIView):
     def post(self, request):
         # Delete the *verified* caller's account (JWT); legacy ?email= until enforcement
         # is on. Without this, anyone could delete any account by naming its email.
-        from .identity import resolve_request_email
+        from core.auth.identity import resolve_request_email
 
         email, err = resolve_request_email(request)
         if err:

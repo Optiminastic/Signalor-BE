@@ -13,7 +13,7 @@ from django.test import SimpleTestCase
 from apps.analyzer.pipeline.schemas import AnswerBlock, FaqPair
 from apps.analyzer.services import answer_block as ab
 
-_ASK = "apps.analyzer.pipeline.structured.ask_structured"
+_ASK = "core.llm.structured.ask_structured"
 
 
 def _run():

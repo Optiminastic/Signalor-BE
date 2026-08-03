@@ -55,7 +55,7 @@ def _approved_blocks_cached(org) -> list[str]:
     """
     if org is None:
         return []
-    from apps.analyzer._cache import BRAND_CARD_TTL, brand_card_key, cached_or_compute
+    from core.cache.keys import BRAND_CARD_TTL, brand_card_key, cached_or_compute
 
     def _compute() -> list[str]:
         profile = _approved_profile(org)

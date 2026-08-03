@@ -6,8 +6,23 @@ only reads a setting, also no DB.
 
 from django.test import SimpleTestCase, TestCase, override_settings
 
-from .services import agent, fixable, fixers, webhook
-from .services.repo_profile import _profile_from_tree
+from apps.integrations.github.repo_match import pick_repo, score_repo
+from apps.integrations.github.repo_profile import _profile_from_tree
+from apps.organizations.models import Organization
+from apps.remediation.services import agent, fixable, fixers
+
+from .models import GithubFixJob, GithubInstallation
+from .services import webhook
+from .services.orchestrator import _no_edit_outcome
+from .services.pr_format import (
+    FixContext,
+    commit_message,
+    labels_for,
+    pr_body,
+    pr_title,
+    scope_for,
+)
+from .views import _org_for_email, _resolve_target_repo
 
 
 class _Run:
@@ -214,17 +229,27 @@ class FixableSetTests(SimpleTestCase):
 class _FakeAgentClient:
     """Fake GitHub client for agent unit tests — no network."""
 
-    def __init__(self, files=None, tree=None):
+    def __init__(self, files=None, tree=None, search_hits=None):
         self._files = files or {}
         self._tree = tree if tree is not None else list(self._files.keys())
+        self._search_hits = search_hits or []
         self.repo = "owner/repo"
-        self.session = None  # search_code → AttributeError → tree fallback
 
     def get_file(self, path, ref=None):
         return self._files.get(path)
 
     def get_tree(self, ref):
         return self._tree
+
+    def search_code(self, query, limit=10):
+        """Provider search. Empty by default, which exercises the tree fallback.
+
+        Previously the fake set ``session = None`` so the planner's inlined HTTP
+        call raised AttributeError and got swallowed — the fallback was tested by
+        accident. Now that search is a real client method, the double implements
+        it and the fallback is tested on purpose.
+        """
+        return self._search_hits
 
 
 class AgentValidateTests(SimpleTestCase):
@@ -332,7 +357,7 @@ class SandboxTests(SimpleTestCase):
         import os
         import tempfile
 
-        from .services import sandbox
+        from apps.remediation.services import sandbox
 
         with tempfile.TemporaryDirectory() as d:
             open(os.path.join(d, "pnpm-lock.yaml"), "w").close()
@@ -350,8 +375,8 @@ class SandboxTests(SimpleTestCase):
         import os
         import tempfile
 
-        from .services import sandbox
-        from .services.fixers import FileEdit
+        from apps.remediation.services import sandbox
+        from apps.remediation.services.fixers import FileEdit
 
         with tempfile.TemporaryDirectory() as d:
             sandbox._apply([FileEdit("app/sitemap.ts", "export const x = 1\n", "s", None)], d)
@@ -359,7 +384,7 @@ class SandboxTests(SimpleTestCase):
                 self.assertEqual(fh.read(), "export const x = 1\n")
 
     def test_disabled_via_env(self):
-        from .services import sandbox
+        from apps.remediation.services import sandbox
 
         with override_settings():  # no-op; env override below
             import os
@@ -375,8 +400,8 @@ class SandboxTests(SimpleTestCase):
                     os.environ["GITHUB_AGENT_SANDBOX"] = old
 
     def test_verify_passthrough_with_no_edits(self):
-        from .services import sandbox
-        from .services.fixers import FixResult
+        from apps.remediation.services import sandbox
+        from apps.remediation.services.fixers import FixResult
 
         res = FixResult(edits=[], applied=[], skipped=[])
         out, note = sandbox.verify_and_repair(None, {}, None, res, [])
@@ -395,8 +420,6 @@ class OrgScopingTests(TestCase):
     """
 
     def setUp(self):
-        from apps.organizations.models import Organization
-
         self.email = "owner@example.com"
         self.first = Organization.objects.create(
             name="First", url="https://first.com", owner_email=self.email
@@ -406,25 +429,17 @@ class OrgScopingTests(TestCase):
         )
 
     def test_org_id_selects_that_brand(self):
-        from .views import _org_for_email
-
         self.assertEqual(_org_for_email(self.email, self.second.id), self.second)
         self.assertEqual(_org_for_email(self.email, self.first.id), self.first)
 
     def test_falls_back_to_oldest_brand_matching_integrations(self):
         """No org_id → the same brand integrations' _get_org_or_400 would pick."""
-        from .views import _org_for_email
-
         self.assertEqual(_org_for_email(self.email), self.first)
 
     def test_cannot_resolve_another_accounts_org(self):
-        from .views import _org_for_email
-
         self.assertIsNone(_org_for_email("someone-else@example.com", self.first.id))
 
     def test_status_endpoint_is_scoped_to_the_requested_brand(self):
-        from .models import GithubInstallation
-
         GithubInstallation.objects.create(
             installation_id=4242,
             organization=self.first,
@@ -465,7 +480,6 @@ class RepoMatchTests(SimpleTestCase):
     """Picking the right repo when the App is installed on "All repositories"."""
 
     def test_matches_repo_name_to_brand_domain(self):
-        from .services.repo_match import pick_repo
 
         repos = [_repo("Signalor-AI-Search"), _repo("BetterVersus"), _repo("infra")]
         out = pick_repo(repos, "betterversus.com", "Better Versus")
@@ -473,7 +487,6 @@ class RepoMatchTests(SimpleTestCase):
         self.assertTrue(out["confident"])
 
     def test_homepage_field_wins_over_a_similar_name(self):
-        from .services.repo_match import pick_repo
 
         repos = [
             _repo("acme-site", homepage="https://www.acme.com/"),
@@ -483,7 +496,6 @@ class RepoMatchTests(SimpleTestCase):
         self.assertEqual(out["repo_full_name"], "acme/acme-site")
 
     def test_no_confident_match_asks_the_user(self):
-        from .services.repo_match import pick_repo
 
         repos = [_repo("infra"), _repo("marketing-tools"), _repo("sandbox")]
         out = pick_repo(repos, "betterversus.com", "Better Versus")
@@ -491,7 +503,6 @@ class RepoMatchTests(SimpleTestCase):
         self.assertFalse(out["confident"])
 
     def test_ambiguous_candidates_ask_the_user(self):
-        from .services.repo_match import pick_repo
 
         # Both carry the brand's homepage, so neither can be picked safely.
         repos = [
@@ -503,14 +514,12 @@ class RepoMatchTests(SimpleTestCase):
         self.assertFalse(out["confident"])
 
     def test_archived_repos_are_never_picked(self):
-        from .services.repo_match import pick_repo
 
         repos = [_repo("acme", archived=True)]
         out = pick_repo(repos, "acme.com", "Acme")
         self.assertEqual(out["repo_full_name"], "")
 
     def test_generic_host_labels_do_not_match(self):
-        from .services.repo_match import score_repo
 
         # "www" must never tie a repo called "www" to the brand.
         score, _ = score_repo(_repo("www"), "www.acme.com", "Acme")
@@ -521,24 +530,17 @@ class TargetRepoLockTests(TestCase):
     """A chosen repo must survive later install callbacks."""
 
     def setUp(self):
-        from apps.organizations.models import Organization
-
         self.org = Organization.objects.create(
             name="Better Versus", url="https://betterversus.com", owner_email="o@example.com"
         )
         self.repos = [_repo("Signalor-AI-Search"), _repo("BetterVersus"), _repo("infra")]
 
     def test_detects_and_locks_on_first_link(self):
-        from .views import _resolve_target_repo
-
         out = _resolve_target_repo(9001, self.org, self.repos)
         self.assertEqual(out["repo_full_name"], "acme/BetterVersus")
         self.assertTrue(out["locked"])
 
     def test_locked_pick_survives_a_later_callback(self):
-        from .models import GithubInstallation
-        from .views import _resolve_target_repo
-
         GithubInstallation.objects.create(
             installation_id=9002,
             organization=self.org,
@@ -552,9 +554,6 @@ class TargetRepoLockTests(TestCase):
         self.assertTrue(out["locked"])
 
     def test_lock_is_released_when_access_to_that_repo_is_revoked(self):
-        from .models import GithubInstallation
-        from .views import _resolve_target_repo
-
         GithubInstallation.objects.create(
             installation_id=9003,
             organization=self.org,
@@ -566,15 +565,102 @@ class TargetRepoLockTests(TestCase):
         self.assertEqual(out["repo_full_name"], "acme/BetterVersus")
 
     def test_single_granted_repo_is_unambiguous(self):
-        from .views import _resolve_target_repo
-
         out = _resolve_target_repo(9004, self.org, [_repo("anything-at-all")])
         self.assertEqual(out["repo_full_name"], "acme/anything-at-all")
         self.assertTrue(out["locked"])
 
     def test_no_match_leaves_the_target_empty(self):
-        from .views import _resolve_target_repo
-
         out = _resolve_target_repo(9005, self.org, [_repo("infra"), _repo("sandbox")])
         self.assertEqual(out["repo_full_name"], "")
         self.assertFalse(out["locked"])
+
+
+class NoEditOutcomeTests(SimpleTestCase):
+    """A deliberate decline must never be reported as a failure.
+
+    Regression cover for the task page showing the agent's no-fabrication
+    refusal ("I cannot fabricate customer names, statistics…") as a red error.
+    """
+
+    def test_agent_declining_is_not_a_failure(self):
+        reason = (
+            "**no_proof_that_the_product_works** — could not fix: I cannot "
+            "fabricate customer names, statistics or GEO scores."
+        )
+        status, message = _no_edit_outcome(proposed_any=False, reasoning=reason)
+        self.assertEqual(status, GithubFixJob.Status.DECLINED)
+        # The finding-code prefix and markdown are stripped for the UI.
+        self.assertNotIn("**", message)
+        self.assertNotIn("could not fix:", message)
+        self.assertIn("cannot fabricate", message)
+
+    def test_edits_that_never_built_are_a_failure(self):
+        status, message = _no_edit_outcome(proposed_any=True, reasoning="")
+        self.assertEqual(status, GithubFixJob.Status.FAILED)
+        self.assertIn("did not build", message)
+
+    def test_decline_without_a_reason_still_reads_gracefully(self):
+        status, message = _no_edit_outcome(proposed_any=False, reasoning="")
+        self.assertEqual(status, GithubFixJob.Status.DECLINED)
+        self.assertIn("Nothing to change", message)
+        # No blame language for an outcome the user did nothing wrong in.
+        self.assertNotIn("fail", message.lower())
+
+
+class PrFormatTests(SimpleTestCase):
+    """Conventional commits, labels, and a PR body a reviewer can act on."""
+
+    def _ctx(self, **over):
+        base = {
+            "site_url": "https://signalor.ai",
+            "pillar": "schema",
+            "headline": "Add Organization JSON-LD.",
+            "finding_codes": ["no_organization_schema"],
+        }
+        base.update(over)
+        return FixContext(**base)
+
+    def test_commit_message_is_conventional(self):
+        msg = commit_message(self._ctx(), "Add Organization JSON-LD to the layout")
+        self.assertEqual(msg, "fix(schema): add Organization JSON-LD to the layout")
+
+    def test_pr_title_is_conventional_and_lowercased(self):
+        # Trailing period dropped, first letter lowered — conventional style.
+        self.assertEqual(pr_title(self._ctx()), "fix(schema): add Organization JSON-LD")
+
+    def test_content_pr_uses_docs_type(self):
+        ctx = self._ctx(pillar="content", headline="Update hero copy", is_content=True)
+        self.assertTrue(pr_title(ctx).startswith("docs(content):"))
+        self.assertTrue(commit_message(ctx, "Reword the hero").startswith("docs(content):"))
+
+    def test_pillar_maps_to_a_reviewer_friendly_scope(self):
+        self.assertEqual(scope_for("technical"), "seo")
+        self.assertEqual(scope_for("eeat"), "content")
+        self.assertEqual(scope_for(""), "geo")
+        self.assertEqual(scope_for("something-new"), "geo")
+
+    def test_labels_are_deduplicated_and_stable(self):
+        # scope "geo" would otherwise duplicate the base label.
+        self.assertEqual(labels_for(self._ctx(pillar="ai_visibility")), ["signalor", "geo"])
+        self.assertEqual(
+            labels_for(self._ctx(pillar="schema")), ["signalor", "geo", "schema"]
+        )
+
+    def test_body_links_back_to_the_task(self):
+        ctx = self._ctx(task_url="https://signalor.ai/dashboard/abc/tasks/131", task_label="Task 131")
+        body = pr_body(ctx, [("app/layout.tsx", "Add JSON-LD")])
+        self.assertIn("Fixes [Task 131](https://signalor.ai/dashboard/abc/tasks/131)", body)
+
+    def test_body_omits_the_fixes_line_without_a_task(self):
+        self.assertNotIn("Fixes [", pr_body(self._ctx(), [("a.tsx", "x")]))
+
+    def test_agent_reasoning_is_collapsed_not_leading(self):
+        body = pr_body(self._ctx(), [("a.tsx", "x")], reasoning="Let me look at the homepage file")
+        self.assertIn("<details>", body)
+        self.assertIn("<summary>Agent reasoning</summary>", body)
+        # The transcript must not be the first thing a reviewer reads.
+        self.assertGreater(body.index("Let me look at"), body.index("### What changed"))
+
+    def test_pipes_in_a_summary_cannot_break_the_table(self):
+        body = pr_body(self._ctx(), [("a.tsx", "add a | b label")])
+        self.assertIn("add a \\| b label", body)

@@ -18,7 +18,7 @@ from django.test import SimpleTestCase
 from apps.analyzer.pipeline import site_findings
 from apps.analyzer.pipeline.schemas import SiteFinding
 
-_ASK_LIST = "apps.analyzer.pipeline.structured.ask_structured_list"
+_ASK_LIST = "core.llm.structured.ask_structured_list"
 
 _HOME_TEXT = (
     "Signalor is a Generative Engine Optimization platform. "
@@ -252,3 +252,45 @@ class AttributionTests(SimpleTestCase):
     def test_every_valid_priority_has_an_effort_estimate(self):
         for priority in site_findings.VALID_PRIORITIES:
             self.assertIn(priority, site_findings.PRIORITY_EFFORT)
+
+
+class PageOrderingTests(SimpleTestCase):
+    """The pages the model reads are chosen, not whatever crawled first."""
+
+    class _Crawl:
+        def __init__(self, url, text, ok=True):
+            self.url = url
+            self.text = text
+            self.ok = ok
+
+    def _crawls(self):
+        return [
+            self._Crawl("https://acme.com/", "home " * 40),
+            self._Crawl("https://acme.com/tiny", "tiny " * 20),
+            self._Crawl("https://acme.com/pricing", "pricing " * 30),
+            self._Crawl("https://acme.com/long", "long " * 200),
+        ]
+
+    def test_homepage_always_leads(self):
+        ordered = site_findings._rank_crawls(self._crawls(), None)
+        self.assertEqual(ordered[0].url, "https://acme.com/")
+
+    def test_pages_with_real_traffic_outrank_longer_ones(self):
+        signals = {"ga": {"top_pages": [{"path": "/pricing"}]}}
+        ordered = site_findings._rank_crawls(self._crawls(), signals)
+        # /pricing has traffic; /long is longer but nobody reads it.
+        self.assertEqual(ordered[1].url, "https://acme.com/pricing")
+
+    def test_gsc_page_key_is_read_too(self):
+        # GSC rows use "page" where GA4 uses "path".
+        signals = {"gsc": {"top_pages": [{"page": "/tiny"}]}}
+        ordered = site_findings._rank_crawls(self._crawls(), signals)
+        self.assertEqual(ordered[1].url, "https://acme.com/tiny")
+
+    def test_without_analytics_it_falls_back_to_content_length(self):
+        ordered = site_findings._rank_crawls(self._crawls(), None)
+        self.assertEqual(ordered[1].url, "https://acme.com/long")
+
+    def test_ordering_never_drops_a_page(self):
+        crawls = self._crawls()
+        self.assertEqual(len(site_findings._rank_crawls(crawls, None)), len(crawls))

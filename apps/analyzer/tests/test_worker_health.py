@@ -11,6 +11,7 @@ Run:
 
 from __future__ import annotations
 
+import contextlib
 from unittest import mock
 
 from django.test import SimpleTestCase
@@ -24,17 +25,40 @@ from config.celery_rabbit import analysis_app
 _PONG = [{"celery@analysis-worker": {"ok": "pong"}}]
 
 
+@contextlib.contextmanager
+def eager(value: bool):
+    """Toggle ``task_always_eager`` and restore it.
+
+    ``mock.patch.object(analysis_app.conf, "task_always_eager", ...)`` cannot be
+    used: Celery's ``conf`` is a ChainMap-like Settings object where the key lives
+    in a lower mapping rather than as an instance attribute, so mock's teardown
+    calls ``delattr`` and raises ``AttributeError: 'Settings' object has no
+    attribute 'task_always_eager'``. Every test in this module errored on exit
+    because of it — the assertions had already passed.
+    """
+    had = "task_always_eager" in analysis_app.conf
+    previous = analysis_app.conf.get("task_always_eager")
+    analysis_app.conf.task_always_eager = value
+    try:
+        yield
+    finally:
+        if had:
+            analysis_app.conf.task_always_eager = previous
+        else:
+            analysis_app.conf.pop("task_always_eager", None)
+
+
 class AnalysisWorkerHealthTests(SimpleTestCase):
     def test_eager_mode_is_healthy_without_a_broker(self):
         # Local dev / tests run the pipeline in-process, so there's no worker to
         # be down — the check must not report a false outage.
-        with mock.patch.object(analysis_app.conf, "task_always_eager", True):
+        with eager(True):
             result = analysis_worker_health()
         self.assertTrue(result["ok"])
 
     def test_no_worker_responding_is_unhealthy(self):
         with (
-            mock.patch.object(analysis_app.conf, "task_always_eager", False),
+            eager(False),
             mock.patch.object(analysis_app.control, "ping", return_value=[]),
         ):
             result = analysis_worker_health()
@@ -43,7 +67,7 @@ class AnalysisWorkerHealthTests(SimpleTestCase):
 
     def test_worker_responding_is_healthy(self):
         with (
-            mock.patch.object(analysis_app.conf, "task_always_eager", False),
+            eager(False),
             mock.patch.object(analysis_app.control, "ping", return_value=_PONG),
         ):
             result = analysis_worker_health()
@@ -52,7 +76,7 @@ class AnalysisWorkerHealthTests(SimpleTestCase):
 
     def test_broker_unreachable_is_unhealthy(self):
         with (
-            mock.patch.object(analysis_app.conf, "task_always_eager", False),
+            eager(False),
             mock.patch.object(
                 analysis_app.control, "ping", side_effect=OSError("connection refused")
             ),
@@ -68,7 +92,7 @@ class WorkerHealthViewTests(SimpleTestCase):
 
     def test_returns_503_when_no_worker(self):
         with (
-            mock.patch.object(analysis_app.conf, "task_always_eager", False),
+            eager(False),
             mock.patch.object(analysis_app.control, "ping", return_value=[]),
         ):
             response = self._get()
@@ -77,7 +101,7 @@ class WorkerHealthViewTests(SimpleTestCase):
 
     def test_returns_200_when_worker_alive(self):
         with (
-            mock.patch.object(analysis_app.conf, "task_always_eager", False),
+            eager(False),
             mock.patch.object(analysis_app.control, "ping", return_value=_PONG),
         ):
             response = self._get()

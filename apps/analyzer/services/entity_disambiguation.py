@@ -153,7 +153,7 @@ def probe_identity(run, engines: list[str] | None = None) -> DisambiguationRepor
     Costs one call per engine and is therefore explicit: nothing calls this
     during a run without being asked.
     """
-    from apps.analyzer.pipeline.llm import INTERACTIVE_TIMEOUT_SEC, ask_answer_engines
+    from core.llm.client import INTERACTIVE_TIMEOUT_SEC, ask_answer_engines
 
     brand = (getattr(run, "brand_name", "") or "").strip()
     report = DisambiguationReport(brand=brand)
@@ -341,3 +341,49 @@ def report_for_run(run) -> dict:
             "entity_disambiguation: report failed for run %s", getattr(run, "id", "?")
         )
         return DisambiguationReport(brand="").as_dict()
+
+
+# A live probe costs one LLM call per engine. Re-probing on every click is both
+# a bill and an abuse vector, since a run slug is not a credential. Serve the
+# stored report inside this window and only spend once it has aged out.
+PROBE_COOLDOWN_SEC = 6 * 60 * 60
+
+
+def cached_report(run) -> tuple[dict | None, bool]:
+    """The stored report for a run, plus whether a fresh probe is allowed.
+
+    Returns ``(payload, may_probe)``. ``payload`` is ``None`` when the brand has
+    never been probed.
+    """
+    from django.utils import timezone
+
+    from apps.analyzer.models import EntityResolutionReport
+
+    row = EntityResolutionReport.objects.filter(analysis_run=run).first()
+    if row is None:
+        return None, True
+    age = (timezone.now() - row.probed_at).total_seconds()
+    return (row.payload or None), age >= PROBE_COOLDOWN_SEC
+
+
+def get_or_probe(run, engines: list[str] | None = None, *, force: bool = False) -> dict:
+    """Return the cached identity report, probing live only when it has aged out.
+
+    ``force`` still respects the cooldown: it is a user asking for fresher data,
+    not a licence to bill the account on every click.
+    """
+    from apps.analyzer.models import EntityResolutionReport
+
+    payload, may_probe = cached_report(run)
+    if payload is not None and not (force and may_probe):
+        return payload
+
+    report = probe_identity(run, engines=engines).as_dict()
+    # A probe where no engine answered says nothing; keeping an older real
+    # report beats overwriting it with an empty one.
+    if not report.get("responses") and payload is not None:
+        return payload
+    EntityResolutionReport.objects.update_or_create(
+        analysis_run=run, defaults={"payload": report}
+    )
+    return report

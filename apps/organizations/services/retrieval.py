@@ -94,7 +94,7 @@ def _retrieve(run_or_org, query, *, k, candidates) -> list[RetrievedChunk]:
     if org is None or not (query or "").strip():
         return []
 
-    from apps.analyzer.pipeline.embeddings import embed_query
+    from core.llm.embeddings import embed_query
 
     qvec = embed_query(query)
     if qvec is None:

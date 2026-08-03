@@ -6,7 +6,7 @@ deliberately no LLM fallback: this check previously asked a model whether a bran
 the answer. No model can know either, so the numbers were invented and presented
 as measurements. When no search backend can answer, the check now returns 0 with
 ``unknown=True`` and the caller awards no points — the same contract as
-``apps.analyzer.pipeline.serper``.
+``core.llm.serper``.
 
 Strategies, in order:
   1. Google Custom Search API (if GOOGLE_CSE_API_KEY + GOOGLE_CSE_CX configured)
@@ -167,7 +167,7 @@ def _check_via_serper(brand_name: str, domain: str) -> tuple[float, dict] | None
     Panel comes from Google's own knowledgeGraph block, and the indexed-page
     count is what a ``site:`` query actually returns.
     """
-    from apps.analyzer.pipeline import serper
+    from core.llm import serper
 
     if not serper.is_configured():
         return None

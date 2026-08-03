@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from apps.analyzer.pipeline.llm import ask_llm, is_available
+from core.llm.client import ask_llm, is_available
 
 logger = logging.getLogger("apps")
 
@@ -99,7 +99,7 @@ JSON:
 
         # Epic 8: one shared extractor (handles fences + chatty preambles) instead of a
         # local regex + json.loads.
-        from .structured import extract_json
+        from core.llm.structured import extract_json
 
         data = extract_json(raw, expect=dict)
         if not isinstance(data, dict):

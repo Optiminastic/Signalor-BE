@@ -68,7 +68,7 @@ def _check_via_perplexity(brand_name: str) -> tuple[float, dict] | None:
     Returns (score, details) or None on failure.
     """
     try:
-        from apps.analyzer.pipeline.llm import ask_llm, is_available
+        from core.llm.client import ask_llm, is_available
         if not is_available():
             return None
 
@@ -268,7 +268,7 @@ def _llm_estimation(brand_name: str) -> tuple[float, dict]:
     details["method"] = "llm_estimation"
 
     try:
-        from apps.analyzer.pipeline.llm import ask_llm, is_available
+        from core.llm.client import ask_llm, is_available
         if not is_available():
             return 10.0, {**details, "error": "Reddit data temporarily unavailable."}
 

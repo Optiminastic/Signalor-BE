@@ -9,11 +9,12 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
-from apps.analyzer.pipeline import ai_visibility, entity, serper
+from apps.analyzer.pipeline import ai_visibility, entity
 from apps.analyzer.pipeline.crawl_files import AI_CRAWLERS, build_robots_txt
 from apps.analyzer.pipeline.schema_gen import build_jsonld_prompt, ensure_script_wrapped
+from core.llm import serper
 
-_SEARCH = "apps.analyzer.pipeline.serper.search"
+_SEARCH = "core.llm.serper.search"
 
 
 def _serper_payload(*, panel=False, organic=None):

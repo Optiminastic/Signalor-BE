@@ -58,8 +58,9 @@ def judge(
     failed. Scores are clamped to [0, 1] and ``passed`` is re-derived from the
     threshold so it can't disagree with the numbers.
     """
+    from core.llm.structured import ask_structured
+
     from ..prompts import render
-    from .structured import ask_structured
 
     prompt = render(
         "judge_eval",

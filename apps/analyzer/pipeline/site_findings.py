@@ -25,15 +25,26 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 
 logger = logging.getLogger("apps")
 
-# Cost and noise bounds. A run crawls up to 12 pages; feeding all of them in full
-# would blow the context and the budget, so each page contributes a capped slice.
-MAX_PAGES = 8
-PAGE_EXCERPT_CHARS = 2200
-MAX_FINDINGS = 6
+# Cost and noise bounds. A run crawls up to 12 pages (see tasks/analysis.py), so
+# MAX_PAGES at 14 covers the whole crawl plus headroom rather than an arbitrary
+# first-8 slice — the module can only find what it is shown.
+#
+# Env-overridable on purpose: these are the only levers on this module's cost per
+# run, and raising findings raises output tokens. Dial them back with
+# SITE_FINDINGS_* without a deploy if spend spikes.
+MAX_PAGES = int(os.getenv("SITE_FINDINGS_MAX_PAGES", "14"))
+PAGE_EXCERPT_CHARS = int(os.getenv("SITE_FINDINGS_EXCERPT_CHARS", "2200"))
+MAX_FINDINGS = int(os.getenv("SITE_FINDINGS_MAX_FINDINGS", "12"))
+
+# Output budget must scale with the number of findings requested, or the model
+# runs out of tokens mid-list and the tail is silently truncated.
+_TOKENS_PER_FINDING = 420
+_BASE_TOKENS = 600
 
 # Shortest evidence quote we will trust. Anything below this matches by accident
 # ("the", "Home") and would let an ungrounded finding through the gate.
@@ -103,7 +114,50 @@ def _verify_evidence(evidence: str, corpus: dict[str, str]) -> bool:
     return any(quote in page_text for page_text in corpus.values())
 
 
-def _build_pages_block(crawls: list) -> str:
+def _important_paths(signals: dict | None) -> set[str]:
+    """Page paths GA4/Search Console say actually get traffic.
+
+    Shapes differ per source (GA4 rows carry ``path``, GSC rows ``page``), so
+    this reads whichever key is present rather than assuming one.
+    """
+    if not signals:
+        return set()
+    paths: set[str] = set()
+    for source in ("ga", "gsc"):
+        block = signals.get(source) or {}
+        for row in block.get("top_pages") or []:
+            if not isinstance(row, dict):
+                continue
+            value = row.get("path") or row.get("page") or row.get("url") or ""
+            if isinstance(value, str) and value.strip():
+                paths.add(value.strip().rstrip("/"))
+    return paths
+
+
+def _rank_crawls(crawls: list, signals: dict | None) -> list:
+    """Most-worth-reading pages first.
+
+    Previously this took ``crawls[:MAX_PAGES]`` — whatever the crawler happened
+    to fetch first. Ordering matters twice: it decides which pages survive the
+    cap, and the model attends more closely to what it reads first. Homepage
+    leads, then anything GA4/GSC report traffic for, then the longest pages
+    (more text is more surface for a real finding).
+    """
+    important = _important_paths(signals)
+
+    def rank(index_and_crawl: tuple[int, object]) -> tuple[int, int, int]:
+        index, crawl = index_and_crawl
+        url = getattr(crawl, "url", "") or ""
+        path = "/" + url.split("//", 1)[-1].split("/", 1)[-1] if "//" in url else url
+        path = path.rstrip("/")
+        is_home = 0 if index == 0 else 1
+        is_important = 0 if (path in important or url.rstrip("/") in important) else 1
+        return (is_home, is_important, -len(getattr(crawl, "text", "") or ""))
+
+    return [crawl for _, crawl in sorted(enumerate(crawls), key=rank)]
+
+
+def _build_pages_block(crawls: list, signals: dict | None = None) -> str:
     """Render each page as a capped excerpt, marking where we cut it.
 
     The marker matters: without it a model reads an excerpt that stops
@@ -111,7 +165,7 @@ def _build_pages_block(crawls: list) -> str:
     the customer's site, when the truncation is ours. Observed in testing.
     """
     parts = []
-    for crawl in crawls[:MAX_PAGES]:
+    for crawl in _rank_crawls(crawls, signals)[:MAX_PAGES]:
         if not getattr(crawl, "ok", False):
             continue
         text = re.sub(r"\s+", " ", (getattr(crawl, "text", "") or "")).strip()
@@ -238,6 +292,99 @@ def _ai_visibility_block(ai_visibility: dict | None) -> str:
     )
 
 
+def _citations_block(data: dict | None) -> str:
+    """What engines actually answered, and who they cited instead.
+
+    The most actionable block here because it is observed rather than inferred: a
+    finding built on it can name the prompt, the engines and the competitor that
+    took the citation.
+    """
+    if not data:
+        return "- Prompt tracking: not measured for this run (no prompts have fired yet)"
+    lines = [
+        f"- {data['lost_count']} of {data['tracked_count']} tracked prompts got NO brand mention",
+    ]
+    if data.get("top_cited_instead"):
+        cited = ", ".join(f"{d} ({n}x)" for d, n in data["top_cited_instead"])
+        lines.append(f"- cited instead of this brand: {cited}")
+    for row in data.get("prompts") or []:
+        mark = "LOST" if row["engines_mentioning"] == 0 else "ok"
+        detail = f"  [{mark}] \"{row['prompt']}\" — {row['engines_mentioning']}/{row['engines_asked']} engines"
+        if row.get("cited_instead"):
+            detail += f"; they cited {', '.join(row['cited_instead'])}"
+        lines.append(detail)
+    return "\n".join(lines)
+
+
+def _competitors_block(rows: list | None) -> str:
+    if not rows:
+        return "- Competitors: none discovered for this run"
+    return "\n".join(
+        f"- {r['name']} ({r['url']}) score={r['score']}" + (f" tier={r['tier']}" if r.get("tier") else "")
+        for r in rows
+    )
+
+
+def _crawler_block(data: dict | None) -> str:
+    """Observed bot activity. Absent telemetry is stated, never read as zero."""
+    if not data:
+        return (
+            "- AI crawler telemetry: not instrumented, so whether engines fetch this "
+            "site is UNKNOWN (do not claim they have not visited)"
+        )
+    lines = []
+    if data.get("blocked_engines"):
+        lines.append(f"- BLOCKED by robots.txt: {', '.join(data['blocked_engines'])}")
+    for e in data.get("engines") or []:
+        lines.append(f"- {e.get('engine')}: {e.get('status')} ({e.get('hits')} hits)")
+    if data.get("uncrawled_pages"):
+        lines.append(f"- pages no AI crawler has fetched: {', '.join(data['uncrawled_pages'])}")
+    return "\n".join(lines) or "- AI crawler telemetry: present but empty"
+
+
+def _coverage_block(data: dict | None) -> str:
+    """Which prompts have no answering page — 'write one' vs 'improve one'."""
+    if not data:
+        return "- Prompt→page coverage: not measured (corpus not indexed yet)"
+    lines = [f"- {data.get('covered')} of {data.get('measurable')} prompts are answered by a page"]
+    if data.get("needs_page"):
+        lines.append(f"- NO page answers these: {_json_block(data['needs_page'], 600)}")
+    if data.get("needs_section"):
+        lines.append(f"- a page exists but answers weakly: {_json_block(data['needs_section'], 600)}")
+    return "\n".join(lines)
+
+
+def _gaps_block(rows: list | None) -> str:
+    if not rows:
+        return "- Citation gaps: none recorded"
+    return "\n".join(
+        f"- {r['domain']} wins {r['prompts_won']} of your prompts (status: {r.get('status')})"
+        for r in rows
+    )
+
+
+def _authority_block(data: dict | None) -> str:
+    if not data:
+        return "- Domain authority: no provider configured, so authority is UNKNOWN"
+    return (
+        f"- domain_rating={data.get('domain_rating')} backlinks={data.get('backlinks')} "
+        f"linking_websites={data.get('linking_websites')} (via {data.get('source')})"
+    )
+
+
+def _brand_profile_block(data: dict | None) -> str:
+    """Verified brand facts, so a finding argues from approved positioning."""
+    if not data:
+        return "- Brand profile: not created yet"
+    return (
+        f"- status={data.get('status')}\n"
+        f"- identity: {_json_block(data.get('identity'), 500)}\n"
+        f"- positioning: {_json_block(data.get('positioning'), 500)}\n"
+        f"- audience: {_json_block(data.get('audience'), 400)}\n"
+        f"- verified facts: {_json_block(data.get('canonical_facts'), 500)}"
+    )
+
+
 def _to_recommendation(finding, corpus: dict[str, str]) -> dict:
     """Convert a validated SiteFinding into the rec dict the pipeline persists."""
     pillar = finding.pillar if finding.pillar in VALID_PILLARS else "content"
@@ -291,6 +438,7 @@ def discover_site_findings(
     siteone: dict | None = None,
     signals: dict | None = None,
     ai_visibility: dict | None = None,
+    run_signals: dict | None = None,
     limit: int = MAX_FINDINGS,
 ) -> list[dict]:
     """Read every available signal for this site and return specific findings.
@@ -301,6 +449,12 @@ def discover_site_findings(
       ``siteone``        - SiteOne technical crawl deductions
       ``signals``        - GA4 + Search Console bundle (``build_overview_signals``)
       ``ai_visibility``  - how AI engines currently answer about the brand
+      ``run_signals``    - everything else the run measured, from
+                           ``services.task_signals.collect_all``: which prompts
+                           were lost and who was cited instead, discovered
+                           competitors, real AI-crawler telemetry, prompt-to-page
+                           coverage, citation gaps, domain authority and the
+                           approved brand profile
 
     Sources that are absent are stated as absent in the prompt rather than
     omitted, so the model never reads "no data" as "zero".
@@ -310,19 +464,20 @@ def discover_site_findings(
     them, so a bad LLM day costs extra findings and nothing else.
     """
     from apps.analyzer.prompts import render
+    from core.llm.structured import ask_structured_list
 
     from .schemas import SiteFinding
-    from .structured import ask_structured_list
 
     corpus = _page_corpus(crawls)
     if not corpus:
         logger.info("site_findings: no crawled page text for %s; skipping", homepage_url)
         return []
 
-    pages_block = _build_pages_block(crawls)
+    pages_block = _build_pages_block(crawls, signals)
     if not pages_block:
         return []
 
+    sig = run_signals or {}
     try:
         prompt = render(
             "site_findings",
@@ -334,6 +489,13 @@ def discover_site_findings(
             siteone_block=_siteone_block(siteone),
             analytics_block=_analytics_block(signals),
             ai_visibility_block=_ai_visibility_block(ai_visibility),
+            citations_block=_citations_block(sig.get("prompt_citations")),
+            competitors_block=_competitors_block(sig.get("competitors")),
+            crawler_block=_crawler_block(sig.get("crawler_telemetry")),
+            coverage_block=_coverage_block(sig.get("prompt_coverage")),
+            gaps_block=_gaps_block(sig.get("citation_gaps")),
+            authority_block=_authority_block(sig.get("domain_authority")),
+            brand_profile_block=_brand_profile_block(sig.get("brand_profile")),
             count=limit,
         )
     except Exception:
@@ -344,7 +506,9 @@ def discover_site_findings(
         prompt,
         SiteFinding,
         tier="strong",
-        max_tokens=2400,
+        # Scales with the requested count so a larger list can't be truncated
+        # mid-item, which would lose the tail silently.
+        max_tokens=_BASE_TOKENS + _TOKENS_PER_FINDING * max(limit, 1),
         purpose="site-findings",
     )
     if not findings:

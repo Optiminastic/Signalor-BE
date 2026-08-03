@@ -1,0 +1,15 @@
+{
+  "accounts": 49,
+  "analyzer": 796,
+  "drip": 2,
+  "github_agent": 45,
+  "integrations": 74,
+  "organizations": 28,
+  "partners": 0,
+  "public_api": 1,
+  "recommendation": 2,
+  "referrals": 2,
+  "remediation": 0,
+  "visibility": 6,
+  "webhooks": 0
+}

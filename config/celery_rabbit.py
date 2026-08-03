@@ -10,7 +10,7 @@ NOT the dead-letter queue ``analysis.dlq``)::
 
     celery -A config.celery_rabbit worker -Q analysis --loglevel=info --concurrency=2
 
-Tasks register on this app via ``apps.<x>.analysis_tasks`` (note: a different
+Tasks register on this app via ``workers.analysis.tasks`` (note: a different
 ``related_name`` than the Redis app's ``celery_tasks``) so the analysis task
 lands on RabbitMQ and the sitemap task stays on Redis.
 
@@ -80,6 +80,11 @@ analysis_app.conf.task_routes = {
 # Look for `analysis_tasks` modules (NOT `celery_tasks`) so only the analysis
 # task registers on this RabbitMQ app.
 analysis_app.autodiscover_tasks(related_name="analysis_tasks")
+# See config/celery.py: workers/ is outside apps/, so it needs explicit imports.
+analysis_app.conf.imports = tuple(analysis_app.conf.imports or ()) + (
+    "workers.analysis.tasks",
+    "workers.crawling.tasks",
+)
 
 
 @worker_ready.connect

@@ -39,7 +39,7 @@ class RecordCostTests(TestCase):
         """Accounting must not break a completed analysis."""
         run = AnalysisRun.objects.create(url="https://a.com", email=EMAIL)
         with patch.object(llm_spend, "record_run_cost", wraps=llm_spend.record_run_cost):
-            with patch("apps.analyzer.pipeline.llm.summarize_llm_logs", side_effect=RuntimeError("boom")):
+            with patch("core.llm.client.summarize_llm_logs", side_effect=RuntimeError("boom")):
                 self.assertEqual(llm_spend.record_run_cost(run), 0.0)
 
 
@@ -154,7 +154,7 @@ class CostScopeTests(TestCase):
     """
 
     def test_scope_accumulates_call_cost(self):
-        from apps.analyzer.pipeline import llm
+        from core.llm import client as llm
 
         with llm.cost_scope() as spend:
             llm._record_scope_cost({"cost": 0.01})
@@ -163,7 +163,7 @@ class CostScopeTests(TestCase):
         self.assertEqual(spend["calls"], 2)
 
     def test_costs_outside_the_scope_are_not_counted(self):
-        from apps.analyzer.pipeline import llm
+        from core.llm import client as llm
 
         with llm.cost_scope() as spend:
             pass
@@ -171,7 +171,7 @@ class CostScopeTests(TestCase):
         self.assertEqual(spend["cost"], 0.0)
 
     def test_nested_scopes_both_see_inner_calls(self):
-        from apps.analyzer.pipeline import llm
+        from core.llm import client as llm
 
         with llm.cost_scope() as outer:
             llm._record_scope_cost({"cost": 1.0})
@@ -181,7 +181,7 @@ class CostScopeTests(TestCase):
         self.assertAlmostEqual(outer["cost"], 3.0, places=6)
 
     def test_missing_cost_is_treated_as_zero(self):
-        from apps.analyzer.pipeline import llm
+        from core.llm import client as llm
 
         with llm.cost_scope() as spend:
             llm._record_scope_cost({})
@@ -192,7 +192,7 @@ class CostScopeTests(TestCase):
         """ThreadPoolExecutor does not inherit contextvars on its own."""
         from concurrent.futures import ThreadPoolExecutor
 
-        from apps.analyzer.pipeline import llm
+        from core.llm import client as llm
 
         def _work(_):
             llm._record_scope_cost({"cost": 0.25})
@@ -206,7 +206,7 @@ class CostScopeTests(TestCase):
         """Pins the reason propagate() has to exist."""
         from concurrent.futures import ThreadPoolExecutor
 
-        from apps.analyzer.pipeline import llm
+        from core.llm import client as llm
 
         def _work(_):
             llm._record_scope_cost({"cost": 0.25})
@@ -240,8 +240,8 @@ class FinalAccountingTests(TestCase):
         llm_spend.record_run_cost(run)
 
         # Simulate the partial path: logs already drained, so the collector is empty.
-        with patch.object(tasks, "get_collected_logs", return_value=[]):
-            with patch.object(tasks, "_end_trace"):
+        with patch.object(tasks.accounting, "get_collected_logs", return_value=[]):
+            with patch.object(tasks.progress, "_end_trace"):
                 tasks._finalize_accounting(run, run.id)
 
         run.refresh_from_db()
@@ -254,8 +254,8 @@ class FinalAccountingTests(TestCase):
 
         run = self._run()
         logs = [{"purpose": "p", "model": "m", "usage": {"cost": 0.75}}]
-        with patch.object(tasks, "get_collected_logs", return_value=logs):
-            with patch.object(tasks, "_end_trace"):
+        with patch.object(tasks.accounting, "get_collected_logs", return_value=logs):
+            with patch.object(tasks.progress, "_end_trace"):
                 tasks._finalize_accounting(run, run.id)
 
         run.refresh_from_db()
@@ -266,8 +266,8 @@ class FinalAccountingTests(TestCase):
         from apps.analyzer import tasks
 
         run = self._run()
-        with patch.object(tasks, "get_collected_logs", side_effect=RuntimeError("boom")):
-            with patch.object(tasks, "_end_trace") as end_trace:
+        with patch.object(tasks.accounting, "get_collected_logs", side_effect=RuntimeError("boom")):
+            with patch.object(tasks.progress, "_end_trace") as end_trace:
                 tasks._finalize_accounting(run, run.id)
         end_trace.assert_called_once_with(run.id)
 
@@ -277,11 +277,11 @@ class FinalAccountingTests(TestCase):
 
         run = self._run()
         logs = [{"purpose": "p", "model": "m", "usage": {"cost": 0.9}}]
-        with patch.object(tasks, "get_collected_logs", return_value=logs):
+        with patch.object(tasks.accounting, "get_collected_logs", return_value=logs):
             tasks._record_run_spend(run, run.id)
         # Second drain is empty, exactly as the real collector behaves.
-        with patch.object(tasks, "get_collected_logs", return_value=[]):
-            with patch.object(tasks, "_end_trace"):
+        with patch.object(tasks.accounting, "get_collected_logs", return_value=[]):
+            with patch.object(tasks.progress, "_end_trace"):
                 tasks._finalize_accounting(run, run.id)
 
         run.refresh_from_db()
@@ -308,7 +308,7 @@ class CompetitiveDispatchBudgetTests(TestCase):
         run = self._run()
         logs = [{"purpose": "p", "model": "m", "usage": {"cost": 1.5}}]
 
-        with patch.object(tasks, "get_collected_logs", return_value=logs):
+        with patch.object(tasks.accounting, "get_collected_logs", return_value=logs):
             tasks._record_run_spend(run, run.id)
 
         with patch.object(llm_spend, "limit_for", return_value=20.0):
@@ -321,7 +321,7 @@ class CompetitiveDispatchBudgetTests(TestCase):
         run = self._run()
         logs = [{"purpose": "p", "model": "m", "usage": {"cost": 1.5}}]
 
-        with patch.object(tasks, "get_collected_logs", return_value=logs):
+        with patch.object(tasks.accounting, "get_collected_logs", return_value=logs):
             tasks._record_run_spend(run, run.id)
 
         with patch.object(llm_spend, "limit_for", return_value=20.0):
@@ -350,12 +350,12 @@ class CompetitiveDispatchBudgetTests(TestCase):
 
         run = self._run()
         logs = [{"purpose": "p", "model": "m", "usage": {"cost": 1.0}}]
-        with patch.object(tasks, "get_collected_logs", return_value=logs):
+        with patch.object(tasks.accounting, "get_collected_logs", return_value=logs):
             tasks._record_run_spend(run, run.id)
         tasks._add_background_spend(run.id, {"cost": 0.4, "calls": 40})
         # The finally call lands last and must not undo the increment.
-        with patch.object(tasks, "get_collected_logs", return_value=[]):
-            with patch.object(tasks, "_end_trace"):
+        with patch.object(tasks.accounting, "get_collected_logs", return_value=[]):
+            with patch.object(tasks.progress, "_end_trace"):
                 tasks._finalize_accounting(run, run.id)
 
         run.refresh_from_db()

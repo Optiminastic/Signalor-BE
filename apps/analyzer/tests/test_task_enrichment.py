@@ -21,7 +21,7 @@ from apps.analyzer.pipeline.schemas import (
 from apps.analyzer.services import task_enrichment
 from apps.analyzer.services.task_enrichment import enrich_recommendations
 
-_ASK = "apps.analyzer.pipeline.structured.ask_structured"
+_ASK = "core.llm.structured.ask_structured"
 
 
 def _run():

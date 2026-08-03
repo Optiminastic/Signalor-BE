@@ -103,9 +103,9 @@ def _gather_competitors(run) -> list:
 
 
 def _synthesize(run, kit, market, competitors):
-    from apps.analyzer.pipeline.structured import ask_structured
     from apps.analyzer.prompts import render
     from apps.organizations.schemas import BrandSynthesis
+    from core.llm.structured import ask_structured
 
     return ask_structured(
         _build_synth_prompt(run, kit, market, competitors),

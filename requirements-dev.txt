@@ -9,3 +9,6 @@ ruff==0.15.12
 pre-commit==4.6.0
 # Migration safety gate (see .github/workflows/ci.yml → migrations job).
 django-migration-linter==6.0.0
+# Architecture gate (see ci.yml → architecture job, contracts in pyproject.toml).
+# Enforces ARCHITECTURE.md §4: dependencies point one way, no import cycles.
+import-linter==2.3

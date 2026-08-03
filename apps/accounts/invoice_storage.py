@@ -13,8 +13,11 @@ successfully once, we own it in B2 forever — Dodo outages stop mattering.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
+
+from core import storage
 
 logger = logging.getLogger("apps")
 
@@ -32,23 +35,12 @@ def _client():
     """Boto3 S3 client pointed at B2. Returns None when not configured."""
     if not is_b2_enabled():
         return None
-    try:
-        import boto3
-        from botocore.config import Config
-    except ImportError:
+    if importlib.util.find_spec("boto3") is None:
         logger.warning("boto3 not installed; B2 invoice cache disabled")
         return None
 
-    return boto3.client(
-        "s3",
-        endpoint_url=_env("B2_ENDPOINT"),
-        aws_access_key_id=_env("B2_KEY_ID"),
-        aws_secret_access_key=_env("B2_APPLICATION_KEY"),
-        # B2 accepts any region string; default to us-west-002 if unset.
-        region_name=_env("B2_REGION") or "us-west-002",
-        # Path-style addressing is the safe default for non-AWS S3.
-        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
-    )
+    # Shared with profile/invoice storage and any future B2 caller.
+    return storage.b2_client()
 
 
 def _key(payment_id: str) -> str:

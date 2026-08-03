@@ -13,8 +13,8 @@ import logging
 from collections.abc import Iterable
 
 from apps.analyzer.models import BacklinkOpportunity, PromptTrack
-from apps.analyzer.pipeline.llm import ask_llm
 from apps.analyzer.pipeline.utils import drop_unreachable
+from core.llm.client import ask_llm
 
 logger = logging.getLogger("apps")
 
@@ -67,7 +67,7 @@ URLs MUST be the actual submission/signup/contribution page if known, otherwise 
 
 def _parse_response(raw: str) -> list[dict]:
     # Epic 8: shared extractor (was a private fence-stripper + json.loads).
-    from .structured import extract_json
+    from core.llm.structured import extract_json
 
     data = extract_json(raw, expect=list)
     if data is None:

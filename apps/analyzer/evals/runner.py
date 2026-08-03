@@ -95,7 +95,7 @@ def _meets(verdict, thresholds: dict) -> bool:
 
 def _live_generate(task: str) -> tuple[str, dict]:
     """Generate output for a case live, capturing token usage from the LLM logs."""
-    from ..pipeline.llm import ask_llm, get_collected_logs, start_log_collection
+    from core.llm.client import ask_llm, get_collected_logs, start_log_collection
 
     start_log_collection()
     output = ask_llm(task, tier="cheap", purpose="eval_live", max_tokens=1024)

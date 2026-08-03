@@ -65,7 +65,7 @@ _REFUSAL_PHRASES = [
 
 def _sanitize_llm_output(text: str, purpose: str = "content") -> tuple[str, str | None]:
     """Clean and validate LLM output. Returns (cleaned_text, error_or_none)."""
-    from .pipeline.structured import extract_json, strip_code_fences
+    from core.llm.structured import extract_json, strip_code_fences
 
     if not text or not text.strip():
         return "", "AI returned empty content."
@@ -144,9 +144,9 @@ def _detect_fix_type(recommendation: Recommendation) -> str:
 
 
 def _call_llm(prompt: str, purpose: str = "auto-fix", tier: str = "medium") -> str:
-    """Generate text via the shared LLM client (``pipeline.llm``). Returns "" on
+    """Generate text via the shared LLM client (``core.llm.client``). Returns "" on
     failure. ``tier`` is cheap/medium/strong (see ``llm.TIERS``)."""
-    from .pipeline.llm import ask_llm
+    from core.llm.client import ask_llm
 
     return ask_llm(prompt, tier=tier, max_tokens=8192, purpose=purpose)
 
@@ -364,8 +364,9 @@ def _generate_meta_fix(run, recommendation) -> tuple[str, str | None]:
         page_content=page_content[:3000],
     )
 
+    from core.llm.structured import ask_structured
+
     from .pipeline.schemas import MetaFix
-    from .pipeline.structured import ask_structured
 
     meta = ask_structured(prompt, MetaFix, tier="cheap", purpose="fix-meta", max_tokens=8192)
     if meta is None:

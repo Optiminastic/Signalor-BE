@@ -8,7 +8,7 @@ from apps.analyzer.models import AnalysisRun
 from apps.organizations.models import BrandCorpusChunk, Organization
 from apps.organizations.services import corpus_ingest
 
-_EMBED = "apps.analyzer.pipeline.embeddings.embed_documents"
+_EMBED = "core.llm.embeddings.embed_documents"
 
 PAGE_V1 = """
 <body>

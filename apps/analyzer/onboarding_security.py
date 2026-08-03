@@ -144,7 +144,7 @@ def gate_onboarding_endpoint(request, email: str | None = None) -> tuple[bool, s
     """
     if subscriber_bypass(email):
         return True, ""
-    from core.middleware import _client_ip
+    from core.permissions.middleware import _client_ip
 
     token = request.headers.get("X-Onboarding-Token", "")
     ok, reason = verify_token(token, _client_ip(request))

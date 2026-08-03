@@ -56,6 +56,8 @@ INSTALLED_APPS = [
     "apps.referrals.apps.ReferralsConfig",
     "apps.partners.apps.PartnersConfig",
     "apps.public_api.apps.PublicApiConfig",
+    "apps.remediation.apps.RemediationConfig",
+    "apps.webhooks.apps.WebhooksConfig",
     "core",
 ]
 
@@ -66,7 +68,7 @@ MIDDLEWARE = [
     # Global per-IP rate limit. Runs before view dispatch so admin / oauth /
     # non-DRF paths are also bounded. No-op in dev (DEBUG=True) unless
     # IP_RATE_LIMIT_ENABLED is overridden.
-    "core.middleware.GlobalIPRateLimitMiddleware",
+    "core.permissions.middleware.GlobalIPRateLimitMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -164,7 +166,7 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         # Verifies a better-auth JWT (JWKS) and sets request.user when the FE sends one.
         # Dormant until BETTER_AUTH_JWKS_URL is set; never raises, so this is non-breaking.
-        "apps.accounts.authentication.BetterAuthJWTAuthentication",
+        "core.auth.jwt.BetterAuthJWTAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
@@ -218,7 +220,7 @@ REST_FRAMEWORK = {
         "public_api_read": "300/minute",
         "public_api_write": "30/minute",
     },
-    "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
+    "EXCEPTION_HANDLER": "shared.exceptions.custom_exception_handler",
 }
 
 # ── better-auth JWT verification (FE identity → verified request.user) ─────
@@ -442,7 +444,7 @@ CACHES = {
 }
 
 # ── Celery ───────────────────────────────────────────────────────────────
-# Today only the sitemap audit task (apps.analyzer.celery_tasks) is on
+# Today only the sitemap audit task (workers.crawling.tasks) is on
 # Celery; everything else still uses threading.Thread. When CELERY_BROKER_URL
 # is unset, tasks run eagerly in-process so dev / tests don't need a worker.
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", os.getenv("REDIS_URL", ""))

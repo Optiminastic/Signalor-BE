@@ -70,7 +70,7 @@ def _probe_openrouter(key: str) -> tuple[bool, str]:
 def _probe_google_embeddings(key: str) -> tuple[bool, str]:
     import requests
 
-    from apps.analyzer.pipeline.embeddings import DEFAULT_EMBED_MODEL, EMBED_DIMENSIONS
+    from core.llm.embeddings import DEFAULT_EMBED_MODEL, EMBED_DIMENSIONS
 
     model = DEFAULT_EMBED_MODEL.split("/")[-1]
     resp = requests.post(
@@ -157,6 +157,25 @@ class Command(BaseCommand):
                     "true — disables the OTel SDK that Langfuse runs on. "
                     "Use OTEL_TRACES_EXPORTER=none instead.",
                 )
+            )
+
+        # Reads degrade to empty, so this never breaks a page — but the satellite
+        # blog network cannot publish anything, and the write path refuses.
+        from apps.analyzer import blog_store
+
+        if not blog_store.is_configured():
+            out.append(
+                Check(
+                    "BACKLINKS_BLOG_AWS_BUCKET",
+                    WARN,
+                    "satellite blog storage unconfigured — backlink posts cannot be published",
+                )
+            )
+
+        # Silently degrades domain authority on every run.
+        if not os.getenv("OPENPAGERANK_API_KEY", "").strip():
+            out.append(
+                Check("OPENPAGERANK_API_KEY", WARN, "missing — domain authority is unavailable")
             )
 
         # Fails closed, so an unset value silently rejects every delivery.

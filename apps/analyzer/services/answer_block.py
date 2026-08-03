@@ -144,8 +144,8 @@ def generate(run, prompt_text: str, *, target_url: str = "", intent: str = "") -
     Fail-soft: a failure here costs a draft, never a run.
     """
     from apps.analyzer.pipeline.schemas import AnswerBlock
-    from apps.analyzer.pipeline.structured import ask_structured
     from apps.analyzer.prompts import render
+    from core.llm.structured import ask_structured
 
     text = (prompt_text or "").strip()
     if not text:

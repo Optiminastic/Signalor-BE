@@ -33,6 +33,35 @@ def _cfg() -> dict:
     }
 
 
+def is_configured() -> bool:
+    """Whether the satellite blog bucket is usable.
+
+    Unset credentials produced an empty bucket name, which boto3 rejected with
+    ``ParamValidationError: Invalid bucket name ""`` *inside* the S3 call. That
+    surfaced as a full traceback in the logs on every backlinks page load, from a
+    deployment that had simply never configured the bucket.
+
+    Reads below degrade to empty when this is False. Writes deliberately do not -
+    see ``_require_configured``.
+    """
+    c = _cfg()
+    return bool(c["key"] and c["secret"] and c["bucket"])
+
+
+def _require_configured() -> None:
+    """Guard the write paths, which must never fail quietly.
+
+    A read with no bucket is legitimately "no posts yet". A *write* with no
+    bucket is a post the caller believes it published and a reader will never
+    find - the same class of lie as reporting an IndexNow submission as an index.
+    """
+    if not is_configured():
+        raise RuntimeError(
+            "Satellite blog storage is not configured: set BACKLINKS_BLOG_AWS_ACCESS_KEY_ID, "
+            "BACKLINKS_BLOG_AWS_SECRET_ACCESS_KEY and BACKLINKS_BLOG_AWS_BUCKET."
+        )
+
+
 @lru_cache(maxsize=4)
 def _client_cached(key: str, secret: str, region: str):
     import boto3
@@ -113,7 +142,14 @@ def new_id() -> int:
 
 
 def list_index(site: str) -> list:
-    """Post summaries for one site (from its index.json)."""
+    """Post summaries for one site (from its index.json).
+
+    An unconfigured bucket means no posts have been published, which is exactly
+    what an empty list says. Returning it here is what keeps the backlinks page
+    rendering instead of raising a boto3 validation error per site.
+    """
+    if not is_configured():
+        return []
     s3, c = _client()
     return _get_json(s3, c["bucket"], _index_key(c, site), [])
 
@@ -124,6 +160,7 @@ def slug_exists(site: str, slug: str) -> bool:
 
 def put_post(post: dict) -> dict:
     """Write the full post object and upsert its summary into the site index."""
+    _require_configured()
     s3, c = _client()
     site, slug = post["site"], post["slug"]
     _put_json(s3, c["bucket"], _post_key(c, site, slug), post)
@@ -135,6 +172,8 @@ def put_post(post: dict) -> dict:
 
 
 def get_post(site: str, slug: str):
+    if not is_configured():
+        return None
     s3, c = _client()
     return _get_json(s3, c["bucket"], _post_key(c, site, slug), None)
 
@@ -150,6 +189,7 @@ def update_post(site: str, slug: str, fields: dict):
 
 
 def delete_post(site: str, slug: str) -> bool:
+    _require_configured()
     s3, c = _client()
     s3.delete_object(Bucket=c["bucket"], Key=_post_key(c, site, slug))
     idx = [p for p in _get_json(s3, c["bucket"], _index_key(c, site), []) if p.get("slug") != slug]

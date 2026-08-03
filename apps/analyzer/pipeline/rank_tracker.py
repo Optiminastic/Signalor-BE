@@ -213,7 +213,7 @@ def build_queries_for_run(run) -> list[str]:
 
 def _generate_comparison_prompts(run, count: int = PROMPT_COUNT) -> list[str]:
     """Ask the LLM for `count` comparison/reasoning-style prompts."""
-    from apps.analyzer.pipeline.llm import ask_llm
+    from core.llm.client import ask_llm
 
     brand = (run.brand_name or "").strip() or urlparse(run.url or "").netloc
     brand_url = run.url or ""
@@ -293,7 +293,7 @@ Return ONLY a JSON array of {count} strings. No markdown, no explanations."""
     try:
         raw = ask_llm(prompt, purpose="Rank Tracker — Comparison Prompts", max_tokens=1200).strip()
         # Epic 8: shared extractor (was a local fence-stripper + json.loads).
-        from .structured import extract_json
+        from core.llm.structured import extract_json
 
         parsed = extract_json(raw, expect=list)
         if isinstance(parsed, list):
@@ -434,7 +434,7 @@ def fetch_ai_responses(query: str) -> list[dict]:
     Results are returned in AI_ENGINE_ORDER for stable positioning.
     """
     try:
-        from apps.analyzer.pipeline.llm import ask_answer_engines
+        from core.llm.client import ask_answer_engines
     except Exception as exc:
         logger.warning("ai fetch: llm module unavailable: %s", exc)
         return []

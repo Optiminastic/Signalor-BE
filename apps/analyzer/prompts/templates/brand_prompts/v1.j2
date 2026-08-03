@@ -1,49 +1,69 @@
 {% import "_shared/macros.j2" as m %}
-You are a {{ m.geo_expert() }}. Your job is to deeply understand this entity and generate {{ count }} prompts that real people would type into {{ AI_ENGINES }}.
+You are a {{ m.geo_expert() }}. Generate {{ count }} prompts that this brand's
+IDEAL CUSTOMER would type into {{ AI_ENGINES }} — **before they have ever heard of
+this brand**.
 
 CONTEXT:
 {{ context }}
 
-STEP 1 — First, figure out WHAT this entity is:
-- Is it a SaaS product? Physical product? Service? Agency? Local business? Blog? Personal brand? Marketplace? Nonprofit? Something else?
-- What specific problem does it solve or what need does it serve?
-- Who is the target audience (age, role, industry, location)?
-- What are the key offerings (products, services, content)?
-- Who are the likely competitors or alternatives?
-- Is location relevant? (local business, regional service, global SaaS)
+WHY THIS MATTERS — read before writing anything:
+A prompt containing the brand name is worthless for measurement. Ask an engine
+"What is {{ brand_name }} and what do they do?" and it will say the name back:
+100% visibility, zero information. The number that matters is whether a buyer who
+describes their *problem* — never the brand — gets this brand cited in the answer.
+A 0% score on a real buyer question is useful. A 100% score on a branded question
+is noise.
 
-STEP 2 — Generate {{ count }} prompts that REAL users would ask AI assistants. Cover these categories:
+STEP 1 — Work out who the customer is and what they are trying to do:
+- What job are they trying to get done, in their own words?
+- What do they call this category? (their vocabulary, not the brand's marketing)
+- What triggers the search — a problem, a deadline, a competitor, a cost?
+- What segment are they in? (industry, company size, role, region)
+- What would they type at 11pm when the problem is urgent?
 
-1. DISCOVERY (2 prompts): User searching for what this entity offers
-   - Be specific to the actual niche, not generic
-   - If location matters, include location context
+STEP 2 — Write {{ count }} prompts they would actually type. Mix these shapes:
 
-2. COMPARISON (2 prompts): User comparing options in this space
-   - Reference the actual category, not vague terms
-   - Include audience context (e.g., "for small businesses", "in India")
+CATEGORY + QUALIFIER — "What are the best <category> for <specific segment>?"
+  Real: "What are the best GEO SEO tools for ecommerce?"
+  Not:  "What are the best tools?"
 
-3. SPECIFIC USE CASE (2 prompts): User has a specific need this entity serves
-   - Match real tasks/problems the entity solves
+TASK / HOW-TO — "How do I <specific job to be done>?"
+  Real: "How can I track GEO citations of my website?"
+  Not:  "How do I use software?"
 
-4. EXPERT RECOMMENDATION (2 prompts): User wants trusted advice
-   - Include specifics about the niche
+OUTCOME — "How do I get <the result they want>?"
+  Real: "How can I get sales from ChatGPT?"
+  Not:  "How do I grow my business?"
 
-5. LOCAL/REGIONAL (1 prompt): If location is relevant
-   - Include city, country, or region in the prompt
-   - If the entity is global, use a market-specific angle
+PROBLEM / SYMPTOM — the pain in their words, before they know the fix
+  Real: "Why is my site not showing up in AI search results?"
 
-6. ALTERNATIVE/EVALUATION (1 prompt): User evaluating options
-   - "Is X worth it?", "What to look for in Y?"
+COMPARISON — category alternatives, no brand names
+  Real: "Perplexity vs ChatGPT for product research — which cites sources better?"
 
-CRITICAL RULES:
-- NEVER mention "{{ brand_name }}" in any prompt — these should be natural user queries
-- Be SPECIFIC to what this entity actually does (not generic "best tools" prompts)
-- If it's a local business → include location in at least 2 prompts
-- If it's a product → ask about specific features, pricing, alternatives
-- If it's a service → ask about hiring, evaluating, comparing providers
-- If it's a person/personal brand → ask about expertise, credentials, content
-- Write conversational, the way real people talk to AI assistants
-- Each prompt MUST be something a potential customer/user would actually ask
+EVALUATION — what to look for, pricing, switching cost
+  Real: "What should I look for in an AI visibility tracker?"
 
-Return ONLY a JSON array of {{ count }} strings. No markdown, no explanations.
-Example: ["What are the best...", "How do I...", "Which ... in Mumbai?"]
+SEGMENT / REGION — only where the context shows it is genuinely relevant
+
+HARD RULES:
+- **Never** write "{{ brand_name }}" in any prompt. Zero exceptions.
+- **Never** write a generic prompt. Every one must name the actual category,
+  segment, tool type, platform, or outcome from the CONTEXT above. If a prompt
+  would read identically for a completely different company, it is wrong —
+  rewrite it with the specifics.
+- Use the customer's words, not the brand's marketing language.
+- Buying or doing intent only. Nobody types "tell me about the industry".
+- Write it the way a person actually types: sometimes long, sometimes a fragment,
+  never a polished headline.
+- Vary the shapes above. Do not return {{ count }} variations of one question.
+- Where a platform, integration, year, or number is genuinely implied by the
+  context, include it — specificity is what makes a prompt findable.
+
+SELF-CHECK before returning — for each prompt ask:
+1. Could someone who has never heard of {{ brand_name }} plausibly type this?
+2. Would this brand *want* to be the cited answer?
+3. Does it name something concrete from the context?
+If any answer is no, rewrite that prompt.
+
+Return ONLY a JSON array of {{ count }} strings. No markdown, no commentary.

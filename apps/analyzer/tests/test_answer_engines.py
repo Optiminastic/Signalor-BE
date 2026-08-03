@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
-from apps.analyzer.pipeline import llm
+from core.llm import client as llm
 
 
 class AnswerEngineConfigTests(SimpleTestCase):
@@ -322,14 +322,14 @@ class RunContextIsolationTests(SimpleTestCase):
     """
 
     def _ctx_email(self):
-        from apps.analyzer.pipeline import observability as obs
+        from core.observability import tracing as obs
 
         return (obs._current_context() or {}).get("user_id", "")
 
     def test_concurrent_runs_do_not_share_a_context(self):
         import threading
 
-        from apps.analyzer.pipeline import observability as obs
+        from core.observability import tracing as obs
 
         seen: dict[str, str] = {}
         started = threading.Event()
@@ -356,8 +356,8 @@ class RunContextIsolationTests(SimpleTestCase):
     def test_propagate_carries_run_identity_into_a_pool_worker(self):
         from concurrent.futures import ThreadPoolExecutor
 
-        from apps.analyzer.pipeline import llm
-        from apps.analyzer.pipeline import observability as obs
+        from core.llm import client as llm
+        from core.observability import tracing as obs
 
         obs._run_context.set({"run_id": "7", "user_id": "owner@x.com"})
         try:
@@ -371,7 +371,7 @@ class RunContextIsolationTests(SimpleTestCase):
         """Pins why propagate() is required rather than optional."""
         from concurrent.futures import ThreadPoolExecutor
 
-        from apps.analyzer.pipeline import observability as obs
+        from core.observability import tracing as obs
 
         obs._run_context.set({"run_id": "7", "user_id": "owner@x.com"})
         try:
@@ -382,7 +382,7 @@ class RunContextIsolationTests(SimpleTestCase):
         self.assertEqual(got, "")
 
     def test_end_run_clears_only_the_calling_context(self):
-        from apps.analyzer.pipeline import observability as obs
+        from core.observability import tracing as obs
 
         obs._run_context.set({"run_id": "1", "user_id": "a@x.com"})
         obs.end_run()
@@ -397,23 +397,23 @@ class InteractiveTimeoutTests(SimpleTestCase):
     """
 
     def test_the_interactive_budget_is_below_the_queued_one(self):
-        from apps.analyzer.pipeline import llm
+        from core.llm import client as llm
 
         self.assertLess(llm.INTERACTIVE_TIMEOUT_SEC, llm.WEB_SEARCH_TIMEOUT_SEC)
 
     def test_probe_identity_asks_for_the_interactive_budget(self):
-        from apps.analyzer.pipeline import llm
         from apps.analyzer.services import entity_disambiguation as ed
+        from core.llm import client as llm
 
         run = SimpleNamespace(brand_name="Acme", id=1, url="https://acme.com")
         with patch.object(ed, "_finalize"), patch(
-            "apps.analyzer.pipeline.llm.ask_answer_engines", return_value={}
+            "core.llm.client.ask_answer_engines", return_value={}
         ) as ask:
             ed.probe_identity(run)
         self.assertEqual(ask.call_args.kwargs["timeout"], llm.INTERACTIVE_TIMEOUT_SEC)
 
     def test_an_explicit_timeout_overrides_the_web_search_default(self):
-        from apps.analyzer.pipeline import llm
+        from core.llm import client as llm
 
         with patch.object(llm.requests, "post", side_effect=RuntimeError("stop")) as post:
             llm._call_openrouter(
@@ -422,14 +422,14 @@ class InteractiveTimeoutTests(SimpleTestCase):
         self.assertEqual(post.call_args.kwargs["timeout"], 25)
 
     def test_a_queued_web_search_call_keeps_the_long_budget(self):
-        from apps.analyzer.pipeline import llm
+        from core.llm import client as llm
 
         with patch.object(llm.requests, "post", side_effect=RuntimeError("stop")) as post:
             llm._call_openrouter("q", None, 10, 0.0, "key", "test", web_search="exa")
         self.assertEqual(post.call_args.kwargs["timeout"], llm.WEB_SEARCH_TIMEOUT_SEC)
 
     def test_a_plain_completion_keeps_the_short_budget(self):
-        from apps.analyzer.pipeline import llm
+        from core.llm import client as llm
 
         with patch.object(llm.requests, "post", side_effect=RuntimeError("stop")) as post:
             llm._call_openrouter("q", None, 10, 0.0, "key", "test")
@@ -439,9 +439,9 @@ class InteractiveTimeoutTests(SimpleTestCase):
 class TracePayloadTests(SimpleTestCase):
     def test_null_bytes_are_stripped_before_shipping_to_langfuse(self):
         """Langfuse is Postgres-backed too, and there the flush fails silently."""
-        from apps.analyzer.pipeline import llm
+        from core.llm import client as llm
 
-        with patch("apps.analyzer.pipeline.observability.record_generation") as record:
+        with patch("core.observability.tracing.record_generation") as record:
             llm._log_call(
                 model="m",
                 purpose="p",
@@ -457,9 +457,9 @@ class TracePayloadTests(SimpleTestCase):
         self.assertEqual(kwargs["system"], "ef")
 
     def test_a_missing_system_prompt_stays_none(self):
-        from apps.analyzer.pipeline import llm
+        from core.llm import client as llm
 
-        with patch("apps.analyzer.pipeline.observability.record_generation") as record:
+        with patch("core.observability.tracing.record_generation") as record:
             llm._log_call(
                 model="m",
                 purpose="p",
@@ -472,9 +472,9 @@ class TracePayloadTests(SimpleTestCase):
 
     def test_the_trace_is_not_truncated_to_the_database_column_limits(self):
         """1000/3000 bound a DB column; the trace has its own, larger budget."""
-        from apps.analyzer.pipeline import llm
+        from core.llm import client as llm
 
-        with patch("apps.analyzer.pipeline.observability.record_generation") as record:
+        with patch("core.observability.tracing.record_generation") as record:
             llm._log_call(
                 model="m",
                 purpose="p",
@@ -490,7 +490,7 @@ class InjectedClientTests(SimpleTestCase):
     """The client seam: assert what would be shipped without credentials or network."""
 
     def setUp(self):
-        from apps.analyzer.pipeline import observability as obs
+        from core.observability import tracing as obs
 
         self.obs = obs
         self.addCleanup(obs.reset_client)

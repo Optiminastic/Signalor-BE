@@ -62,7 +62,7 @@ def _check_wikipedia(brand_name: str) -> bool:
 
 def _search_available() -> bool:
     """Real search backend (Serper) available? Entity authority is measured, not guessed."""
-    from . import serper
+    from core.llm import serper
 
     return serper.is_configured()
 
@@ -79,7 +79,7 @@ def _brand_search_signals(brand_name: str, own_domain: str = "") -> tuple[bool |
     Returns ``(None, None)`` when Serper is unavailable: **unknown**, never guessed. The
     caller must award no points for an unknown.
     """
-    from . import serper
+    from core.llm import serper
 
     data = serper.search(brand_name, num=10)
     if data is None:

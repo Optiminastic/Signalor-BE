@@ -12,8 +12,8 @@ installation token, lists repos, and reads the file tree of the first repo.
 import requests
 from django.core.management.base import BaseCommand
 
-from apps.github_agent.services import auth
-from apps.github_agent.services.client import GithubClient
+from apps.integrations.github import auth
+from apps.integrations.github.client import GithubClient
 
 
 class Command(BaseCommand):

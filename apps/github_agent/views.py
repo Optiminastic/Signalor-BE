@@ -19,13 +19,15 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.analyzer.models import AnalysisRun
+from apps.integrations.github import auth, repo_match  # noqa: F401
 from apps.organizations.models import Organization
 from apps.organizations.utils import normalize_url
-from core.throttling import ExpensiveThrottle, PollingThrottle
+from apps.remediation.services import fixable, fixers  # noqa: F401  (fixers used in helpers)
+from core.permissions.throttling import ExpensiveThrottle, PollingThrottle
 
 from . import tasks
 from .models import GithubFixJob, GithubInstallation
-from .services import auth, fixable, fixers, repo_match, webhook  # noqa: F401  (fixers used in helpers)
+from .services import webhook  # noqa: F401
 
 logger = logging.getLogger("apps")
 

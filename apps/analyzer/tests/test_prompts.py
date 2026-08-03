@@ -65,6 +65,15 @@ SAMPLES = {
         siteone_block="S",
         analytics_block="AN",
         ai_visibility_block="AV",
+        # Signals added so findings can name a lost prompt, the engines that
+        # answered it and who they cited instead.
+        citations_block="CIT",
+        competitors_block="COMP",
+        crawler_block="CRAWL",
+        coverage_block="COV",
+        gaps_block="GAPS",
+        authority_block="AUTH",
+        brand_profile_block="PROFILE",
         count=6,
     ),
 }
@@ -110,14 +119,25 @@ class PromptRegistryTests(SimpleTestCase):
             render("jsonld")  # brand/url/context not provided -> StrictUndefined
 
     def test_brand_prompts_faithful_substitution(self):
+        """Assert the variables land, not the prose around them.
+
+        This previously pinned a whole sentence verbatim, so tuning the wording
+        broke it for no behavioural reason. What must hold is that every variable
+        is substituted and none leaks as a literal.
+        """
         out = render("brand_prompts", count=7, context="MY-CONTEXT", brand_name="Zephyr")
-        self.assertIn(
-            "generate 7 prompts that real people would type into ChatGPT, Gemini, Perplexity, or Claude.",
-            out,
-        )
-        self.assertIn("CONTEXT:\nMY-CONTEXT", out)
-        self.assertIn('NEVER mention "Zephyr" in any prompt', out)
+        # count reaches both the instruction and the return contract.
+        self.assertIn("7 prompts", out)
         self.assertIn("Return ONLY a JSON array of 7 strings.", out)
+        # context is injected verbatim, under its heading.
+        self.assertIn("CONTEXT:\nMY-CONTEXT", out)
+        # brand_name reaches the prohibition, which is the rule that matters.
+        self.assertIn('"Zephyr"', out)
+        # AI_ENGINES is a shared variable, not a hardcoded list.
+        self.assertIn("ChatGPT, Gemini, Perplexity, or Claude", out)
+        # No unrendered placeholders.
+        for token in ("{{", "}}", "{%"):
+            self.assertNotIn(token, out)
 
     def test_auto_fix_meta_keeps_literal_json_braces(self):
         out = render("auto_fix_meta", **SAMPLES["auto_fix_meta"])

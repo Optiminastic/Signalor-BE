@@ -7,5 +7,15 @@ class PublicApiConfig(AppConfig):
     verbose_name = "Public API"
 
     def ready(self):
-        # Import for side-effects: registers post_save handlers on AnalysisRun.
-        from . import signals  # noqa: F401
+        from core.ports import snapshot
+
+        # signals: imported for side-effects (post_save handlers on AnalysisRun).
+        # snapshot_provider: answers core.ports.snapshot. The NextJsDeployment
+        # table is ours, so the query belongs here and analyzer asks through the
+        # port instead of importing up a layer.
+        from . import (
+            signals,  # noqa: F401
+            snapshot_provider,
+        )
+
+        snapshot.register(snapshot_provider)

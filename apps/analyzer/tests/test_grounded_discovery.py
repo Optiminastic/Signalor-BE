@@ -21,8 +21,8 @@ from django.test import SimpleTestCase
 from apps.analyzer.pipeline import competitors
 from apps.visibility.pipeline import google_check, web_mentions_check
 
-_SEARCH = "apps.analyzer.pipeline.serper.search"
-_CONFIGURED = "apps.analyzer.pipeline.serper.is_configured"
+_SEARCH = "core.llm.serper.search"
+_CONFIGURED = "core.llm.serper.is_configured"
 
 
 def _organic(*links):
@@ -163,7 +163,7 @@ class HostKeyTests(SimpleTestCase):
         """The core regression: an empty search must short-circuit, not prompt anyway."""
         with (
             patch.object(competitors, "_discover_web_candidates", return_value=[]),
-            patch("apps.analyzer.pipeline.llm.ask_llm") as mock_llm,
+            patch("core.llm.client.ask_llm") as mock_llm,
         ):
             result = competitors._discover_competitors_llm(
                 brand_name="Acme",

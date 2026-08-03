@@ -66,7 +66,7 @@ class RunCaseTests(TestCase):
 
 class TokenCaptureTests(SimpleTestCase):
     def test_extract_usage_reads_openrouter_block(self):
-        from apps.analyzer.pipeline.llm import _extract_usage
+        from core.llm.client import _extract_usage
 
         usage = _extract_usage({"usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20}})
         # Subset rather than equality: the block also carries cost/cache/reasoning
@@ -77,7 +77,7 @@ class TokenCaptureTests(SimpleTestCase):
         self.assertEqual(usage["cost"], 0.0)  # absent from this payload
 
     def test_extract_usage_defaults_to_zero(self):
-        from apps.analyzer.pipeline.llm import _extract_usage
+        from core.llm.client import _extract_usage
 
         usage = _extract_usage({})
         self.assertEqual(

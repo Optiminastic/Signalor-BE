@@ -28,6 +28,13 @@ class Integration(models.Model):
         WOOCOMMERCE = "woocommerce", "WooCommerce"
         WEBFLOW = "webflow", "Webflow"
         NEXTJS = "nextjs", "Next.js"
+        FRAMER = "framer", "Framer"
+        # GitHub is a provider like any other. Its install details live in
+        # ``metadata`` (installation_id, repo_full_name, ...), which is what
+        # that field is for - see apps/github_agent/models.GithubInstallation,
+        # a per-vendor copy of this table that docs/app-boundaries.md §10.1
+        # folds back in.
+        GITHUB = "github", "GitHub"
 
     organization = models.ForeignKey(
         "organizations.Organization",

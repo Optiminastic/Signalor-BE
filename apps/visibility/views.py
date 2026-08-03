@@ -7,7 +7,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.throttling import ExpensiveThrottle, PollingThrottle
+from core.permissions.throttling import ExpensiveThrottle, PollingThrottle
 
 from .models import VisibilityCheck
 from .serializers import (

@@ -14,7 +14,7 @@ regresses - is that a policy is declared at all.
 from django.test import SimpleTestCase
 
 from apps.analyzer import views
-from core.throttling import ExpensiveThrottle, PollingThrottle
+from core.permissions.throttling import ExpensiveThrottle, PollingThrottle
 
 # (view, expected throttle, handlers that must refuse an unverified caller).
 # Every handler is listed: _scoped_run fails closed, so reads are gated too.

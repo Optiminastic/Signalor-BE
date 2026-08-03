@@ -67,7 +67,7 @@ def record_run_cost(run, logs: list[dict] | None = None) -> float:
     leaves the field at its default and is logged.
     """
     try:
-        from apps.analyzer.pipeline.llm import summarize_llm_logs
+        from core.llm.client import summarize_llm_logs
 
         total = float(summarize_llm_logs(logs if logs is not None else (run.llm_logs or []))["total_cost_usd"])
         run.llm_cost_usd = total

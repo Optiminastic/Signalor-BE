@@ -8,9 +8,12 @@ through Django.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
 import secrets
+
+from core import storage
 
 logger = logging.getLogger("apps")
 
@@ -41,21 +44,12 @@ def is_b2_enabled() -> bool:
 def _client():
     if not is_b2_enabled():
         return None
-    try:
-        import boto3
-        from botocore.config import Config
-    except ImportError:
+    if importlib.util.find_spec("boto3") is None:
         logger.warning("boto3 not installed; B2 profile photo storage disabled")
         return None
 
-    return boto3.client(
-        "s3",
-        endpoint_url=_env("B2_ENDPOINT"),
-        aws_access_key_id=_env("B2_KEY_ID"),
-        aws_secret_access_key=_env("B2_APPLICATION_KEY"),
-        region_name=_env("B2_REGION") or "us-west-002",
-        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
-    )
+    # Shared with profile/invoice storage and any future B2 caller.
+    return storage.b2_client()
 
 
 def _make_key(user_id: int, ext: str) -> str:
