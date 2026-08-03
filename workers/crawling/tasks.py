@@ -32,8 +32,8 @@ def run_sitemap_audit_task(self, audit_id: int) -> None:
     """
     from django.db import close_old_connections
 
-    from .models import SitemapAudit
-    from .pipeline.sitemap_audit import run_sitemap_audit
+    from apps.analyzer.models import SitemapAudit
+    from apps.analyzer.pipeline.sitemap_audit import run_sitemap_audit
 
     close_old_connections()
     try:

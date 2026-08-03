@@ -35,7 +35,7 @@ def run_scheduled_analysis_task(self, schedule_id: int) -> None:
     """
     from django.db import close_old_connections
 
-    from .scheduled_runs import execute_scheduled_analysis
+    from apps.analyzer.scheduled_runs import execute_scheduled_analysis
 
     close_old_connections()
     try:
@@ -49,8 +49,8 @@ def run_analysis_task(self, run_id: int) -> None:
     """Run the single-page analysis pipeline for ``run_id`` on a worker."""
     from django.db import close_old_connections
 
-    from .models import AnalysisRun
-    from .tasks import run_single_page_analysis
+    from apps.analyzer.models import AnalysisRun
+    from apps.analyzer.tasks import run_single_page_analysis
 
     close_old_connections()
     try:

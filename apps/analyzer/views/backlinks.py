@@ -513,7 +513,7 @@ class OurBacklinksView(APIView):
         from django.conf import settings as dj_settings
         from django.shortcuts import get_object_or_404
 
-        from . import blog_store
+        from .. import blog_store
 
         run = get_object_or_404(AnalysisRun, slug=slug)
         rows = []

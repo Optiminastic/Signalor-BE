@@ -488,7 +488,7 @@ def _shopify_integration_for(org):
 def _normalize_site(raw: str) -> str:
     """Accept either a BlogPost.site value (market_trends) or its S3 folder
     name (market-trends) and return the canonical site value."""
-    from . import blog_store
+    from .. import blog_store
 
     folder_to_site = {v: k for k, v in blog_store.SITE_FOLDERS.items()}
     return folder_to_site.get(raw, raw)
