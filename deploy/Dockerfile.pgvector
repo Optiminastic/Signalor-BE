@@ -16,8 +16,14 @@
 # collation ordering and risks corrupting existing text indexes — a glibc move
 # would require a dump/restore. Keep the base musl.
 #
-# pgvector is compiled from source against this image's own Postgres (via PGXS),
-# with the LLVM toolchain the base image was built with (clang19 / llvm19).
+# pgvector is compiled from source against this image's own Postgres (via PGXS).
+#
+# Built with `with_llvm=no`: PGXS otherwise emits LLVM bitcode for JIT inlining,
+# which requires the exact clang/llvm version the base image was built with.
+# Pinning that (clang19/llvm19) broke the build the moment upstream rebuilt
+# postgres:16-alpine on a newer Alpine — those packages simply vanished. JIT
+# inlining buys pgvector nothing measurable, so skipping it removes a moving
+# dependency instead of chasing the version forward every few months.
 FROM postgres:16-alpine
 
 ARG PGVECTOR_VERSION=v0.8.0
@@ -25,13 +31,11 @@ ARG PGVECTOR_VERSION=v0.8.0
 RUN set -eux; \
     apk add --no-cache --virtual .build-deps \
         build-base \
-        clang19 \
-        llvm19-dev \
         git; \
     git clone --branch "${PGVECTOR_VERSION}" --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector; \
     cd /tmp/pgvector; \
-    make; \
-    make install; \
+    make with_llvm=no; \
+    make install with_llvm=no; \
     cd /; \
     rm -rf /tmp/pgvector; \
     apk del .build-deps
