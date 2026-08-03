@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.organizations.models import Organization
+from core.auth.identity import resolve_request_email
 from core.permissions.throttling import (
     ExpensiveThrottle,
     PollingThrottle,
@@ -28,18 +29,19 @@ from ..serializers import (
 )
 
 
+# One request should not be able to queue unbounded writes.
+MAX_BULK_RECOMMENDATIONS = 50
+
 class UserGamificationView(APIView):
     """Get user gamification profile"""
 
     permission_classes = [AllowAny]
 
     def get(self, request):
-        email = request.query_params.get("email", "").lower().strip()
-        if not email:
-            return Response(
-                {"error": "Email parameter is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        # Never the client-supplied ?email=: that is a cross-tenant read.
+        email, err = resolve_request_email(request)
+        if err is not None:
+            return err
 
         gamification, created = UserGamification.objects.get_or_create(
             user_email=email, defaults={"user_email": email}
@@ -73,12 +75,10 @@ class UserActionListView(APIView):
     throttle_classes = [PollingThrottle]  # used by sidebar/actions dashboard refreshes
 
     def get(self, request):
-        email = request.query_params.get("email", "").lower().strip()
-        if not email:
-            return Response(
-                {"error": "Email parameter is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        # Never the client-supplied ?email=: that is a cross-tenant read.
+        email, err = resolve_request_email(request)
+        if err is not None:
+            return err
 
         status_filter = request.query_params.get("status")
 
@@ -485,14 +485,10 @@ class QuickActionView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        email = request.data.get("email", "").lower().strip()
+        email, err = resolve_request_email(request)
+        if err is not None:
+            return err
         recommendation_id = request.data.get("recommendation_id")
-
-        if not email:
-            return Response(
-                {"error": "Email parameter is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
 
         if not recommendation_id:
             return Response(
@@ -508,8 +504,15 @@ class QuickActionView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # Get the analysis run to get the score
+        # A recommendation id is guessable; check the caller owns its run.
+        from ..access import caller_owns_run
+
         analysis_run = recommendation.analysis_run
+        if not caller_owns_run(email, analysis_run):
+            return Response(
+                {"error": "Recommendation not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
         score_before = analysis_run.composite_score if analysis_run else None
 
         # Map recommendation category to action type
@@ -536,7 +539,6 @@ class QuickActionView(APIView):
             action_type=action_type,
             title=recommendation.title,
             description=recommendation.description,
-            action=recommendation.action,
             points_value=points,
             status="pending",
             score_before=score_before,
@@ -553,12 +555,19 @@ class BulkCreateUserActionView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        email = request.data.get("email", "").lower().strip()
+        email, err = resolve_request_email(request)
+        if err is not None:
+            return err
         recommendations_data = request.data.get("recommendations", [])
 
-        if not email:
+        if not isinstance(recommendations_data, list):
             return Response(
-                {"error": "Email parameter is required."},
+                {"error": "Recommendations must be a list."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(recommendations_data) > MAX_BULK_RECOMMENDATIONS:
+            return Response(
+                {"error": f"At most {MAX_BULK_RECOMMENDATIONS} recommendations per request."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

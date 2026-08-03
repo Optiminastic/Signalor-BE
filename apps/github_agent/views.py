@@ -440,7 +440,7 @@ class GithubStatusView(APIView):
         # actionable then). Cached per run, so this LLM call is rare.
         fixability: dict = {}
         if inst:
-            from .services.fixability import classify_fixability
+            from apps.remediation.services.fixability import classify_fixability
 
             findings = [
                 {"finding_code": r.finding_code, "title": r.title, "description": r.description}

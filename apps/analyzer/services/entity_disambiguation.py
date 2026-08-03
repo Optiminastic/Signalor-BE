@@ -366,24 +366,55 @@ def cached_report(run) -> tuple[dict | None, bool]:
     return (row.payload or None), age >= PROBE_COOLDOWN_SEC
 
 
+def _locked_state(run) -> tuple[dict | None, bool]:
+    """Re-read the report under a row lock. Caller must be inside a transaction.
+
+    Checking the cooldown and then probing is a read-decide-write: two
+    concurrent POSTs could both pass the check and both bill the account, which
+    is the one thing the cooldown exists to prevent. The row lock serialises
+    them so the second sees the first's committed ``probed_at``.
+    """
+    from django.utils import timezone
+
+    from apps.analyzer.models import EntityResolutionReport
+
+    row = (
+        EntityResolutionReport.objects.select_for_update()
+        .filter(analysis_run=run)
+        .first()
+    )
+    if row is None:
+        return None, True
+    age = (timezone.now() - row.probed_at).total_seconds()
+    return (row.payload or None), age >= PROBE_COOLDOWN_SEC
+
+
 def get_or_probe(run, engines: list[str] | None = None, *, force: bool = False) -> dict:
     """Return the cached identity report, probing live only when it has aged out.
 
     ``force`` still respects the cooldown: it is a user asking for fresher data,
     not a licence to bill the account on every click.
     """
+    from django.db import transaction
+
     from apps.analyzer.models import EntityResolutionReport
 
+    # Cheap path first: an unexpired report needs no lock at all.
     payload, may_probe = cached_report(run)
     if payload is not None and not (force and may_probe):
         return payload
 
-    report = probe_identity(run, engines=engines).as_dict()
-    # A probe where no engine answered says nothing; keeping an older real
-    # report beats overwriting it with an empty one.
-    if not report.get("responses") and payload is not None:
-        return payload
-    EntityResolutionReport.objects.update_or_create(
-        analysis_run=run, defaults={"payload": report}
-    )
+    with transaction.atomic():
+        payload, may_probe = _locked_state(run)
+        if payload is not None and not (force and may_probe):
+            return payload
+
+        report = probe_identity(run, engines=engines).as_dict()
+        # A probe where no engine answered says nothing; keeping an older real
+        # report beats overwriting it with an empty one.
+        if not report.get("responses") and payload is not None:
+            return payload
+        EntityResolutionReport.objects.update_or_create(
+            analysis_run=run, defaults={"payload": report}
+        )
     return report
