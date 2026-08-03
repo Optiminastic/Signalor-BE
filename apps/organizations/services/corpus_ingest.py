@@ -194,7 +194,7 @@ def _build_row(org, run, url, draft: ChunkDraft, version: int):
 
 def _embed_pending(plans: list[_UrlPlan]) -> None:
     """Batch-embed every row across all plans that still lacks an embedding."""
-    from apps.analyzer.pipeline.embeddings import DEFAULT_EMBED_MODEL, embed_documents
+    from core.llm.embeddings import DEFAULT_EMBED_MODEL, embed_documents
 
     targets = [row for p in plans for row in (*p.new_rows, *p.retry_embed) if row.embedding is None]
     if not targets:

@@ -68,12 +68,11 @@ class Command(BaseCommand):
 
     def _dispatch(self, schedule_id: int) -> None:
         """Queue the run, or execute inline when there's no broker (dev / tests)."""
-        from apps.analyzer.analysis_tasks import run_scheduled_analysis_task
-        from config.celery_rabbit import analysis_app
+        from core import queue
 
-        if analysis_app.conf.task_always_eager:
+        if queue.is_eager():
             from apps.analyzer.scheduled_runs import execute_scheduled_analysis
 
             execute_scheduled_analysis(schedule_id)
         else:
-            run_scheduled_analysis_task.delay(schedule_id)
+            queue.send(queue.ANALYSIS_SCHEDULED, schedule_id)

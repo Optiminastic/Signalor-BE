@@ -16,7 +16,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.agency_utils import get_agency_context
-from core.throttling import ExpensiveThrottle, PollingThrottle
+from core.permissions.throttling import ExpensiveThrottle, PollingThrottle
 
 from .agent_plan import build_agent_plan, mark_refreshed, refresh_available_at
 from .models import AnalysisRun

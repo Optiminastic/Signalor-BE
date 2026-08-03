@@ -18,7 +18,7 @@ from apps.analyzer.pipeline import response_cache
 from apps.organizations.models import Organization
 
 _SEARCH = "apps.analyzer.pipeline.response_cache._semantic_search"
-_EMBED_Q = "apps.analyzer.pipeline.embeddings.embed_query"
+_EMBED_Q = "core.llm.embeddings.embed_query"
 _SCOPE = dict(purpose="Generate Brand Prompts", model_key="cheap:t0.0:m1200")
 
 

@@ -10,7 +10,7 @@ from apps.organizations.schemas import BrandIdentity, BrandSynthesis
 from apps.organizations.services import brand_profile
 
 _KIT = "apps.analyzer.services.brand_kit.get_or_generate"
-_SYNTH = "apps.analyzer.pipeline.structured.ask_structured"
+_SYNTH = "core.llm.structured.ask_structured"
 
 
 class BootstrapTests(TestCase):

@@ -6,7 +6,7 @@ Run:
 
 from __future__ import annotations
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from apps.analyzer.models import AnalysisRun, Recommendation, UserAction
@@ -93,6 +93,13 @@ class AgentPlanTests(TestCase):
         self.assertEqual(body["counts"]["backlog"], 2)
 
 
+# The refresh limit is cache-backed, and the test settings replace the cache with
+# a DummyCache so no cached value can leak between tests. That makes cache.set a
+# no-op, so the limit could never engage and this suite was permanently red.
+# Opting back in per the note in config/settings/test.py is the documented fix.
+@override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+)
 class AgentRefreshRateLimitTests(TestCase):
     """Refresh is a once-a-day action — the plan is a daily artifact."""
 

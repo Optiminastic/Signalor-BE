@@ -3,6 +3,8 @@ import logging
 import re
 from urllib.parse import urlparse
 
+from core.llm.structured import extract_json
+
 from .aggregator import compute_static_composite
 from .content import score_content
 from .crawler import CrawlResult, crawl_page
@@ -10,7 +12,6 @@ from .eeat import score_eeat
 from .market_profiler import build_brand_market_profile
 from .model_routing import model_for
 from .schema import score_schema
-from .structured import extract_json
 from .technical import score_technical
 from .utils import extract_brand_name, url_is_reachable
 
@@ -350,7 +351,7 @@ def _discover_web_candidates(
     fall back to model memory on an empty result: an LLM asked to name competitors
     without live results answers from training data and invents companies.
     """
-    from . import serper
+    from core.llm import serper
 
     if not serper.is_configured():
         logger.error(
@@ -712,7 +713,7 @@ def _understand_site(
     If a country was already detected via hard signals, inject it so the LLM doesn't override it.
     """
     try:
-        from .llm import ask_llm
+        from core.llm.client import ask_llm
 
         country_hint = (
             f"User-selected target country: {user_country}. "
@@ -981,7 +982,7 @@ def _select_competitors_from_web_candidates_llm(
     if not web_candidates:
         return []
     try:
-        from .llm import ask_llm
+        from core.llm.client import ask_llm
 
         candidates_block = _format_candidates_block(web_candidates)
 
@@ -1035,7 +1036,7 @@ def _discover_competitors_llm(
     Step 2: Discover competitors with hard matching constraints on location, industry, revenue.
     """
     try:
-        from .llm import ask_llm
+        from core.llm.client import ask_llm
 
         if understanding:
             product_category = understanding.get("product_category", "")

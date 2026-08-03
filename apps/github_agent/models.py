@@ -83,7 +83,12 @@ class GithubFixJob(models.Model):
         OPEN = "open"  # PR opened, awaiting human merge
         MERGED = "merged"
         CLOSED = "closed"  # PR closed without merge
-        FAILED = "failed"
+        # The agent deliberately proposed nothing: the fix needs real-world data
+        # it must not invent (customer quotes, statistics), or there was nothing
+        # left to change. An expected outcome, NOT a failure — the UI must not
+        # present it as one.
+        DECLINED = "declined"
+        FAILED = "failed"  # something broke: edits wouldn't build, or an exception
 
     installation = models.ForeignKey(
         GithubInstallation,

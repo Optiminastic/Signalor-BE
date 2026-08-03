@@ -17,7 +17,7 @@ from typing import Any
 from django.utils.text import slugify
 
 from apps.analyzer.models import AnalysisRun, Recommendation
-from apps.analyzer.pipeline.llm import ask_llm
+from core.llm.client import ask_llm
 
 from .overview_signals import build_overview_signals
 
@@ -138,7 +138,7 @@ def _parse_json(raw: str | None) -> dict | None:
     if not raw:
         return None
     # Epic 8: shared extractor handles fences/chatty text (was a local fence-stripper).
-    from apps.analyzer.pipeline.structured import extract_json
+    from core.llm.structured import extract_json
 
     data = extract_json(raw, expect=dict)
     if not isinstance(data, dict):

@@ -17,6 +17,10 @@ class AnalyzerConfig(AppConfig):
         # registration must happen in all of them.
         from . import signals  # noqa: F401
 
+        # Also before the early returns: the response cache is wanted in workers
+        # and management commands, not only under gunicorn.
+        self._register_response_cache()
+
         # Start the weekly-email scheduler in exactly ONE process.
         # - Dev (runserver): Django sets RUN_MAIN=true only in the reloaded child.
         # - Production: gunicorn runs N worker processes, each of which imports the
@@ -56,6 +60,21 @@ class AnalyzerConfig(AppConfig):
             logger.info("Weekly email scheduler started — fires every Friday at 09:00 UTC")
         except Exception:
             logger.exception("Failed to start weekly email scheduler")
+
+    @staticmethod
+    def _register_response_cache() -> None:
+        """Install this app's semantic response cache into the core LLM client.
+
+        The client lives in ``core`` and must not import a model, so it depends on
+        ``core.llm.cache_port`` while this app supplies the implementation. Without
+        this the cache is simply absent and ``ask_llm(cache=True)`` degrades to an
+        ordinary request.
+        """
+        from core.llm import cache_port
+
+        from .pipeline import response_cache
+
+        cache_port.register(response_cache)
 
     @staticmethod
     def _acquire_scheduler_lock() -> bool:

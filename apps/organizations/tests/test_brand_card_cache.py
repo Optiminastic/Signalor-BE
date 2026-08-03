@@ -5,9 +5,9 @@ from unittest.mock import patch
 from django.core.cache import cache
 from django.test import TestCase, override_settings
 
-from apps.analyzer._cache import brand_card_key
 from apps.organizations.models import BrandProfile, Organization
 from apps.organizations.services import brand_context
+from core.cache.keys import brand_card_key
 
 _APPROVED = "apps.organizations.services.brand_context._approved_profile"
 

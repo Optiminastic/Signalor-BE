@@ -37,3 +37,110 @@ ignore = [
 quote-style = "double"
 indent-style = "space"
 line-ending = "lf"
+
+# ── Architecture contracts ────────────────────────────────────────────────
+# Enforced in CI by import-linter (.github/workflows/ci.yml -> architecture).
+# Rationale and the full audit live in docs/modularization-plan.md.
+#
+# Six bidirectional cycles between apps forced 842 function-level imports inside
+# analyzer alone at the start of this work (823 now). A deferred import is how
+# Python code dodges a circular dependency at module load; at that density it is
+# the module graph reporting broken boundaries, not a style choice.
+#
+# Two kinds of contract below:
+#   - Permanent  : already true. These lock in the good state.
+#   - Burn-down  : the target layering, currently violated in 24 places. Every
+#                  one is listed under ignore_imports, so NEW violations fail CI
+#                  while existing ones are removed a line at a time.
+#
+# Seven cycles exist, not six: accounts <-> organizations does not involve
+# analyzer and was missed by the original audit.
+[tool.importlinter]
+root_packages = ["apps", "core", "shared", "workers"]
+
+# ── Permanent ─────────────────────────────────────────────────────────────
+
+[[tool.importlinter.contracts]]
+name = "core and shared are kernels; neither may depend on an app"
+type = "forbidden"
+source_modules = ["core", "shared"]
+forbidden_modules = ["apps"]
+
+[[tool.importlinter.contracts]]
+name = "Apps with no analyzer coupling must stay that way"
+# partners additionally has zero outbound app imports and zero deferred
+# imports. It is the reference example of the target shape.
+type = "forbidden"
+source_modules = ["apps.partners", "apps.drip", "apps.referrals"]
+forbidden_modules = ["apps.analyzer"]
+
+# ── Burn-down ─────────────────────────────────────────────────────────────
+
+# ── Burn-down ─────────────────────────────────────────────────────────────
+
+[[tool.importlinter.contracts]]
+# The target dependency graph. Higher layers may import lower ones; never the
+# reverse, and never between siblings on the same line.
+#
+#   public_api | github_agent | drip | referrals | partners   (facades/consumers)
+#         -> analyzer            (the analysis engine)
+#         -> visibility          (standalone brand probe)
+#         -> integrations        (third-party connectors)
+#         -> organizations       (brands, corpus)
+#         -> accounts            (identity, billing, agency)
+#         -> core                (kernel; imports no app)
+#
+# This replaces the earlier "no app may import analyzer" contract, which was
+# wrong in one direction: public_api sits ABOVE analyzer, so those 7 imports are
+# correct and were never debt.
+#
+# The 24 entries below are every current violation. Delete a line when you fix
+# it; a new one fails CI. See docs/modularization-plan.md.
+name = "LAYERS: dependencies point one way (14 left, was 24)"
+type = "layers"
+# accounts appears twice on purpose, as the two things it actually is: a
+# bottom-layer identity/billing service that everything needs, and a top-layer
+# HTTP facade. import-linter forbids a parent and its own submodule in one
+# contract ("shared descendants"), so the bottom layer names the three modules
+# lower layers actually import rather than `apps.accounts` wholesale.
+layers = [
+  "workers",
+  "apps.accounts.views",
+  "apps.public_api | apps.github_agent | apps.drip | apps.referrals | apps.partners",
+  "apps.analyzer",
+  "apps.visibility",
+  "apps.integrations",
+  "apps.organizations",
+  "apps.accounts.agency_utils",
+  "apps.accounts.subscription_utils",
+  "apps.accounts.models",
+  "core",
+]
+ignore_imports = [
+
+  # -- accounts <-> organizations: a genuine cycle, and the only one that does
+  # not involve analyzer. Needs a decision on which owns tenancy.
+  "apps.accounts.agency_utils -> apps.organizations.models",
+  "apps.accounts.subscription_utils -> apps.organizations.models",
+  "apps.accounts.tests -> apps.organizations.models",
+
+  # -- accounts -> analyzer: plan limits count AnalysisRun rows. Needs a usage
+  # port owned by accounts, with analyzer reporting into it.
+  "apps.accounts.subscription_utils -> apps.analyzer.models",
+
+  # -- organizations -> analyzer: brand_profile drives the analyzer pipeline.
+  # Invert so analyzer calls organizations, not the reverse.
+  "apps.organizations.services.brand_profile -> apps.analyzer.pipeline.market_profiler",
+  "apps.organizations.services.brand_profile -> apps.analyzer.prompts",
+  "apps.organizations.services.brand_profile -> apps.analyzer.services.brand_kit",
+  "apps.organizations.views -> apps.analyzer.onboarding_security",
+  "apps.organizations.tests.test_brand_context -> apps.analyzer.models",
+  "apps.organizations.tests.test_brand_profile -> apps.analyzer.models",
+  "apps.organizations.tests.test_corpus_ingest -> apps.analyzer.models",
+  "apps.organizations.tests.test_retrieval -> apps.analyzer.models",
+
+  # -- integrations -> analyzer: reads AnalysisRun for sync status.
+  "apps.integrations.shopify_compliance -> apps.analyzer.models",
+  "apps.integrations.views.ga4 -> apps.analyzer.models",
+
+]

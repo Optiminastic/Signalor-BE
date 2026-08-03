@@ -51,7 +51,7 @@ class _Base(TestCase):
 
     def _as(self, email):
         """Simulate a verified JWT principal (never a client-supplied claim)."""
-        from apps.accounts.authentication import VerifiedUser
+        from core.auth.jwt import VerifiedUser
 
         return patch(
             "rest_framework.request.Request.user",

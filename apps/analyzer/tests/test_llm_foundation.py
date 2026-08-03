@@ -8,9 +8,9 @@ gating, and system-message construction.
 
 from django.test import SimpleTestCase
 
-from apps.analyzer.pipeline import llm
 from apps.analyzer.pipeline.schemas import MetaFix, PromptList
-from apps.analyzer.pipeline.structured import (
+from core.llm import client as llm
+from core.llm.structured import (
     _is_object_schema,
     extract_json,
     strip_code_fences,

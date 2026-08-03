@@ -12,10 +12,12 @@ The live behaviour was validated separately against a real unresolvable name
 confused) — both correct.
 """
 
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase
+from django.utils import timezone
 
 from apps.analyzer.services import entity_disambiguation as ed
 
@@ -73,7 +75,7 @@ class DetectionTests(SimpleTestCase):
 class ProbeTests(SimpleTestCase):
     def _probe(self, answers):
         payload = {e: {"text": t} for e, t in answers.items()}
-        with patch("apps.analyzer.pipeline.llm.ask_answer_engines", return_value=payload):
+        with patch("core.llm.client.ask_answer_engines", return_value=payload):
             return ed.probe_identity(_run())
 
     def test_confusion_rate_is_per_response(self):
@@ -107,7 +109,7 @@ class ProbeTests(SimpleTestCase):
 
     def test_no_brand_name_yields_an_empty_report(self):
         with patch(
-            "apps.analyzer.pipeline.llm.ask_answer_engines",
+            "core.llm.client.ask_answer_engines",
             side_effect=AssertionError("should not probe"),
         ):
             self.assertEqual(ed.probe_identity(_run(brand="  ")).responses, 0)
@@ -167,8 +169,14 @@ class EndpointValidationTests(TestCase):
     """
 
     def setUp(self):
+        from django.core.cache import cache
+
         from apps.analyzer.models import AnalysisRun
         from apps.organizations.models import Organization
+
+        # Throttle counters live in the cache and outlive a single test, so
+        # without this a full run trips the rate limit and later tests read 429.
+        cache.clear()
 
         self.org = Organization.objects.create(name="Acme", owner_email="o@acme.com")
         self.run = AnalysisRun.objects.create(
@@ -221,3 +229,88 @@ class EndpointValidationTests(TestCase):
             resp = self._post({})
         self.assertEqual(resp.status_code, 200)
         self.assertIsNone(probe.call_args.kwargs["engines"])
+
+
+class ProbeCachingTests(TestCase):
+    """The probe is billable, so it must not respend on every click.
+
+    A run slug travels in browser history and is not a credential. Per-caller
+    throttling alone still lets a slug holder bill the account by rotating IPs,
+    so spend is capped per run.
+    """
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        from apps.analyzer.models import AnalysisRun
+        from apps.organizations.models import Organization
+
+        # Throttle counters live in the cache and outlive a single test, so
+        # without this a full run trips the rate limit and later tests read 429.
+        cache.clear()
+
+        self.org = Organization.objects.create(name="Acme", owner_email="o@acme.com")
+        self.run = AnalysisRun.objects.create(
+            url="https://acme.com", organization=self.org, brand_name="Acme"
+        )
+
+    def _answers(self, _prompt, **_kwargs):
+        return {"gpt": {"text": "Acme is a hardware company."}}
+
+    def test_a_second_probe_inside_the_cooldown_does_not_call_the_engines(self):
+        with patch("core.llm.client.ask_answer_engines", side_effect=self._answers) as ask:
+            ed.get_or_probe(self.run, force=True)
+            ed.get_or_probe(self.run, force=True)
+        self.assertEqual(ask.call_count, 1)
+
+    def test_the_stored_report_is_returned_without_probing(self):
+        with patch("core.llm.client.ask_answer_engines", side_effect=self._answers):
+            first = ed.get_or_probe(self.run, force=True)
+        with patch("core.llm.client.ask_answer_engines") as ask:
+            again = ed.get_or_probe(self.run)
+        ask.assert_not_called()
+        self.assertEqual(first, again)
+
+    def test_an_empty_probe_does_not_overwrite_a_real_report(self):
+        """Every engine failing is not evidence that the name stopped resolving."""
+        from apps.analyzer.models import EntityResolutionReport
+        from apps.analyzer.services import entity_disambiguation as target
+
+        with patch("core.llm.client.ask_answer_engines", side_effect=self._answers):
+            real = ed.get_or_probe(self.run, force=True)
+        EntityResolutionReport.objects.filter(analysis_run=self.run).update(
+            probed_at=timezone.now() - timedelta(seconds=target.PROBE_COOLDOWN_SEC + 60)
+        )
+        with patch("core.llm.client.ask_answer_engines", return_value={}):
+            after = ed.get_or_probe(self.run, force=True)
+        self.assertEqual(after["responses"], real["responses"])
+
+    def test_cooldown_expiry_allows_a_fresh_probe(self):
+        from apps.analyzer.models import EntityResolutionReport
+        from apps.analyzer.services import entity_disambiguation as target
+
+        with patch("core.llm.client.ask_answer_engines", side_effect=self._answers):
+            ed.get_or_probe(self.run, force=True)
+        EntityResolutionReport.objects.filter(analysis_run=self.run).update(
+            probed_at=timezone.now() - timedelta(seconds=target.PROBE_COOLDOWN_SEC + 60)
+        )
+        with patch("core.llm.client.ask_answer_engines", side_effect=self._answers) as ask:
+            ed.get_or_probe(self.run, force=True)
+        self.assertEqual(ask.call_count, 1)
+
+    def test_get_serves_the_cache_without_spending(self):
+        from django.urls import reverse
+
+        from apps.analyzer.tests.auth_helpers import signed_in
+
+        with patch("core.llm.client.ask_answer_engines", side_effect=self._answers):
+            ed.get_or_probe(self.run, force=True)
+        with signed_in(self.org.owner_email):
+            with patch("core.llm.client.ask_answer_engines") as ask:
+                res = self.client.get(
+                    reverse("analyzer:entity-resolution", args=[self.run.slug])
+                )
+        ask.assert_not_called()
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["report"]["brand"], "Acme")
+        self.assertFalse(res.json()["may_probe"])

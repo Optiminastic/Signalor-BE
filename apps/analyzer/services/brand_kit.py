@@ -30,7 +30,7 @@ from typing import Any
 from django.core.cache import cache
 
 from apps.analyzer.models import AnalysisRun
-from apps.analyzer.pipeline.llm import ask_llm
+from core.llm.client import ask_llm
 
 logger = logging.getLogger("apps")
 
@@ -121,7 +121,7 @@ def _ask_llm_for_kit(run: AnalysisRun) -> str:
 
 def _parse_kit_response(raw: str) -> dict | None:
     # Epic 8: shared extractor handles fences/chatty text (was a local fence-stripper).
-    from apps.analyzer.pipeline.structured import extract_json
+    from core.llm.structured import extract_json
 
     data = extract_json(raw, expect=dict)
     if not isinstance(data, dict):

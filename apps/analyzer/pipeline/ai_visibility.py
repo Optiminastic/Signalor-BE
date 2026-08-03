@@ -225,8 +225,8 @@ def _generate_probes_llm(
 ) -> list[str]:
     """Use LLM (via OpenRouter) to generate 5 category-specific probe prompts."""
     try:
-        from .llm import ask_llm
-        from .structured import extract_json
+        from core.llm.client import ask_llm
+        from core.llm.structured import extract_json
 
         current_year = datetime.now().year
         country_line = (
@@ -497,7 +497,7 @@ def _check_ranking_position(text: str, brand_aliases: list[str]) -> dict:
 def _fire_probe(prompt: str, brand_aliases: list[str]) -> tuple[str, bool, float, dict]:
     """Fire a single probe across multiple LLM providers via OpenRouter."""
     try:
-        from .llm import ask_answer_engines
+        from core.llm.client import ask_answer_engines
 
         # Ask 3 engines the same question (exclude perplexity to control cost).
         # Web search is on: a probe that asks whether AI engines mention the brand
@@ -587,7 +587,7 @@ def _check_google_presence(brand_name: str, domain: str) -> dict:
     awards nothing rather than crediting a guess. The old ``in_ai_overview`` signal is
     gone: Serper does not expose AI Overview, and inventing it is what this epic removes.
     """
-    from . import serper
+    from core.llm import serper
 
     result = {"found": False, "signals": [], "confidence": 0.0, "unknown": False}
     data = serper.search(brand_name, num=10)

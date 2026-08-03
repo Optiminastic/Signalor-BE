@@ -3,11 +3,13 @@ import secrets
 from django.db import models
 from pgvector.django import VectorField
 
-from .utils import normalize_url
-
 # Gemini text-embedding-004 output width. Fixed at the column level, so changing
 # the embedding model means a migration + re-embed (tracked via embedding_model).
-EMBEDDING_DIMENSIONS = 768
+# Vector width now lives in core.llm.config — it is a property of the embedding
+# provider, not of this domain. Re-exported so existing importers keep working.
+from core.llm.config import EMBEDDING_DIMENSIONS  # noqa: F401
+
+from .utils import normalize_url
 
 
 def generate_org_slug() -> str:

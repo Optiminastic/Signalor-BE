@@ -21,7 +21,6 @@ import logging
 
 from django.utils import timezone
 
-from apps.analyzer._cache import cached_or_compute
 from apps.analyzer.services.domain_rating import (
     InvalidDomain,
     is_valid_domain,
@@ -29,6 +28,7 @@ from apps.analyzer.services.domain_rating import (
 )
 from apps.integrations.services import ahrefs
 from apps.integrations.services.openpagerank import fetch_page_rank
+from core.cache.keys import cached_or_compute
 
 logger = logging.getLogger("apps")
 

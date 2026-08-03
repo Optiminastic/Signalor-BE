@@ -23,7 +23,7 @@ from apps.organizations.views import (
     OrganizationDetailView,
     OrganizationListView,
 )
-from core.throttling import PollingThrottle
+from core.permissions.throttling import PollingThrottle
 
 # Views a client polls, or that the dashboard blocks on.
 POLLED_VIEWS = [

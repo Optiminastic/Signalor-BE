@@ -16,8 +16,8 @@ so re-running after a partial or failed pass resumes rather than repeats.
 
 from django.core.management.base import BaseCommand
 
-from apps.analyzer.pipeline.embeddings import embed_documents
 from apps.organizations.models import BrandCorpusChunk
+from core.llm.embeddings import embed_documents
 
 # Matches the embedding client's own batch ceiling, so one command batch is one
 # API round trip rather than being re-split downstream.

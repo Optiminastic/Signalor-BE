@@ -26,7 +26,7 @@ def _llm_generate(prompt: str) -> str:
     """Generate text via the shared LLM client. Routes to the medium tier
     (claude-haiku-4.5, matching the previous hardcoded model) at temperature 0.3.
     Raises on an empty response so the callers' try/except still skips the write."""
-    from .llm import ask_llm
+    from core.llm.client import ask_llm
 
     text = ask_llm(prompt, tier="medium", temperature=0.3, max_tokens=800, purpose="GEO Improvement")
     if not text:
@@ -332,8 +332,9 @@ def _generate_meta_fix(brand_name: str, site_url: str, current_title: str, curre
         current_desc=current_desc or "(not set)",
     )
 
+    from core.llm.structured import ask_structured
+
     from .schemas import MetaFix
-    from .structured import ask_structured
 
     meta = ask_structured(
         prompt, MetaFix, tier="medium", temperature=0.3, max_tokens=800, purpose="GEO Meta Fix"

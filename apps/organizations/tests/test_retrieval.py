@@ -13,7 +13,7 @@ from apps.analyzer.models import AnalysisRun
 from apps.organizations.models import BrandCorpusChunk, Organization
 from apps.organizations.services import retrieval
 
-_EMBED_Q = "apps.analyzer.pipeline.embeddings.embed_query"
+_EMBED_Q = "core.llm.embeddings.embed_query"
 _SEARCH = "apps.organizations.services.retrieval._vector_search"
 
 

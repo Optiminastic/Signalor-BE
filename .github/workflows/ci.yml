@@ -43,6 +43,42 @@ jobs:
           SECRET_KEY: ci-test-secret-not-used-in-prod
           DJANGO_SETTINGS_MODULE: config.settings.test
 
+  architecture:
+    name: Architecture contracts (backend)
+    # Guards the module graph, which nothing checked before. ARCHITECTURE.md §2
+    # and §4 already state these rules; this is what makes them fail a build
+    # instead of drifting. Both gates are ratchets seeded from the current state,
+    # so they block NEW debt without demanding a big-bang cleanup first.
+    # Full audit and phase plan: docs/modularization-plan.md
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install import-linter==2.3
+
+      - name: Import contracts
+        # Contracts live in pyproject.toml [tool.importlinter]. The burn-down
+        # contract lists every known app -> analyzer edge under ignore_imports;
+        # delete a line as you remove the import. A new edge fails here.
+        run: lint-imports
+        env:
+          SECRET_KEY: ci-architecture-not-used-in-prod
+          DJANGO_SETTINGS_MODULE: config.settings.test
+
+      - name: Inline-import ratchet
+        # ARCHITECTURE.md §2 forbids inline imports used to dodge circular deps.
+        # Baseline: scripts/deferred_imports_baseline.json. Count may only fall.
+        run: python scripts/check_deferred_imports.py
+
   migrations:
     name: Migration safety (backend)
     # PR-only: it diffs against the base branch to lint ONLY the migrations added

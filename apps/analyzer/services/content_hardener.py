@@ -252,7 +252,7 @@ def _parse_json_array(text: str) -> list:
 
     Epic 8: delegates to the shared extractor rather than a local regex + json.loads.
     """
-    from apps.analyzer.pipeline.structured import extract_json
+    from core.llm.structured import extract_json
 
     data = extract_json(text, expect=list)
     return data if isinstance(data, list) else []
@@ -267,7 +267,7 @@ def research_evidence(topic: str, kind: str, *, run=None, ask_cited=None) -> lis
     gate; ``validate_edits`` is the second, at insertion time.
     """
     if ask_cited is None:
-        from apps.analyzer.pipeline.llm import ask_llm_with_citations
+        from core.llm.client import ask_llm_with_citations
 
         ask_cited = ask_llm_with_citations
 
@@ -320,7 +320,7 @@ def propose_edits(body_text: str, evidence: list[Evidence], kind: str, *, run=No
     gate; this only has to produce candidates.
     """
     if ask is None:
-        from apps.analyzer.pipeline.llm import ask_llm
+        from core.llm.client import ask_llm
 
         ask = ask_llm
 

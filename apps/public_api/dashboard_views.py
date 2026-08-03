@@ -1,7 +1,7 @@
 """
 Dashboard-facing endpoints for managing API keys.
 
-Identity comes from ``accounts.identity.resolve_request_email`` — a verified better-auth
+Identity comes from ``core.auth.identity.resolve_request_email`` — a verified better-auth
 JWT when the FE sends one, else the legacy ``?email=`` until enforcement is switched on
 (``REQUIRE_VERIFIED_IDENTITY``). (Previously this module claimed to be "cookie-authed";
 it never was — the email was trusted unverified, which let anyone mint a key for any org.)
@@ -16,8 +16,8 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.accounts.identity import resolve_request_email
 from apps.organizations.models import Organization
+from core.auth.identity import resolve_request_email
 
 from .dashboard_serializers import (
     ApiKeyListSerializer,

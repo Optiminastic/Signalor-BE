@@ -148,7 +148,7 @@ def _check_via_serper(brand_name: str, brand_domain: str) -> tuple[float, dict] 
     Returns ``None`` when Serper is unconfigured or every query fails, so the
     caller can report *unknown* rather than an empty-looking zero.
     """
-    from apps.analyzer.pipeline import serper
+    from core.llm import serper
 
     if not serper.is_configured():
         return None

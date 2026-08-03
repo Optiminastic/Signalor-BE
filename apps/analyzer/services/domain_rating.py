@@ -19,8 +19,8 @@ import re
 
 from django.utils import timezone
 
-from apps.analyzer._cache import cached_or_compute
 from apps.integrations.services.openpagerank import fetch_page_rank
+from core.cache.keys import cached_or_compute
 
 # Open PageRank scores are 0-10; the tool shows a familiar 0-100 Domain Rating.
 PAGERANK_TO_DR = 10

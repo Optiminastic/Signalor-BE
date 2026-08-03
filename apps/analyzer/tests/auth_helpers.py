@@ -21,7 +21,7 @@ TEST_JWKS_URL = "https://auth.example/jwks"
 
 def as_verified(email: str):
     """Patch in a verified principal for ``email``. Use as a context manager."""
-    from apps.accounts.authentication import VerifiedUser
+    from core.auth.jwt import VerifiedUser
 
     return patch(
         "rest_framework.request.Request.user",

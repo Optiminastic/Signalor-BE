@@ -17,6 +17,6 @@ from .models import BrandProfile
 @receiver(post_save, sender=BrandProfile)
 @receiver(post_delete, sender=BrandProfile)
 def _invalidate_brand_card(sender, instance, **kwargs):
-    from apps.analyzer._cache import invalidate_brand_card
+    from core.cache.keys import invalidate_brand_card
 
     invalidate_brand_card(getattr(instance, "organization_id", None))

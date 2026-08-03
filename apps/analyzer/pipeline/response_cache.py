@@ -95,7 +95,7 @@ def _semantic_search(prompt, *, purpose, model_key, org):
     """
     from pgvector.django import CosineDistance
 
-    from .embeddings import embed_query
+    from core.llm.embeddings import embed_query
 
     qvec = embed_query(prompt)
     if qvec is None:
@@ -133,8 +133,9 @@ def store(prompt: str, response: str, *, purpose: str, model_key: str, org=None)
 def _store(prompt, response, *, purpose, model_key, org) -> None:
     from datetime import timedelta
 
+    from core.llm.embeddings import embed_query
+
     from ..models import LLMResponseCache
-    from .embeddings import embed_query
 
     LLMResponseCache.objects.update_or_create(
         purpose=purpose,

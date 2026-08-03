@@ -17,7 +17,7 @@ Two drafter kinds:
 
 Design:
 - Reuses existing machinery only: ``prompts.render`` (versioned Jinja2 templates),
-  ``pipeline.structured.ask_structured`` (validated JSON, one repair round-trip),
+  ``core.llm.structured.ask_structured`` (validated JSON, one repair round-trip),
   ``auto_fix._read_page_content`` (page HTML), and
   ``organizations.services.retrieval.build_knowledge_block`` (RAG brand corpus).
 - Best-effort and fail-soft: any failure/refusal leaves ``generated_content = {}``
@@ -92,7 +92,7 @@ def _brand_knowledge(run, query: str) -> str:
 
 def _enrich_faq(run, rec, page_content, brand) -> dict | None:
     from apps.analyzer.pipeline.schemas import FaqDraft
-    from apps.analyzer.pipeline.structured import ask_structured
+    from core.llm.structured import ask_structured
 
     knowledge = _brand_knowledge(run, f"{brand} frequently asked questions")
     prompt = _render(
@@ -111,7 +111,7 @@ def _enrich_faq(run, rec, page_content, brand) -> dict | None:
 
 def _enrich_citations(run, rec, page_content, brand) -> dict | None:
     from apps.analyzer.pipeline.schemas import CitationSuggestions
-    from apps.analyzer.pipeline.structured import ask_structured
+    from core.llm.structured import ask_structured
 
     prompt = _render(
         "task_enrich_citations", brand=brand, url=run.url, count=4,
@@ -129,7 +129,7 @@ def _enrich_citations(run, rec, page_content, brand) -> dict | None:
 
 def _enrich_rewrite(run, rec, page_content, brand) -> dict | None:
     from apps.analyzer.pipeline.schemas import ParagraphRewrite
-    from apps.analyzer.pipeline.structured import ask_structured
+    from core.llm.structured import ask_structured
 
     hint = (rec.get("evidence") or {}).get("top_repeated", "")
     prompt = _render(
@@ -156,7 +156,7 @@ def _enrich_generic(run, rec, page_content, brand) -> dict | None:
     handles everything else.
     """
     from apps.analyzer.pipeline.schemas import TaskGuidance
-    from apps.analyzer.pipeline.structured import ask_structured
+    from core.llm.structured import ask_structured
 
     title = rec.get("title", "")
     evidence = rec.get("evidence") or {}

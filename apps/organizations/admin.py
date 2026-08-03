@@ -8,7 +8,7 @@ from .models import BrandCorpusChunk, BrandProfile, Organization
 def _invalidate_cards(org_ids) -> None:
     """Bulk actions use QuerySet.update(), which skips post_save -- so the cached
     brand cards must be dropped by hand here (Epic 7)."""
-    from apps.analyzer._cache import invalidate_brand_card
+    from core.cache.keys import invalidate_brand_card
 
     for org_id in org_ids:
         invalidate_brand_card(org_id)

@@ -7,7 +7,7 @@ from django.test import SimpleTestCase
 from apps.analyzer.pipeline import judge as judge_mod
 from apps.analyzer.pipeline.judge import JudgeVerdict, judge
 
-_ASK = "apps.analyzer.pipeline.structured.ask_structured"
+_ASK = "core.llm.structured.ask_structured"
 
 
 class JudgeTests(SimpleTestCase):

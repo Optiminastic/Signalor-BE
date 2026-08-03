@@ -4,9 +4,9 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase
 
-from apps.analyzer.pipeline import llm
+from core.llm import client as llm
 
-_CALL = "apps.analyzer.pipeline.llm.ask_llm_with_citations"
+_CALL = "core.llm.client.ask_llm_with_citations"
 _LOOKUP = "apps.analyzer.pipeline.response_cache.lookup"
 _STORE = "apps.analyzer.pipeline.response_cache.store"
 

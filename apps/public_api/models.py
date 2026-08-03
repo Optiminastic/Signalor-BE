@@ -135,112 +135,6 @@ class PublicApiUsage(models.Model):
         return f"{self.route} [{self.status_code}] @ {self.timestamp:%Y-%m-%d %H:%M}"
 
 
-class Webhook(models.Model):
-    class Event(models.TextChoices):
-        ANALYSIS_COMPLETED = "analysis.completed", "Analysis completed"
-
-    organization = models.ForeignKey(
-        "organizations.Organization",
-        on_delete=models.CASCADE,
-        related_name="webhooks",
-    )
-    url = models.URLField(max_length=2048)
-    # Subscribed event names. Stored as a JSON list rather than M2M so adding
-    # new event types is a code-only change with no extra migration.
-    events = models.JSONField(default=list)
-    # Encrypted signing secret. Plaintext returned exactly once at creation;
-    # uses the same Fernet key already wired for the integrations app.
-    secret_encrypted = models.TextField()
-    secret_last4 = models.CharField(max_length=4)
-
-    created_by_email = models.EmailField(blank=True, default="")
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    last_delivered_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        ordering = ["-created_at"]
-        indexes = [
-            models.Index(fields=["organization", "-created_at"]),
-            models.Index(fields=["is_active"]),
-        ]
-
-    def __str__(self):
-        return f"{self.url} ({self.organization_id})"
-
-    def subscribes_to(self, event: str) -> bool:
-        return self.is_active and event in (self.events or [])
-
-    def get_secret(self) -> str:
-        from apps.integrations.models import decrypt_token
-
-        return decrypt_token(self.secret_encrypted)
-
-    @classmethod
-    def create_with_secret(
-        cls,
-        organization,
-        url: str,
-        events: list[str],
-        created_by_email: str = "",
-    ) -> tuple["Webhook", str]:
-        from apps.integrations.models import encrypt_token
-
-        plaintext = f"whsec_{secrets.token_urlsafe(32)}"
-        instance = cls.objects.create(
-            organization=organization,
-            url=url,
-            events=events,
-            secret_encrypted=encrypt_token(plaintext),
-            secret_last4=plaintext[-4:],
-            created_by_email=(created_by_email or "").lower().strip(),
-        )
-        return instance, plaintext
-
-
-class WebhookDelivery(models.Model):
-    class Status(models.TextChoices):
-        PENDING = "pending"
-        SUCCESS = "success"
-        FAILED = "failed"
-
-    webhook = models.ForeignKey(
-        Webhook,
-        on_delete=models.CASCADE,
-        related_name="deliveries",
-    )
-    event = models.CharField(max_length=80)
-    # Resource being delivered. For analysis.completed this is the AnalysisRun slug.
-    # Free-form so future events (e.g. recommendation.created) can reuse the row.
-    resource_id = models.CharField(max_length=80)
-
-    status = models.CharField(
-        max_length=10,
-        choices=Status.choices,
-        default=Status.PENDING,
-    )
-    attempts = models.IntegerField(default=0)
-    response_status = models.IntegerField(null=True, blank=True)
-    response_body_preview = models.CharField(max_length=500, blank=True, default="")
-    error_message = models.CharField(max_length=500, blank=True, default="")
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    delivered_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        ordering = ["-created_at"]
-        # Idempotency: a given (webhook, event, resource) is delivered exactly once,
-        # so the signal can fire freely without producing duplicates.
-        unique_together = [("webhook", "event", "resource_id")]
-        indexes = [
-            models.Index(fields=["webhook", "-created_at"]),
-            models.Index(fields=["status"]),
-        ]
-
-    def __str__(self):
-        return f"{self.event} → {self.webhook_id} [{self.status}]"
-
-
 class NextJsDeployment(models.Model):
     """A deploy reported by the @signalor/nextjs SDK or CLI.
 
@@ -333,3 +227,8 @@ class NextJsDeployment(models.Model):
     def __str__(self):
         commit = self.commit_sha[:8] if self.commit_sha else "no-commit"
         return f"NextJsDeployment {self.organization_id} {commit} [{self.environment}]"
+
+
+# Webhook and WebhookDelivery moved to apps/webhooks (same tables, pinned via
+# db_table). Re-exported so existing imports and admin registrations keep working.
+from apps.webhooks.models import Webhook, WebhookDelivery  # noqa: E402,F401

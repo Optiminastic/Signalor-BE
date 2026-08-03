@@ -30,7 +30,10 @@ CODE_CITATION_GAP = "geo_citation_gap"
 CODE_COMPETITOR_PILLAR_GAP = "geo_competitor_pillar_gap"
 
 # How many tasks to emit per category, highest-signal first.
-_MAX_LOST_PROMPTS = 3
+# Lost prompts are the most directly actionable signal the platform has - each
+# one names a real query a buyer asked and the brand did not answer - so this
+# runs deeper than the other categories.
+_MAX_LOST_PROMPTS = 6
 _MAX_CITATION_GAPS = 2
 
 # Open content / social / Q&A platforms are NOT actionable "get a placement here"

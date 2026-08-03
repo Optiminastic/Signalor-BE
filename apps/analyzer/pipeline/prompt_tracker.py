@@ -494,6 +494,35 @@ def _search_google_serper(query: str, brand_name: str, brand_url: str) -> dict:
     }
 
 
+def _drop_branded(prompts: list[str], brand_name: str) -> list[str]:
+    """Remove prompts that name the brand, keeping at most one as a baseline.
+
+    The template forbids the brand name, but a prompt is only *measuring*
+    something when the buyer does not already know the answer: handed the name, an
+    engine repeats it, so a branded prompt scores ~100% and tells you nothing.
+    Enforcing it here rather than trusting the instruction means a model that
+    drifts cannot quietly fill a customer's tracked set with noise.
+
+    One branded prompt survives on purpose — if engines cannot resolve the name at
+    all, no amount of category ranking will help, and that is worth seeing.
+    """
+    brand = (brand_name or "").strip().lower()
+    if not brand:
+        return prompts
+
+    unbranded, branded = [], []
+    for p in prompts:
+        (branded if brand in p.lower() else unbranded).append(p)
+    if branded:
+        logger.info(
+            "Dropped %d branded prompt(s) for %s, kept 1 as an entity baseline: %s",
+            max(0, len(branded) - 1),
+            brand_name,
+            branded[0][:60],
+        )
+    return unbranded + branded[:1]
+
+
 def generate_brand_prompts(
     brand_name: str,
     brand_url: str,
@@ -518,8 +547,9 @@ def generate_brand_prompts(
     prompts are meant to be stable across re-runs, so replaying an identical prompt from
     cache is the desired behavior and saves a generation per re-analysis.
     """
+    from core.llm.structured import ask_structured
+
     from .schemas import PromptList
-    from .structured import ask_structured
 
     # Build rich context
     context_parts = [
@@ -584,12 +614,13 @@ def generate_brand_prompts(
         cache_org=cache_org,
     )
     if result is not None:
-        cleaned = [str(p).strip() for p in result.root[:count] if str(p).strip()]
+        cleaned = _drop_branded([str(p).strip() for p in result.root if str(p).strip()], brand_name)
         if cleaned:
-            return cleaned
+            return cleaned[:count]
 
-    # Fallback with whatever context we have
-    niche = industry or "services"
+    # Fallback with whatever context we have. Category-first, never branded — a
+    # prompt naming the brand scores ~100% and measures nothing.
+    niche = industry or "tools in this category"
     return [
         f"What are the best {niche} available today?",
         f"Compare the top {niche} platforms for businesses",
@@ -617,13 +648,14 @@ def fire_prompt_across_engines(
     allowed_engines: PLAN_LIMITS["engines"] list; None = all configured.
     Returns list of dicts: engine, response_text, brand_mentioned, sentiment, confidence, rank_position
     """
+    from core.llm.client import ask_answer_engines
+
     from .ai_visibility import (
         _analyze_mention_quality,
         _build_brand_aliases,
         _check_ranking_position,
         _match_brand,
     )
-    from .llm import ask_answer_engines
 
     provider_keys, include_google, include_bing = _providers_and_search_from_plan_engines(allowed_engines)
 
@@ -906,7 +938,7 @@ def recheck_track(track, brand_name: str, brand_url: str) -> int:
 
     # Drop cached run-level aggregates so the dashboard reflects new results
     # on the next page load instead of waiting for the 5-10 min TTL to expire.
-    from apps.analyzer._cache import invalidate_run_aggregates
+    from core.cache.keys import invalidate_run_aggregates
 
     invalidate_run_aggregates(track.analysis_run.slug)
 

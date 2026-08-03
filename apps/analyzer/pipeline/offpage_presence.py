@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import logging
 
-from apps.analyzer.pipeline import serper
 from apps.analyzer.pipeline.utils import compute_entity_confidence
+from core.llm import serper
 
 logger = logging.getLogger("apps")
 

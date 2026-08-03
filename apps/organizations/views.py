@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.analyzer.onboarding_security import gate_onboarding_endpoint
-from core.throttling import PollingThrottle
+from core.permissions.throttling import PollingThrottle
 
 from .models import BrandProfile, Organization
 from .serializers import BrandProfileSerializer, OnboardSerializer, OrganizationSerializer
