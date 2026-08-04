@@ -15,8 +15,8 @@ from io import BytesIO
 
 from django.template.loader import render_to_string
 
-logger = logging.getLogger("apps")
-
+logger = logging.getLogger("apps") 
+ 
 # Minor-unit (cents/paise/pence) → major-unit divisor. All Dodo amounts come
 # in minor units across every currency.
 _MINOR_UNITS = 100
