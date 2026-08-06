@@ -200,6 +200,41 @@ class UserGamificationSerializer(serializers.ModelSerializer):
         ]
 
 
+def prompt_track_index(actions) -> dict[tuple[int, str], int]:
+    """``(analysis_run_id, prompt_text) -> PromptTrack.id`` for a page of tasks.
+
+    One query for the whole page instead of one per task. Keyed by run as well
+    as text because the same prompt string legitimately exists on many runs and
+    many brands — keying on text alone would hand a task a link to another
+    tenant's prompt.
+
+    Newest track wins per key: a re-analysis creates fresh PromptTrack rows for
+    the same text, and the live one is the one worth linking to.
+    """
+    from ..models import PromptTrack
+
+    wanted: dict[int, set[str]] = {}
+    for action in actions:
+        rec = getattr(action, "recommendation", None)
+        prompt = ((getattr(rec, "evidence", None) or {}).get("prompt") or "").strip()
+        if prompt and action.analysis_run_id:
+            wanted.setdefault(action.analysis_run_id, set()).add(prompt)
+    if not wanted:
+        return {}
+
+    rows = (
+        PromptTrack.objects.filter(
+            analysis_run_id__in=wanted.keys(),
+            prompt_text__in={p for prompts in wanted.values() for p in prompts},
+            deleted_at__isnull=True,
+        )
+        .order_by("id")
+        .values_list("analysis_run_id", "prompt_text", "id")
+    )
+    # Ascending id, so a later row overwrites an earlier one — the newest wins.
+    return {(run_id, text): track_id for run_id, text, track_id in rows}
+
+
 class UserActionSerializer(serializers.ModelSerializer):
     # What completing this task improves. Read off the linked Recommendation so
     # the list can answer "why is this worth doing?" without a second request —
@@ -210,6 +245,25 @@ class UserActionSerializer(serializers.ModelSerializer):
     )
     priority = serializers.CharField(source="recommendation.priority", read_only=True, default="")
     attribution = serializers.SerializerMethodField()
+    prompt_track_id = serializers.SerializerMethodField()
+
+    def get_prompt_track_id(self, obj) -> int | None:
+        """The tracked prompt this task targets, so the row can link straight to it.
+
+        A UserAction has no FK to a PromptTrack — the link exists only as the
+        prompt *text* on the recommendation's evidence. Resolving it per row
+        would be one query per task, so the list view precomputes a
+        ``(run_id, prompt_text) -> id`` map and passes it in the context. With
+        no map (a single-object serialization) this returns None rather than
+        issuing a surprise query.
+        """
+        index = self.context.get("prompt_track_index")
+        if not index:
+            return None
+        prompt = ((getattr(obj.recommendation, "evidence", None) or {}).get("prompt") or "").strip()
+        if not prompt:
+            return None
+        return index.get((obj.analysis_run_id, prompt))
 
     def get_attribution(self, obj) -> dict:
         rec = obj.recommendation
@@ -246,6 +300,7 @@ class UserActionSerializer(serializers.ModelSerializer):
             "finding_code",
             "priority",
             "attribution",
+            "prompt_track_id",
         ]
         read_only_fields = [
             "points_value",

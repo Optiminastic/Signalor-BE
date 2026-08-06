@@ -66,6 +66,7 @@ from .tasks import (  # noqa: F401
     UpdateUserActionSerializer,
     UserActionSerializer,
     UserGamificationSerializer,
+    prompt_track_index,
 )
 
 __all__ = [
@@ -106,6 +107,7 @@ __all__ = [
     "StartAnalysisSerializer",
     "UpdateUserActionSerializer",
     "UserActionSerializer",
+    "prompt_track_index",
     "UserGamificationSerializer",
     "_url_validator",
 ]

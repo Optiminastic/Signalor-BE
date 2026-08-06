@@ -26,8 +26,8 @@ from ..serializers import (
     UpdateUserActionSerializer,
     UserActionSerializer,
     UserGamificationSerializer,
+    prompt_track_index,
 )
-
 
 # One request should not be able to queue unbounded writes.
 MAX_BULK_RECOMMENDATIONS = 50
@@ -109,7 +109,15 @@ class UserActionListView(APIView):
         # otherwise be one extra query per task.
         actions = actions.select_related("recommendation")
 
-        serializer = UserActionSerializer(bounded_slice(request, actions.distinct()), many=True)
+        # Materialize the page once: the prompt-link index needs to read each
+        # row's evidence before serialization, and re-evaluating the queryset
+        # would run the whole query a second time.
+        page = list(bounded_slice(request, actions.distinct()))
+        serializer = UserActionSerializer(
+            page,
+            many=True,
+            context={"prompt_track_index": prompt_track_index(page)},
+        )
         return Response(serializer.data)
 
 class CreateUserActionView(APIView):
