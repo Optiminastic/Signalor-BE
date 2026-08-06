@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from uuid import uuid4
 
 import requests
 from django.conf import settings
@@ -45,8 +46,20 @@ def _consumed_key(token: str) -> str:
 
 
 def mint_token(client_ip: str) -> str:
-    """Return a signed token bound to the caller IP."""
-    return signing.dumps({"ip": client_ip}, salt=_SALT)
+    """Return a signed, single-use token bound to the caller IP.
+
+    The nonce is what makes it single-USE rather than single-SECOND.
+    ``signing.dumps`` stamps time at whole-second resolution, so without it two
+    mints for the same IP inside the same second produced byte-identical
+    tokens — and since ``_consumed_key`` hashes the token, consuming either one
+    marked the other consumed too. A second tab, a retry, or two people behind
+    one office NAT was enough to make a freshly minted token verify as
+    ``consumed`` and 401 the user out of onboarding.
+
+    ``verify_token`` only reads ``ip``, so tokens minted before this field
+    existed keep verifying normally through their 15-minute window.
+    """
+    return signing.dumps({"ip": client_ip, "nonce": uuid4().hex}, salt=_SALT)
 
 
 def verify_token(token: str, client_ip: str, max_age: int | None = None) -> tuple[bool, str]:

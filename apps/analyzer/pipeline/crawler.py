@@ -6,6 +6,8 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from core import xml_safe
+
 from ..url_guard import SSRFValidationError, guarded_session
 from . import crawlee_crawl
 from .utils import extract_internal_links, extract_text
@@ -375,9 +377,13 @@ def discover_site_pages(
 
 
 def _parse_sitemap(origin: str, http: requests.Session) -> list[str]:
-    """Parse sitemap.xml (handles sitemap index + nested sitemaps)."""
-    import xml.etree.ElementTree as ET
+    """Parse sitemap.xml (handles sitemap index + nested sitemaps).
 
+    The sitemap comes from a domain the user asked us to analyse, so it is
+    attacker-controlled. ``core.xml_safe`` refuses DTD-bearing documents, which
+    is what stops a few hundred bytes of nested entities expanding into
+    gigabytes and OOMing the shared analysis worker.
+    """
     urls: list[str] = []
 
     def _fetch_and_parse(url: str, depth: int = 0):
@@ -392,7 +398,7 @@ def _parse_sitemap(origin: str, http: requests.Session) -> list[str]:
             if "storefront-password" in text or "password protected" in text.lower():
                 return
 
-            root = ET.fromstring(text)
+            root = xml_safe.fromstring(text)
             ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
 
             # Check if it's a sitemap index (contains <sitemap> entries)

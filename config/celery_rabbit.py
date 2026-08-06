@@ -87,6 +87,7 @@ analysis_app.conf.task_queues = [
 analysis_app.conf.task_routes = {
     "analyzer.run_analysis": {"queue": "analysis"},
     "analyzer.run_scheduled_analysis": {"queue": "analysis"},
+    "analyzer.run_outreach_benchmark": {"queue": "analysis"},
 }
 
 # Look for `analysis_tasks` modules (NOT `celery_tasks`) so only the analysis

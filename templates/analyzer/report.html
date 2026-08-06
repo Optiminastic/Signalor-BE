@@ -376,6 +376,37 @@
       letter-spacing: 0.5pt;
     }
 
+    /* ═══════ BUYER PROMPTS ═══════ */
+    /* Amber, deliberately not red: an unanswered prompt is a gap in the
+       measurement, not a finding about the brand. */
+    .probe-unmeasured { border-left-color: #F59E0B; }
+    .unmeasured {
+      color: #B45309;
+      font-weight: 700;
+      font-size: 8pt;
+      text-transform: uppercase;
+      letter-spacing: 0.5pt;
+    }
+    .prompt-meta {
+      font-size: 8pt;
+      margin: 0 0 6pt 0;
+    }
+    /* Layout table: xhtml2pdf supports neither flex nor grid. */
+    .engine-grid {
+      width: 100%;
+      margin: 6pt 0 0 0;
+      border-collapse: collapse;
+    }
+    .engine-cell {
+      font-size: 8pt;
+      padding: 2pt 6pt 2pt 0;
+      white-space: nowrap;
+    }
+    .engine-name {
+      color: #6B7280;
+      margin-right: 3pt;
+    }
+
     /* ═══════ UTILS ═══════ */
     .muted      { color: #6B7280; }
     .page-break { page-break-after: always; }
@@ -530,6 +561,50 @@
       {% endfor %}
     </tbody>
   </table>
+  {% endif %}
+
+  <!-- ═══════════ BUYER PROMPTS ═══════════ -->
+  {% if prompt_tracks %}
+  <div class="section-eyebrow">AI Visibility</div>
+  <h2>Buyer Prompts</h2>
+  {% for row in prompt_tracks %}
+  <div class="probe-card {% if not row.measured %}probe-unmeasured{% elif row.mentions %}probe-mentioned{% else %}probe-not-mentioned{% endif %} keep-together">
+    <p class="probe-question">{{ row.prompt }}</p>
+    <p class="prompt-meta muted">{{ row.prompt_type }} &middot; {{ row.intent }}</p>
+
+    {% if not row.measured %}
+    {# No engine returned an answer: a measurement failure, not an absence. #}
+    <span class="unmeasured">&#x26A0; Not measured &mdash; no engine returned an answer</span>
+    {% else %}
+    {% if row.mentions %}
+    <span class="mentioned">&#x2713; Mentioned in {{ row.mentions }} of {{ row.engines|length }}</span>
+    {% else %}
+    <span class="not-mentioned">&#x2717; Not mentioned in any engine</span>
+    {% endif %}
+    <table class="engine-grid">
+      <tr>
+        {% for engine in row.engines %}
+        <td class="engine-cell">
+          <span class="engine-name">{{ engine.label }}</span>
+          {% if not engine.answered %}
+          <span class="muted">&mdash;</span>
+          {% elif engine.mentioned %}
+          <span class="mentioned">&#x2713;</span>
+          {% else %}
+          <span class="not-mentioned">&#x2717;</span>
+          {% endif %}
+        </td>
+        {% endfor %}
+      </tr>
+    </table>
+    {% if row.cited_domains %}
+    <p class="prompt-meta muted">
+      Cited instead: {% for domain in row.cited_domains %}{{ domain }}{% if not forloop.last %}, {% endif %}{% endfor %}
+    </p>
+    {% endif %}
+    {% endif %}
+  </div>
+  {% endfor %}
   {% endif %}
 
   <!-- ═══════════ AI PROBES ═══════════ -->

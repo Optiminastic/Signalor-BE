@@ -216,6 +216,103 @@ class CreateCheckoutSessionTests(TestCase):
         self.assertIn("not configured", resp.json().get("error", "").lower())
 
 
+def _fake_dodo_with_checkout():
+    """A Dodo client whose checkout_sessions.create returns a usable session."""
+    session = mock.Mock()
+    session.checkout_url = "https://checkout.dodopayments.test/session"
+    client = mock.Mock()
+    client.checkout_sessions.create.return_value = session
+    return client
+
+
+@mock.patch.dict(
+    os.environ,
+    {"DODO_PRODUCT_ID_STARTER": "prod_starter", "DODO_PRODUCT_ID_AGENCY": "prod_agency"},
+    clear=False,
+)
+class CheckoutMustNotGrantOrChangePlanTests(TestCase):
+    """Starting a checkout is not a purchase.
+
+    Checkout used to persist ``Subscription.plan`` from the request body before
+    Dodo confirmed anything, on an AllowAny endpoint that trusted a
+    client-supplied email. That let an unauthenticated caller rewrite any
+    paying customer's plan — an active "business" row could be knocked down to
+    "starter", cutting the customer from 200 tracked prompts to 10 while their
+    status stayed "active" so nothing looked wrong. The plan must only ever be
+    written by the paid-activation path.
+    """
+
+    def setUp(self):
+        self.url = reverse("accounts:create-checkout")
+
+    def _checkout(self, **payload):
+        with mock.patch("apps.accounts.views._get_dodo", return_value=_fake_dodo_with_checkout()):
+            return self.client.post(self.url, payload, content_type="application/json")
+
+    def test_checkout_does_not_downgrade_an_active_subscriber(self):
+        Subscription.objects.create(
+            email=BUYER, plan="business", status=Subscription.Status.ACTIVE
+        )
+
+        resp = self._checkout(email=BUYER, plan="starter")
+
+        self.assertEqual(resp.status_code, 200)
+        sub = Subscription.objects.get(email=BUYER)
+        self.assertEqual(sub.plan, "business")
+        self.assertEqual(sub.limits["max_prompts"], 200)
+
+    def test_checkout_does_not_upgrade_the_plan_before_payment(self):
+        Subscription.objects.create(
+            email=BUYER, plan="starter", status=Subscription.Status.ACTIVE
+        )
+
+        resp = self._checkout(email=BUYER, plan="agency")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(Subscription.objects.get(email=BUYER).plan, "starter")
+
+    def test_checkout_does_not_mint_subscription_rows(self):
+        """An abandoned checkout must not leave a billing row behind."""
+        resp = self._checkout(email="drive-by@example.com", plan="starter")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(Subscription.objects.filter(email="drive-by@example.com").exists())
+
+    def test_paid_activation_still_sets_the_plan(self):
+        """The fix must not break the path that legitimately grants the plan."""
+        self._checkout(email=BUYER, plan="agency")
+        with mock.patch.dict(os.environ, {"DODO_WEBHOOK_SECRET": WEBHOOK_SECRET}):
+            body = _subscription_active_event(email=BUYER, plan="agency")
+            resp = self.client.post(
+                reverse("accounts:dodo-webhook"),
+                body,
+                content_type="application/json",
+                **_sign(body),
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        sub = Subscription.objects.get(email=BUYER)
+        self.assertEqual(sub.plan, "agency")
+        self.assertTrue(sub.is_active)
+
+    def test_a_verified_caller_cannot_check_out_for_someone_else(self):
+        """With a verified identity, a mismatched body email is refused.
+
+        Two patch targets, because the name is bound in two places: the view
+        imports ``verified_email`` at module load, while ``resolve_request_email``
+        looks it up inside ``core.auth.identity`` at call time.
+        """
+        attacker = "attacker@example.com"
+        with (
+            mock.patch("apps.accounts.views.verified_email", return_value=attacker),
+            mock.patch("core.auth.identity.verified_email", return_value=attacker),
+        ):
+            resp = self._checkout(email=BUYER, plan="starter")
+
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("another account", resp.json()["error"].lower())
+
+
 @mock.patch.dict(os.environ, {"DISABLE_PAYMENT": "false", "ENFORCE_PLAN_LIMITS": "true"})
 class UsageCapDisplayTests(TestCase):
     def _usage(self, email):
@@ -233,7 +330,15 @@ class UsageCapDisplayTests(TestCase):
 
     def test_paid_agency_reports_its_real_plan_cap(self):
         AccountProfile.objects.create(email=AGENCY, account_type=AccountProfile.AccountType.AGENCY)
-        Subscription.objects.create(email=AGENCY, plan="starter", status=Subscription.Status.ACTIVE)
+        Subscription.objects.create(email=AGENCY, plan="agency", status=Subscription.Status.ACTIVE)
         d = self._usage(AGENCY)
         self.assertEqual(d["limits"]["max_projects"], 5)
+
+    def test_agency_on_a_single_brand_plan_reports_one(self):
+        """The usage bar must match enforcement, or the FE offers an onboarding
+        slot the API then 403s."""
+        AccountProfile.objects.create(email=AGENCY, account_type=AccountProfile.AccountType.AGENCY)
+        Subscription.objects.create(email=AGENCY, plan="starter", status=Subscription.Status.ACTIVE)
+        d = self._usage(AGENCY)
+        self.assertEqual(d["limits"]["max_projects"], 1)
         self.assertLess(d["limits"]["max_projects"], 1000)

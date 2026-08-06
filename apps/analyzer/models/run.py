@@ -21,6 +21,9 @@ class AnalysisRun(models.Model):
     class RunType(models.TextChoices):
         SINGLE_PAGE = "single_page"
         FULL_SITE = "full_site"
+        # Sales outreach benchmark: three engines, six prompts, no competitor
+        # scoring or sitemap audit. See services/outreach_benchmark.
+        OUTREACH = "outreach"
 
     slug = models.CharField(max_length=20, unique=True, blank=True, default="")
     organization = models.ForeignKey(
@@ -49,6 +52,11 @@ class AnalysisRun(models.Model):
     # User-selected prompts from verified onboarding / post-checkout launch (empty for other flows)
     onboarding_prompts = models.JSONField(default=list, blank=True)
     storefront_password = models.CharField(max_length=255, blank=True, default="")
+    # Rendered outreach benchmark (RunType.OUTREACH only): prompts, the sources
+    # cited instead, and the written opportunities. Denormalized rather than
+    # recomputed per request because the founder-facing page is read far more
+    # often than it is generated, and the written text is not reproducible.
+    outreach_report = models.JSONField(default=dict, blank=True)
     llm_logs = models.JSONField(default=list, blank=True)
     # Total USD this run spent on LLM calls, summed from the exact per-call charge
     # OpenRouter returns. Denormalized out of ``llm_logs`` on purpose: that field

@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from urllib.parse import urlencode
 
+from django.conf import settings
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -35,8 +36,10 @@ _AUTHORIZE = "https://slack.com/oauth/v2/authorize"
 
 
 def _redirect_uri() -> str:
-    base = os.getenv("BACKEND_BASE_URL", "http://localhost:8000").rstrip("/")
-    return f"{base}/api/integrations/slack/callback/"
+    # settings.BACKEND_BASE_URL is the single source of truth; re-reading the
+    # env here would silently diverge from it. Must match the redirect URL
+    # registered on the Slack app or Slack rejects the exchange.
+    return f"{settings.BACKEND_BASE_URL}/api/integrations/slack/callback/"
 
 
 class SlackAuthURLView(APIView):

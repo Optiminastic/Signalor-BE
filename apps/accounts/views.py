@@ -19,6 +19,7 @@ from rest_framework.views import APIView
 
 from apps.partners.services import get_active_attribution
 from apps.referrals.models import Referral
+from core.auth.identity import resolve_request_email, verified_email
 from core.permissions.throttling import PollingThrottle
 
 from .billing_emails import send_billing_emails
@@ -96,7 +97,23 @@ class CreateCheckoutSessionView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        email = request.data.get("email", "").lower().strip()
+        # Checkout used to read the body email directly and then persist
+        # ``Subscription.plan`` from it, so an unauthenticated caller could
+        # rewrite any paying customer's plan (e.g. an active "business" row
+        # down to "starter", dropping them from 200 tracked prompts to 10).
+        # Resolve through the same identity seam as the other account writers:
+        # a JWT caller is pinned to their verified address, and flipping
+        # REQUIRE_VERIFIED_IDENTITY closes the legacy body-email path here too.
+        email, err = resolve_request_email(request)
+        if err:
+            return err
+        claimed = (request.data.get("email") or "").lower().strip()
+        if verified_email(request) and claimed and claimed != email:
+            return Response(
+                {"error": "Cannot start checkout for another account."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         plan = request.data.get("plan", "starter").lower().strip()
         # Customer country / currency hints — used to pre-fill the billing
         # address so Dodo defaults to the right currency at checkout (instead
@@ -109,9 +126,6 @@ class CreateCheckoutSessionView(APIView):
         # (those are only minted at signup) — record one now so the discount
         # auto-applies below and the webhook can credit the partner.
         partner_code = (request.data.get("partner_code") or "").strip().upper()
-
-        if not email:
-            return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         # Exactly two plans are sold self-serve: "starter" (brand) and "agency".
         # "pro"/"business" are retired from sale but kept as plan keys so existing
@@ -157,7 +171,12 @@ class CreateCheckoutSessionView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        sub, _ = Subscription.objects.get_or_create(email=email)
+        # NOTE: no Subscription row is created or mutated here. Starting a
+        # checkout is not a purchase — the plan is written only once Dodo
+        # confirms payment, by _handle_subscription_active (from checkout
+        # metadata) or by VerifyCheckoutView reconciling against Dodo's record.
+        # Writing it up front let an abandoned checkout silently change the
+        # plan an existing subscriber was actually paying for.
 
         # Auto-apply a discount. Three paths can supply one (first match wins):
         #   1) Active affiliate attribution (creator program) — wins by last-click
@@ -236,8 +255,6 @@ class CreateCheckoutSessionView(APIView):
                     email,
                 )
             checkout_session = dodo.checkout_sessions.create(**checkout_kwargs)
-            sub.plan = plan
-            sub.save(update_fields=["plan"])
 
             checkout_url = getattr(checkout_session, "checkout_url", None) or getattr(
                 checkout_session, "url", None
@@ -395,8 +412,6 @@ class AccountTypeView(APIView):
         )
 
     def post(self, request):
-        from core.auth.identity import resolve_request_email, verified_email
-
         from .models import AccountProfile
 
         # Account type raises the brand cap, so it must only ever be settable
@@ -1591,8 +1606,6 @@ class DeleteAccountView(APIView):
     def post(self, request):
         # Delete the *verified* caller's account (JWT); legacy ?email= until enforcement
         # is on. Without this, anyone could delete any account by naming its email.
-        from core.auth.identity import resolve_request_email
-
         email, err = resolve_request_email(request)
         if err:
             return err

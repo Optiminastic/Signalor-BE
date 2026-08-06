@@ -81,9 +81,16 @@ MIDDLEWARE = [
 # pattern; raise IP_RATE_LIMIT_PER_MINUTE if you have NATed corporate users.
 IP_RATE_LIMIT_PER_MINUTE = int(os.getenv("IP_RATE_LIMIT_PER_MINUTE", 240))
 IP_RATE_LIMIT_BURST = int(os.getenv("IP_RATE_LIMIT_BURST", 40))
-# TRUSTED_PROXY_IPS: comma-separated IPs of proxies that may forward XFF.
-# Empty list = trust XFF unconditionally (use only behind a known LB/CDN);
-# None (default) = trust XFF only if request comes from REMOTE_ADDR == loopback.
+# TRUSTED_PROXY_IPS: comma-separated IPs of proxies whose forwarding headers we
+# believe. Unset (the default) means "any private/loopback peer", which matches
+# the containerised deploy — the app is only reachable through the reverse proxy
+# on the internal network, so a private REMOTE_ADDR is proof the request came
+# via it. A public peer's forwarding headers are ignored outright.
+#
+# This comment used to claim the unset case meant "loopback only" while
+# core.permissions.middleware actually trusted X-Forwarded-For from ANY peer.
+# One header then bought a fresh rate-limit bucket per request. Set this
+# explicitly if you ever put the app behind a proxy on a public address.
 _TRUSTED_PROXIES = os.getenv("TRUSTED_PROXY_IPS", "")
 TRUSTED_PROXY_IPS = (
     {ip.strip() for ip in _TRUSTED_PROXIES.split(",") if ip.strip()} if _TRUSTED_PROXIES else None
@@ -420,7 +427,8 @@ CORS_ALLOWED_ORIGINS = [
 # django-cors-headers' default allow-list, so without this the browser passes
 # the preflight (OPTIONS 200) but blocks the actual request — the FE then shows
 # "Cannot reach the server." Extend the defaults rather than replace them.
-CORS_ALLOW_HEADERS = (*default_cors_headers, "x-onboarding-token")
+# X-Outreach-Key is the same story for the public benchmark page (views/outreach).
+CORS_ALLOW_HEADERS = (*default_cors_headers, "x-onboarding-token", "x-outreach-key")
 
 # ── Satellite blog network (shared Neon DB) ───────────────────────────────────
 # Domains of our 5 external Next.js blog sites (category == site). Used to build
@@ -459,3 +467,10 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
+
+# ── Outreach benchmark (public, no login) ─────────────────────────────────
+# Shared access key for the founder-facing benchmark page. Generating a report
+# spends LLM credits per call, so the create endpoint is gated on this value;
+# leaving it unset disables generation entirely (the safe default). Reads are
+# open so a finished report can be shared by link.
+OUTREACH_BENCHMARK_KEY = os.getenv("OUTREACH_BENCHMARK_KEY", "").strip()

@@ -20,6 +20,7 @@ import requests
 
 from apps.integrations.models import Integration
 from apps.integrations.views import GSC_SCOPES, _build_credentials, _refresh_if_needed
+from core import xml_safe
 
 logger = logging.getLogger("apps")
 
@@ -51,9 +52,10 @@ def _coverage_key(url: str) -> str:
 
 def _parse_sitemap(content: bytes) -> tuple[list[str], list[str]]:
     """Parse sitemap XML → (child_sitemap_urls, page_urls). Handles namespaces."""
+    # Remote XML — see core.xml_safe for why a DTD is refused outright.
     try:
-        root = ET.fromstring(content)
-    except ET.ParseError:
+        root = xml_safe.fromstring(content)
+    except (ET.ParseError, xml_safe.UnsafeXMLError):
         return [], []
     locs = [
         el.text.strip()

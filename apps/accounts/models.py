@@ -36,6 +36,18 @@ AGENCY_MAX_PROJECTS = 1000
 # to run a roster for free.
 AGENCY_UNPAID_MAX_PROJECTS = 1
 
+# Plans that actually grant a multi-brand roster.
+#
+# Account type alone must NOT: ``AccountProfile.account_type`` is a free,
+# self-service field (POST /api/account/type/), so keying capacity off it meant
+# a £79.99 single-brand customer on a work domain could flip one field and
+# claim 5 brands — or flip to agency first and then buy the cheapest plan. The
+# roster now has to be bought: "agency" is the plan the pricing page sells for
+# it, and pro/business stay listed so grandfathered rows keep their capacity.
+# An agency-typed account on any other plan gets that plan's own
+# ``max_projects``, i.e. exactly what it paid for.
+MULTI_BRAND_PLANS = ("agency", "pro", "business")
+
 def _plan_budget(plan: str, default: float) -> float:
     """Monthly LLM spend ceiling in USD for a plan, env-overridable.
 

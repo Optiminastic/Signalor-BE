@@ -68,3 +68,30 @@ def run_analysis_task(self, run_id: int) -> None:
         except Exception:
             logger.exception("analysis run %d: also failed to mark row as FAILED", run_id)
         # No re-raise → no Celery retry.
+
+
+@analysis_app.task(name="analyzer.run_outreach_benchmark", bind=True)
+def run_outreach_benchmark_task(self, run_id: int) -> None:
+    """Build the sales outreach benchmark for ``run_id`` on a worker.
+
+    Same no-re-raise contract as its siblings: the benchmark spends real LLM
+    credits and is not idempotent, so a Celery retry would pay twice for the
+    same report.
+    """
+    from django.db import close_old_connections
+
+    from apps.analyzer.models import AnalysisRun
+    from apps.analyzer.services.outreach_benchmark import run_outreach_benchmark
+
+    close_old_connections()
+    try:
+        run_outreach_benchmark(run_id)
+    except Exception as exc:
+        logger.exception("outreach benchmark %d failed on worker: %s", run_id, exc)
+        try:
+            AnalysisRun.objects.filter(pk=run_id).update(
+                status=AnalysisRun.Status.FAILED,
+                error_message=str(exc)[:500],
+            )
+        except Exception:
+            logger.exception("outreach benchmark %d: also failed to mark row as FAILED", run_id)

@@ -29,6 +29,8 @@ import requests
 from bs4 import BeautifulSoup
 from django.db import IntegrityError, close_old_connections
 
+from core import xml_safe
+
 from ..url_guard import SSRFValidationError, guarded_session
 
 logger = logging.getLogger("apps")
@@ -81,9 +83,11 @@ def _normalize_domain(value: str) -> str:
 
 def _parse_sitemap_xml(xml_bytes: bytes) -> tuple[list[str], list[str]]:
     """Return (child_sitemaps, urls). Handles both sitemap-index and urlset."""
+    # Remote, attacker-controlled XML — see core.xml_safe for why a DTD is
+    # refused outright rather than bounded.
     try:
-        root = ET.fromstring(xml_bytes)
-    except ET.ParseError:
+        root = xml_safe.fromstring(xml_bytes)
+    except (ET.ParseError, xml_safe.UnsafeXMLError):
         return [], []
     tag = root.tag.lower()
     # strip namespace {...}

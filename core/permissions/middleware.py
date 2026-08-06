@@ -12,6 +12,7 @@ becomes a service-wide ceiling. That's a fine fallback for misconfig, just
 visibly broken in logs.
 """
 
+import ipaddress
 import logging
 import time
 
@@ -22,20 +23,74 @@ from django.http import JsonResponse
 logger = logging.getLogger("core.permissions.middleware")
 
 
-def _client_ip(request) -> str:
-    """Resolve the client IP, honouring X-Forwarded-For only behind a trusted proxy."""
-    trusted = getattr(settings, "TRUSTED_PROXY_IPS", None)
-    remote_addr = request.META.get("REMOTE_ADDR", "")
+def _is_private_peer(addr: str) -> bool:
+    """Whether ``addr`` could only be an internal hop, never a public client."""
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private or ip.is_link_local
 
-    if trusted is None or remote_addr in trusted:
-        xff = request.META.get("HTTP_X_FORWARDED_FOR", "")
-        if xff:
-            # XFF is "client, proxy1, proxy2..." — leftmost is the real client.
-            # Strip whitespace; ignore empty entries.
-            for hop in (h.strip() for h in xff.split(",")):
-                if hop:
-                    return hop
-    return remote_addr or "unknown"
+
+def _forwarding_is_trusted(remote_addr: str) -> bool:
+    """Whether this peer is allowed to tell us who the real client is.
+
+    With ``TRUSTED_PROXY_IPS`` set, only those peers count. Unset, we accept
+    any private/loopback peer: the app is only reachable through the reverse
+    proxy on the container network, so a private ``REMOTE_ADDR`` means the
+    request came via that proxy. The public internet cannot forge a private
+    peer address, and a directly-exposed origin now stops honouring forwarding
+    headers instead of trusting them blindly.
+    """
+    trusted = getattr(settings, "TRUSTED_PROXY_IPS", None)
+    if trusted:
+        return remote_addr in trusted
+    return _is_private_peer(remote_addr)
+
+
+def _first_valid_ip(raw: str) -> str:
+    """Leftmost syntactically valid IP in a comma-separated header.
+
+    Non-IP junk is skipped rather than returned: this value becomes part of a
+    cache key and a throttle scope, so letting arbitrary client text through
+    would hand callers control of the key space.
+    """
+    for hop in (h.strip() for h in raw.split(",")):
+        if not hop:
+            continue
+        try:
+            ipaddress.ip_address(hop)
+        except ValueError:
+            continue
+        return hop
+    return ""
+
+
+def _client_ip(request) -> str:
+    """Resolve the client IP, honouring forwarding headers only behind a trusted peer.
+
+    This used to trust ``X-Forwarded-For`` from *any* peer whenever
+    ``TRUSTED_PROXY_IPS`` was unset — which is the default, and which the
+    setting's own comment claimed meant "loopback only". One header therefore
+    bought a fresh rate-limit bucket per request: 30 requests from a single
+    host against a 5/min cap went through unblocked. That silently defeated the
+    global limiter, the per-IP DRF throttles, and the IP binding on onboarding
+    tokens, i.e. the whole anti-botnet story.
+    """
+    remote_addr = request.META.get("REMOTE_ADDR", "")
+    if not _forwarding_is_trusted(remote_addr):
+        return remote_addr or "unknown"
+
+    # Cloudflare replaces CF-Connecting-IP with the real client address and
+    # discards whatever the client sent, so it is the one forwarding header an
+    # end user cannot forge. X-Forwarded-For is not: Cloudflare *appends* to
+    # the client's value, so its leftmost entry is attacker-chosen.
+    cf = _first_valid_ip(request.META.get("HTTP_CF_CONNECTING_IP", ""))
+    if cf:
+        return cf
+
+    xff = _first_valid_ip(request.META.get("HTTP_X_FORWARDED_FOR", ""))
+    return xff or remote_addr or "unknown"
 
 
 class GlobalIPRateLimitMiddleware:

@@ -153,6 +153,10 @@ from .misc import (  # noqa: F401
     AiChatView,
     WeeklyTestEmailView,
 )
+from .outreach import (  # noqa: F401
+    OutreachBenchmarkCreateView,
+    OutreachBenchmarkDetailView,
+)
 from .prompts import (  # noqa: F401
     CompetitorPromptGenerateView,
     CompetitorPromptListView,
@@ -268,6 +272,8 @@ __all__ = [
     "CrawlerLogsView",
     "CreateUserActionView",
     "DomainAnalyticsView",
+    "OutreachBenchmarkCreateView",
+    "OutreachBenchmarkDetailView",
     "DomainRatingFreeView",
     "EntityResolutionView",
     "ExportPDFView",

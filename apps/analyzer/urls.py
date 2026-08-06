@@ -78,6 +78,8 @@ from .views import (
     LatestRunProgressView,
     OnboardingStartView,
     OurBacklinksView,
+    OutreachBenchmarkCreateView,
+    OutreachBenchmarkDetailView,
     OverviewInsightsView,
     PromptAnswerBlockView,
     PromptBacklinksView,
@@ -207,6 +209,9 @@ urlpatterns = [
         AnswerGapFaqView.as_view(),
         name="answer-gap-faq",
     ),
+    # Sales outreach benchmark — public, no login (see views/outreach.py).
+    path("outreach/", OutreachBenchmarkCreateView.as_view(), name="outreach-create"),
+    path("outreach/<str:slug>/", OutreachBenchmarkDetailView.as_view(), name="outreach-detail"),
     path("crawler/ingest/", CrawlerIngestView.as_view(), name="crawler-ingest"),
     path("runs/s/<str:slug>/crawler-logs/", CrawlerLogsView.as_view(), name="crawler-logs"),
     path("runs/s/<str:slug>/indexnow/", IndexNowView.as_view(), name="indexnow"),

@@ -477,6 +477,63 @@ class AnalysisRunStatusView(APIView):
             }
         )
 
+def _prompt_benchmark_rows(run) -> list[dict]:
+    """The run's tracked buyer prompts and how each engine answered them.
+
+    These are the ``PromptTrack`` rows — the brand-specific questions a buyer
+    actually asks. The report already carried ``ai_probes``, but those are the
+    generic ``INDUSTRY_PROBES`` templates, so the export never showed the
+    prompts the product is built around.
+
+    Reports "not measured" separately from "not mentioned". An engine that
+    errors persists an empty ``response_text`` with ``brand_mentioned=False``
+    (see pipeline.prompt_tracker.fire_prompt_across_engines), which is
+    indistinguishable from a genuine absence. Presenting a failed probe as an
+    absence overstates the finding, so a prompt no engine answered says so.
+    """
+    tracks = (
+        run.prompt_tracks.filter(deleted_at__isnull=True)
+        .prefetch_related("results", "results__citations")
+        .order_by("-score", "id")
+    )
+
+    rows: list[dict] = []
+    for track in tracks:
+        engines: list[dict] = []
+        answered = 0
+        # dict, not set — preserves citation order so the most prominent
+        # sources lead the "cited instead" list.
+        cited: dict[str, None] = {}
+
+        for result in track.results.all():
+            has_answer = bool((result.response_text or "").strip())
+            if has_answer:
+                answered += 1
+            engines.append(
+                {
+                    "label": result.get_engine_display(),
+                    "mentioned": result.brand_mentioned,
+                    "answered": has_answer,
+                }
+            )
+            for citation in result.citations.all():
+                if citation.domain and not citation.is_brand:
+                    cited.setdefault(citation.domain, None)
+
+        rows.append(
+            {
+                "prompt": track.prompt_text,
+                "intent": track.get_intent_display(),
+                "prompt_type": track.get_prompt_type_display(),
+                "engines": engines,
+                "mentions": sum(1 for engine in engines if engine["mentioned"]),
+                "measured": answered > 0,
+                "cited_domains": list(cited)[:6],
+            }
+        )
+    return rows
+
+
 class ExportPDFView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [ExpensiveThrottle]
@@ -543,6 +600,7 @@ class ExportPDFView(APIView):
                 "main_page_pillars": main_page_pillars,
                 "recommendations": recommendations,
                 "competitors": competitors,
+                "prompt_tracks": _prompt_benchmark_rows(run),
                 "ai_probes": run.ai_probes.all(),
             }
 

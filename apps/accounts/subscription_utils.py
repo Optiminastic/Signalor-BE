@@ -21,6 +21,7 @@ from django.utils import timezone
 from .models import (
     AGENCY_MAX_PROJECTS,
     AGENCY_UNPAID_MAX_PROJECTS,
+    MULTI_BRAND_PLANS,
     PLAN_LIMITS,
     AccountProfile,
     Subscription,
@@ -296,7 +297,12 @@ def effective_max_projects(email: str | None) -> int:
         Subscription row, so keying off the plan alone silently handed a full
         agency allowance to accounts that had never paid.
       - A paying agency gets its plan's ``max_agency_projects`` (0 = uncapped,
-        for grandfathered "business" rows).
+        for grandfathered "business" rows), but ONLY if that plan is one that
+        sells a roster (``MULTI_BRAND_PLANS``). Account type is a free,
+        self-service field, so letting it raise the cap on its own meant a
+        single-brand customer could grant themselves five brands by flipping
+        it. An agency-typed account on a single-brand plan therefore gets that
+        plan's own ``max_projects`` — what it actually paid for.
 
     Internal accounts are exempt from all of it. ``is_internal_email`` grants
     business-tier access with no payment, and the team's own workspaces hold
@@ -313,6 +319,9 @@ def effective_max_projects(email: str | None) -> int:
         return AGENCY_UNPAID_MAX_PROJECTS
 
     limits = get_plan_limits(email)
+    if sub.plan not in MULTI_BRAND_PLANS:
+        return int(limits["max_projects"])
+
     allowance = int(limits.get("max_agency_projects", 0) or 0)
     if allowance <= 0:  # 0 = uncapped (grandfathered / internal-tier plans)
         return AGENCY_MAX_PROJECTS
@@ -392,6 +401,16 @@ def project_limit_reached(email: str | None) -> tuple[bool, str]:
         )
 
     limits = get_plan_limits(email)
+
+    # A paying agency sitting on a single-brand plan. The generic upgrade hint
+    # is wrong here — it points at prompts and support, when what they need is
+    # the plan that actually sells a roster.
+    if sub.plan not in MULTI_BRAND_PLANS:
+        return True, (
+            f"Your {limits['label']} plan covers {max_projects} brand(s). "
+            "Switch to the Agency plan to manage multiple client brands."
+        )
+
     return True, (
         f"Your {limits['label']} plan allows {max_projects} brand(s)."
         f"{_upgrade_hint_for_plan(_effective_plan_key(email))}"

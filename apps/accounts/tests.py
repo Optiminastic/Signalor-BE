@@ -69,9 +69,9 @@ class EffectiveMaxProjectsTests(TestCase):
 
     def test_paid_agency_gets_its_plan_allowance(self):
         _make_agency()
-        _make_sub(CUSTOMER, "starter")
+        _make_sub(CUSTOMER, "agency")
         self.assertEqual(
-            effective_max_projects(CUSTOMER), PLAN_LIMITS["starter"]["max_agency_projects"]
+            effective_max_projects(CUSTOMER), PLAN_LIMITS["agency"]["max_agency_projects"]
         )
 
     def test_agency_allowance_scales_with_plan(self):
@@ -82,7 +82,7 @@ class EffectiveMaxProjectsTests(TestCase):
         )
         self.assertGreater(
             PLAN_LIMITS["pro"]["max_agency_projects"],
-            PLAN_LIMITS["starter"]["max_agency_projects"],
+            PLAN_LIMITS["agency"]["max_agency_projects"],
         )
 
     def test_grandfathered_business_agency_stays_uncapped(self):
@@ -90,6 +90,32 @@ class EffectiveMaxProjectsTests(TestCase):
         _make_agency()
         _make_sub(CUSTOMER, "business")
         self.assertEqual(effective_max_projects(CUSTOMER), AGENCY_MAX_PROJECTS)
+
+    def test_declaring_agency_on_a_single_brand_plan_grants_nothing(self):
+        """The escalation this closes.
+
+        ``account_type`` is a free, self-service field. Before, an active
+        single-brand customer could POST /api/account/type/ {"account_type":
+        "agency"} and jump from 1 brand to 5 without paying a penny more,
+        because the allowance was read off the plan's ``max_agency_projects``
+        as soon as the account was typed as an agency.
+        """
+        _make_agency()
+        _make_sub(CUSTOMER, "starter")
+        self.assertEqual(effective_max_projects(CUSTOMER), PLAN_LIMITS["starter"]["max_projects"])
+        self.assertEqual(effective_max_projects(CUSTOMER), 1)
+
+    def test_the_roster_arrives_when_the_agency_plan_is_bought(self):
+        """Same account, after actually buying the agency plan."""
+        _make_agency()
+        sub = _make_sub(CUSTOMER, "starter")
+        self.assertEqual(effective_max_projects(CUSTOMER), 1)
+
+        sub.plan = "agency"
+        sub.save(update_fields=["plan"])
+        self.assertEqual(
+            effective_max_projects(CUSTOMER), PLAN_LIMITS["agency"]["max_agency_projects"]
+        )
 
 
 @override_settings(DEBUG=False)
@@ -114,8 +140,8 @@ class AgencyProjectLimitTests(TestCase):
 
     def test_paid_agency_blocked_at_its_plan_allowance(self):
         _make_agency()
-        _make_sub(CUSTOMER, "starter")
-        allowance = PLAN_LIMITS["starter"]["max_agency_projects"]
+        _make_sub(CUSTOMER, "agency")
+        allowance = PLAN_LIMITS["agency"]["max_agency_projects"]
         for i in range(allowance - 1):
             _make_org(CUSTOMER, f"brand{i}")
         self.assertFalse(project_limit_reached(CUSTOMER)[0])
@@ -124,6 +150,17 @@ class AgencyProjectLimitTests(TestCase):
         reached, msg = project_limit_reached(CUSTOMER)
         self.assertTrue(reached)
         self.assertIn(str(allowance), msg)
+
+    def test_agency_on_a_single_brand_plan_is_told_to_switch_plan(self):
+        """Not the generic prompts/support upgrade hint — they need the roster."""
+        _make_agency()
+        _make_sub(CUSTOMER, "starter")
+        _make_org(CUSTOMER, "only")
+
+        reached, msg = project_limit_reached(CUSTOMER)
+        self.assertTrue(reached)
+        self.assertIn("Agency plan", msg)
+        self.assertNotIn("Managed Growth", msg)
 
 
 class ProjectLimitReachedTests(TestCase):

@@ -71,3 +71,4 @@ def send(task_name: str, *args, broker: Broker = "analysis", **kwargs) -> bool:
 ANALYSIS_RUN = "analyzer.run_analysis"
 ANALYSIS_SCHEDULED = "analyzer.run_scheduled_analysis"
 SITEMAP_AUDIT = "analyzer.run_sitemap_audit"
+OUTREACH_BENCHMARK = "analyzer.run_outreach_benchmark"
