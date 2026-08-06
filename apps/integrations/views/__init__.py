@@ -46,6 +46,9 @@ from .gsc import (  # noqa: F401
     GSCSyncView,
     GSCUrlInspectView,
 )
+from .live import (  # noqa: F401
+    LiveVisitorsView,
+)
 from .shopify import (  # noqa: F401
     ShopifyAppUninstalledWebhookView,
     ShopifyAuthURLView,

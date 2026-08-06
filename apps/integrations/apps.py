@@ -9,10 +9,11 @@ class IntegrationsConfig(AppConfig):
     def ready(self) -> None:
         # Registers the Google OAuth redirect-URI system checks (deploy-time guard
         # against redirect_uri_mismatch). Import for the @register side effect only.
-        from . import checks  # noqa: F401
-
         # Post-analysis notifications (Slack today, more later).
-        from . import signals  # noqa: F401
+        from . import (
+            checks,  # noqa: F401
+            signals,  # noqa: F401
+        )
 
         self._register_remediation_providers()
 

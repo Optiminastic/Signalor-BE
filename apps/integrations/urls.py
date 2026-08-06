@@ -24,11 +24,7 @@ from .views import (
     GSCSyncView,
     GSCUrlInspectView,
     IntegrationStatusView,
-    SlackAuthURLView,
-    SlackCallbackView,
-    SlackChannelsView,
-    SlackDisconnectView,
-    SlackSelectChannelView,
+    LiveVisitorsView,
     ScoreTrafficCorrelationView,
     ShopifyAppUninstalledWebhookView,
     ShopifyAuthURLView,
@@ -39,6 +35,11 @@ from .views import (
     ShopifyDisconnectView,
     ShopifyLinkAppView,
     ShopifySyncView,
+    SlackAuthURLView,
+    SlackCallbackView,
+    SlackChannelsView,
+    SlackDisconnectView,
+    SlackSelectChannelView,
     WooCommerceConnectView,
     WooCommerceDataView,
     WooCommerceDisconnectView,
@@ -89,6 +90,12 @@ urlpatterns = [
         "google-analytics/data/",
         GADataView.as_view(),
         name="ga-data",
+    ),
+    # Top-bar live indicator: GA4 realtime + AI-crawler hits in one poll.
+    path(
+        "live-visitors/",
+        LiveVisitorsView.as_view(),
+        name="live-visitors",
     ),
     # Correlation
     path(
