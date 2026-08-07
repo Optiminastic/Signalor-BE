@@ -38,6 +38,12 @@ from .crawl import (  # noqa: F401
     SitemapAuditPageSerializer,
     SitemapAuditSerializer,
 )
+from .projection import (  # noqa: F401
+    ProjectionCompetitorsSerializer,
+    ProjectionMetricSerializer,
+    ProjectionPromptsSerializer,
+    ProjectionSerializer,
+)
 from .prompts import (  # noqa: F401
     AddPromptSerializer,
     PromptCitationSerializer,
@@ -91,6 +97,10 @@ __all__ = [
     "IndexNowSubmitSerializer",
     "PageScoreSerializer",
     "PromptCitationSerializer",
+    "ProjectionCompetitorsSerializer",
+    "ProjectionMetricSerializer",
+    "ProjectionPromptsSerializer",
+    "ProjectionSerializer",
     "PromptResultFullSerializer",
     "PromptResultSerializer",
     "PromptTrackSerializer",
