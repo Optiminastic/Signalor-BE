@@ -97,6 +97,7 @@ from .views import (
     QuickActionView,
     # Schema watchtower
     RankAuditDetailView,
+    ProjectionView,
     RankAuditRefreshQueryView,
     # Rank tracker
     RankAuditStartView,
@@ -194,6 +195,11 @@ urlpatterns = [
         name="visibility-series",
     ),
     path("runs/s/<str:slug>/rankings/", RankingsView.as_view(), name="rankings"),
+    path(
+        "runs/s/<str:slug>/projection/",
+        ProjectionView.as_view(),
+        name="projection",
+    ),
     path(
         "runs/s/<str:slug>/share-of-voice-competitors/",
         ShareOfVoiceCompetitorsView.as_view(),

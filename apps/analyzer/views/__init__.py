@@ -133,6 +133,9 @@ from .competitors import (  # noqa: F401
     CompetitorDetailView,
     CompetitorListCreateView,
 )
+from .projection import (  # noqa: F401
+    ProjectionView,
+)
 from .content import (  # noqa: F401
     AnswerGapFaqView,
     ContentApplyElementView,
@@ -297,6 +300,7 @@ __all__ = [
     "PromptSchemaView",
     "PromptWikipediaDraftView",
     "PublicBlogDetailView",
+    "ProjectionView",
     "PublicBlogListView",
     "QuickActionView",
     "RankAuditDetailView",
