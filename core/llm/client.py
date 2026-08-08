@@ -61,6 +61,14 @@ HAIKU_MODEL = os.getenv("OPENROUTER_HAIKU_MODEL", "").strip() or "anthropic/clau
 # Answer-engine additions for prompt tracking — all served through the same
 # OpenRouter key. Ids are env-overridable like the Claude/Gemini ones above.
 DEEPSEEK_MODEL = os.getenv("OPENROUTER_DEEPSEEK_MODEL", "deepseek/deepseek-chat")
+# DeepSeek V4 Flash — an internal *worker* model, deliberately a separate
+# constant from DEEPSEEK_MODEL above. That one also backs the "DeepSeek" answer
+# engine (see ENGINES), which measures what DeepSeek actually tells a buyer
+# about a brand; repointing it to chase a cheaper worker would silently change
+# a customer-facing measurement. This id is ~3x cheaper than deepseek-chat,
+# supports tool calling, and is what the GitHub fix agent runs on.
+# Override via OPENROUTER_DEEPSEEK_V4_MODEL.
+DEEPSEEK_V4_MODEL = os.getenv("OPENROUTER_DEEPSEEK_V4_MODEL", "deepseek/deepseek-v4-flash-0731")
 # ``x-ai/grok-3-mini`` was deprecated by xAI and now 404s on OpenRouter. Because
 # ``_retry_with_next`` silently falls through to another vendor's model, every
 # "Grok" answer was really an OpenAI answer wearing a Grok label. Keep this id
@@ -82,6 +90,7 @@ MODELS = {
     "perplexity": "perplexity/sonar",
     "sonnet": SONNET_MODEL,
     "deepseek": DEEPSEEK_MODEL,
+    "deepseek-v4": DEEPSEEK_V4_MODEL,
     "grok": GROK_MODEL,
     "llama": LLAMA_MODEL,
     "kimi": KIMI_MODEL,
@@ -96,6 +105,7 @@ MODEL_LABELS = {
     SONNET_MODEL: "Claude Sonnet 4.5",
     "gemini-direct": "Gemini (Direct)",
     DEEPSEEK_MODEL: "DeepSeek",
+    DEEPSEEK_V4_MODEL: "DeepSeek V4 Flash",
     GROK_MODEL: "Grok",
     LLAMA_MODEL: "Meta Llama",
     KIMI_MODEL: "Kimi K2",

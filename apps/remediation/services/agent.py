@@ -1,6 +1,7 @@
 """
 The fix agent: a bounded tool-loop that turns ONE analyzer finding into a set of
-file edits for a connected repo. The LLM (Claude Sonnet 4.5 via OpenRouter) gets
+file edits for a connected repo. The LLM (routed via model_routing's "fix_agent"
+task, so the model is one env var away from a swap) gets
 read-only repo tools — list_tree / read_file / search_code — explores until it
 knows what to change, then calls propose_changes (full file contents) or
 cannot_fix. Pure validation guards reject unsafe patches.
@@ -12,6 +13,7 @@ deliberately read-only here; nothing is written to GitHub from this module.
 import json
 import logging
 
+from apps.analyzer.pipeline.model_routing import model_for
 from core.llm.client import ask_llm_with_tools
 
 from .fixers import FileEdit, FixResult
@@ -368,7 +370,7 @@ def _run_loop(messages: list[dict], client, profile: dict, finding_code: str) ->
         out = ask_llm_with_tools(
             messages,
             tools,
-            preferred_provider="sonnet",
+            preferred_provider=model_for("fix_agent"),
             max_tokens=8000,
             purpose=f"github.agent.{finding_code}",
         )
@@ -444,7 +446,7 @@ def _run_loop(messages: list[dict], client, profile: dict, finding_code: str) ->
     out = ask_llm_with_tools(
         messages,
         tools,
-        preferred_provider="sonnet",
+        preferred_provider=model_for("fix_agent"),
         max_tokens=8000,
         purpose=f"github.agent.{finding_code}.final",
     )

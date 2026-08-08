@@ -21,9 +21,14 @@ import os
 
 # task key -> (env var, current default nickname). Defaults mirror today's call sites.
 _ROUTES: dict[str, tuple[str, str]] = {
-    # GitHub fix agent — today "sonnet" (github_agent/services/agent.py:378,454).
-    # Cost target: a cheaper strong coder (e.g. "kimi" / "deepseek"), Sonnet fallback.
-    "fix_agent": ("LLM_MODEL_FIX_AGENT", "sonnet"),
+    # GitHub fix agent (remediation/services/agent.py) — the cost target named in
+    # this table's own note, now taken: DeepSeek V4 Flash instead of Sonnet, at
+    # roughly 1/30th the input and 1/80th the output price. It is a tool-calling
+    # loop over read-only repo tools, and every patch it proposes is gated by the
+    # pure validators in fixers.py plus human PR review, so a weaker model costs
+    # a rejected patch, not a bad merge. Revert instantly with
+    # LLM_MODEL_FIX_AGENT=sonnet — no deploy needed.
+    "fix_agent": ("LLM_MODEL_FIX_AGENT", "deepseek-v4"),
     # Blog long-form draft — today "opus" (analyzer/views.py:405). Cost target: cheaper.
     "blog_draft": ("LLM_MODEL_BLOG_DRAFT", "opus"),
     # Blog title ideas — today "opus" (analyzer/views.py:7298). Cost target: a cheap model.
