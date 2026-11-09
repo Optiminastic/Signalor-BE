@@ -4,7 +4,8 @@ from .views import (
     ActivityView,
     BrandAnalysisView,
     BrandOnboardView,
-    ChatView,
+    ConversationChatView,
+    ConversationListView,
     GmailCallbackView,
     GmailConnectionView,
     MeView,
@@ -29,7 +30,12 @@ urlpatterns = [
     path(
         "programs/<str:org_slug>/connections/gmail/", GmailConnectionView.as_view(), name="gmail-connection"
     ),
-    path("programs/<str:org_slug>/chat/", ChatView.as_view(), name="chat"),
+    path("programs/<str:org_slug>/chats/", ConversationListView.as_view(), name="chats"),
+    path(
+        "programs/<str:org_slug>/chats/<str:public_id>/",
+        ConversationChatView.as_view(),
+        name="chat",
+    ),
     path("programs/<str:org_slug>/activity/", ActivityView.as_view(), name="activity"),
     path("programs/<str:org_slug>/tracking/", TrackingView.as_view(), name="tracking"),
     path("programs/<str:org_slug>/plan/", PlanView.as_view(), name="plan"),

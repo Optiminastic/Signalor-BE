@@ -10,7 +10,14 @@ from unittest import mock
 
 from django.utils import timezone
 
-from ..models import AgentActionLog, AgentMessage, GrowthCycle, GrowthProgram, GrowthTask
+from ..models import (
+    CONVERSATION_TITLE_CHARS,
+    AgentActionLog,
+    AgentMessage,
+    GrowthCycle,
+    GrowthProgram,
+    GrowthTask,
+)
 from ..services.chat import agent, conversation, tools
 from .test_api import OTHER_EMAIL, PRO_EMAIL, GrowthApiTestCase
 
@@ -156,7 +163,7 @@ class AgentLoopTests(ChatTestCase):
         self.assertEqual(len(trace), agent.MAX_STEPS)
 
     def test_run_turn_fills_pending_reply_with_history(self):
-        reply = conversation.post_message(self.program, "Skip outreach please")
+        _, reply = conversation.start_conversation(self.program, "Skip outreach please")
         with mock.patch(LLM, return_value=final("Outreach skipped.")) as llm:
             agent.run_turn(reply.id)
         reply.refresh_from_db()
@@ -167,31 +174,74 @@ class AgentLoopTests(ChatTestCase):
 
 
 class ConversationTests(ChatTestCase):
-    def test_one_reply_in_flight(self):
-        conversation.post_message(self.program, "hi")
+    def test_one_reply_in_flight_per_brand(self):
+        conv, _ = conversation.start_conversation(self.program, "hi")
         with self.assertRaises(conversation.ChatError):
-            conversation.post_message(self.program, "again")
+            conversation.post_message(conv, "again")
+        with self.assertRaises(conversation.ChatError):
+            conversation.start_conversation(self.program, "new chat while busy")
 
     def test_empty_and_too_long_messages(self):
         with self.assertRaises(conversation.ChatError):
-            conversation.post_message(self.program, "   ")
+            conversation.start_conversation(self.program, "   ")
         with self.assertRaises(conversation.ChatError):
-            conversation.post_message(self.program, "x" * (conversation.MAX_MESSAGE_CHARS + 1))
+            conversation.start_conversation(self.program, "x" * (conversation.MAX_MESSAGE_CHARS + 1))
+        self.assertEqual(conversation.list_conversations(self.program), [])
+
+    def test_title_is_first_question_and_id_is_url_safe(self):
+        conv, _ = conversation.start_conversation(self.program, "Why is Perplexity ignoring us? " * 10)
+        self.assertEqual(len(conv.title), CONVERSATION_TITLE_CHARS)
+        self.assertRegex(conv.public_id, r"^[a-z0-9]{10}$")
+
+    def test_history_stays_inside_one_conversation(self):
+        first, reply = conversation.start_conversation(self.program, "Talk about outreach")
+        AgentMessage.objects.filter(pk=reply.pk).update(status=AgentMessage.Status.COMPLETE, content="Sure.")
+        _, second_reply = conversation.start_conversation(self.program, "New topic: schema")
+        with mock.patch(LLM, return_value=final("Ok.")) as llm:
+            agent.run_turn(second_reply.id)
+        sent = [m["content"] for m in llm.call_args.args[0][1:]]
+        self.assertEqual(sent, ["New topic: schema"])
+        self.assertEqual(len(conversation.thread(first)), 2)
 
 
 class ChatApiTests(ChatTestCase):
     @mock.patch(DISPATCH)
-    def test_post_and_read_thread(self, dispatch):
-        path = f"/api/growth/programs/{self.pro_org.slug}/chat/"
+    def test_start_list_read_and_continue_a_chat(self, dispatch):
+        base = f"/api/growth/programs/{self.pro_org.slug}/chats/"
         self._body = {"message": "Why is Perplexity ignoring us?"}
-        response = self.signed("POST", path, PRO_EMAIL)
-        self.assertEqual(response.status_code, 202)
-        roles = [(m["role"], m["status"]) for m in response.data["messages"]]
+        started = self.signed("POST", base, PRO_EMAIL)
+        self.assertEqual(started.status_code, 202)
+        chat_id = started.data["conversation"]["id"]
+        roles = [(m["role"], m["status"]) for m in started.data["messages"]]
         self.assertEqual(roles, [("user", "complete"), ("assistant", "pending")])
         dispatch.assert_called_once()
-        self.assertEqual(self.signed("POST", path, PRO_EMAIL).status_code, 409)  # reply still pending
+        listed = self.signed("GET", base, PRO_EMAIL).data["conversations"]
+        self.assertEqual([c["id"] for c in listed], [chat_id])
+        self.assertEqual(len(self.signed("GET", f"{base}{chat_id}/", PRO_EMAIL).data["messages"]), 2)
+        self.assertEqual(
+            self.signed("POST", f"{base}{chat_id}/", PRO_EMAIL).status_code, 409
+        )  # still pending
 
-    def test_cannot_read_someone_elses_chat(self):
-        GrowthProgram.objects.create(organization=self.other_org, created_by_email=OTHER_EMAIL)
-        response = self.signed("GET", f"/api/growth/programs/{self.other_org.slug}/chat/", PRO_EMAIL)
-        self.assertEqual(response.status_code, 404)
+    def test_cannot_read_someone_elses_chats(self):
+        other = GrowthProgram.objects.create(organization=self.other_org, created_by_email=OTHER_EMAIL)
+        conv, _ = conversation.start_conversation(other, "secret strategy")
+        own_slug_path = f"/api/growth/programs/{self.pro_org.slug}/chats/{conv.public_id}/"
+        self.assertEqual(self.signed("GET", own_slug_path, PRO_EMAIL).status_code, 404)
+        other_path = f"/api/growth/programs/{self.other_org.slug}/chats/"
+        self.assertEqual(self.signed("GET", other_path, PRO_EMAIL).status_code, 404)
+
+
+class ConversationMigrationTests(ChatTestCase):
+    def test_existing_thread_becomes_exactly_one_conversation(self):
+        from importlib import import_module
+
+        from django.apps import apps as django_apps
+
+        migration = import_module("apps.growth_agent.migrations.0008_agent_conversation")
+        for role, text in [("user", "first question"), ("assistant", "answer"), ("user", "follow up")]:
+            AgentMessage.objects.create(program=self.program, role=role, content=text)
+        migration.move_messages_into_conversations(django_apps, None)
+        conversations = list(self.program.conversations.all())
+        self.assertEqual(len(conversations), 1)
+        self.assertEqual(conversations[0].title, "first question")
+        self.assertEqual(conversations[0].messages.count(), 3)

@@ -7,6 +7,8 @@ and weekly snapshots off this row. Like the GitHub agent, the database is the
 agent's memory, so a worker restart never loses state.
 """
 
+import secrets
+
 from django.db import models
 
 from apps.organizations.models import Organization
@@ -242,6 +244,33 @@ class AgentActionLog(models.Model):
         return f"AgentActionLog<{self.program_id}:{self.action}:{self.outcome}>"
 
 
+CONVERSATION_ID_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789"
+CONVERSATION_ID_LENGTH = 10
+CONVERSATION_TITLE_CHARS = 80
+
+
+def new_conversation_id() -> str:
+    """Short, unguessable, URL-friendly id (no look-alike characters)."""
+    return "".join(secrets.choice(CONVERSATION_ID_ALPHABET) for _ in range(CONVERSATION_ID_LENGTH))
+
+
+class AgentConversation(models.Model):
+    """One chat thread with the Growth Agent. A brand can have many; each has its own URL."""
+
+    program = models.ForeignKey(GrowthProgram, on_delete=models.CASCADE, related_name="conversations")
+    public_id = models.CharField(max_length=16, unique=True, default=new_conversation_id, editable=False)
+    title = models.CharField(max_length=CONVERSATION_TITLE_CHARS, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at", "-id"]
+        indexes = [models.Index(fields=["program", "-updated_at"], name="growth_agen_program_conv_idx")]
+
+    def __str__(self) -> str:
+        return f"AgentConversation<{self.program_id}:{self.public_id}>"
+
+
 class AgentMessage(models.Model):
     """One chat message between the brand owner and the Growth Agent.
 
@@ -259,6 +288,9 @@ class AgentMessage(models.Model):
         FAILED = "failed", "Failed"
 
     program = models.ForeignKey(GrowthProgram, on_delete=models.CASCADE, related_name="messages")
+    conversation = models.ForeignKey(
+        AgentConversation, on_delete=models.CASCADE, related_name="messages", null=True, blank=True
+    )
     role = models.CharField(max_length=10, choices=Role.choices)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.COMPLETE)
     content = models.TextField(blank=True, default="")

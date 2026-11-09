@@ -4,6 +4,7 @@ from apps.organizations.models import Organization
 
 from .models import (
     AgentActionLog,
+    AgentConversation,
     AgentMessage,
     GrowthCycle,
     GrowthProgram,
@@ -172,6 +173,15 @@ class AgentMessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = AgentMessage
         fields = ["id", "role", "status", "content", "tool_trace", "created_at"]
+        read_only_fields = fields
+
+
+class AgentConversationSerializer(serializers.ModelSerializer):
+    id = serializers.CharField(source="public_id", read_only=True)
+
+    class Meta:
+        model = AgentConversation
+        fields = ["id", "title", "updated_at"]
         read_only_fields = fields
 
 

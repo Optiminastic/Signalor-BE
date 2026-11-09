@@ -8,6 +8,7 @@ import os
 import time
 from unittest import mock
 
+from django.core.cache import cache
 from django.test import override_settings
 from rest_framework.test import APITestCase
 
@@ -28,6 +29,8 @@ ENFORCE_LIMITS = {"ENFORCE_PLAN_LIMITS": "true", "DISABLE_PAYMENT": ""}
 @mock.patch.dict(os.environ, ENFORCE_LIMITS)
 class GrowthApiTestCase(APITestCase):
     def setUp(self):
+        # DRF throttles count requests in the default cache; reset so each test starts under the limit.
+        cache.clear()
         Subscription.objects.create(email=PRO_EMAIL, plan="pro", status="active")
         self.pro_org = Organization.objects.create(
             name="Pro Brand", url="https://pro.example", owner_email=PRO_EMAIL

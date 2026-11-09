@@ -28,6 +28,7 @@ from .analysis_tasks import (
 from .auth import GrowthServiceAuthentication, HasGrowthAgentPlan, has_growth_access
 from .serializers import (
     AgentActionLogSerializer,
+    AgentConversationSerializer,
     AgentMessageSerializer,
     AnalysisRunStatusSerializer,
     BrandSerializer,
@@ -254,28 +255,73 @@ class ActivityView(GrowthBaseView):
         return Response({"activity": AgentActionLogSerializer(logs, many=True).data})
 
 
-class ChatView(GrowthBaseView):
-    """GET the chat thread; POST a message (the reply is filled in the background)."""
+def _thread_payload(conv) -> list:
+    return AgentMessageSerializer(conversation.thread(conv), many=True).data
+
+
+def _program_response(request, org_slug: str):
+    """(program, None) or (None, 404 response) for the caller's brand."""
+    program = programs.get_program(request.user.email, org_slug)
+    if program is None:
+        return None, Response({"detail": "Program not found."}, status=status.HTTP_404_NOT_FOUND)
+    return program, None
+
+
+class ConversationListView(GrowthBaseView):
+    """GET the brand's saved chats; POST a first message to start a new one."""
 
     def get(self, request, org_slug: str):
-        program = programs.get_program(request.user.email, org_slug)
-        if program is None:
-            return Response({"detail": "Program not found."}, status=status.HTTP_404_NOT_FOUND)
-        return Response({"messages": AgentMessageSerializer(conversation.thread(program), many=True).data})
+        program, missing = _program_response(request, org_slug)
+        if missing:
+            return missing
+        conversations = conversation.list_conversations(program)
+        return Response({"conversations": AgentConversationSerializer(conversations, many=True).data})
 
     def post(self, request, org_slug: str):
-        program = programs.get_program(request.user.email, org_slug)
-        if program is None:
-            return Response({"detail": "Program not found."}, status=status.HTTP_404_NOT_FOUND)
+        program, missing = _program_response(request, org_slug)
+        if missing:
+            return missing
         payload = PostMessageSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         try:
-            reply = conversation.post_message(program, payload.validated_data["message"])
+            conv, reply = conversation.start_conversation(program, payload.validated_data["message"])
         except conversation.ChatError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
         dispatch_chat_turn(reply.id)
-        thread = AgentMessageSerializer(conversation.thread(program), many=True).data
-        return Response({"messages": thread}, status=status.HTTP_202_ACCEPTED)
+        body = {"conversation": AgentConversationSerializer(conv).data, "messages": _thread_payload(conv)}
+        return Response(body, status=status.HTTP_202_ACCEPTED)
+
+
+class ConversationChatView(GrowthBaseView):
+    """GET one chat's messages; POST a message into it (the reply is filled in the background)."""
+
+    def _conversation(self, request, org_slug: str, public_id: str):
+        program, missing = _program_response(request, org_slug)
+        if missing:
+            return None, missing
+        conv = conversation.get_conversation(program, public_id)
+        if conv is None:
+            return None, Response({"detail": "Chat not found."}, status=status.HTTP_404_NOT_FOUND)
+        return conv, None
+
+    def get(self, request, org_slug: str, public_id: str):
+        conv, missing = self._conversation(request, org_slug, public_id)
+        if missing:
+            return missing
+        return Response({"messages": _thread_payload(conv)})
+
+    def post(self, request, org_slug: str, public_id: str):
+        conv, missing = self._conversation(request, org_slug, public_id)
+        if missing:
+            return missing
+        payload = PostMessageSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        try:
+            reply = conversation.post_message(conv, payload.validated_data["message"])
+        except conversation.ChatError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+        dispatch_chat_turn(reply.id)
+        return Response({"messages": _thread_payload(conv)}, status=status.HTTP_202_ACCEPTED)
 
 
 class GmailConnectionView(GrowthBaseView):

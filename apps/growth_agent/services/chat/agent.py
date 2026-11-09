@@ -53,9 +53,11 @@ def _system(program: GrowthProgram) -> str:
     )
 
 
-def _history(program: GrowthProgram, before_id: int) -> list[dict]:
+def _history(reply: AgentMessage) -> list[dict]:
+    """Recent finished messages of the same conversation (falls back to the program for old rows)."""
+    scope = reply.conversation.messages if reply.conversation_id else reply.program.messages
     recent = (
-        program.messages.filter(status=AgentMessage.Status.COMPLETE, id__lt=before_id)
+        scope.filter(status=AgentMessage.Status.COMPLETE, id__lt=reply.id)
         .exclude(content="")
         .order_by("-created_at", "-id")[:HISTORY_MESSAGES]
     )
@@ -86,11 +88,11 @@ def run_loop(program: GrowthProgram, messages: list[dict]) -> tuple[str, list[di
 
 
 def run_turn(reply_id: int) -> None:
-    reply = AgentMessage.objects.select_related("program__organization").get(pk=reply_id)
+    reply = AgentMessage.objects.select_related("program__organization", "conversation").get(pk=reply_id)
     if reply.status != AgentMessage.Status.PENDING:
         return
     program = GrowthProgram.objects.select_related("organization").get(pk=reply.program_id)
-    messages = [{"role": "system", "content": _system(program)}, *_history(program, reply.id)]
+    messages = [{"role": "system", "content": _system(program)}, *_history(reply)]
     try:
         text, trace = run_loop(program, messages)
         reply.status = AgentMessage.Status.COMPLETE
