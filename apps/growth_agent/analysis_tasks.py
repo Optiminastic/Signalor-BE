@@ -17,11 +17,15 @@ from config.celery_rabbit import analysis_app
 def _build(report_id: int) -> None:
     from django.db import close_old_connections
 
+    from .models import PositioningReport
+    from .services.autopilot import advance_onboarding
     from .services.positioning.report import build_report
 
     close_old_connections()
     try:
         build_report(report_id)
+        # A finished report lets an onboarding program create its plan right away.
+        advance_onboarding(PositioningReport.objects.select_related("program").get(pk=report_id).program)
     finally:
         close_old_connections()
 

@@ -41,7 +41,7 @@ from .serializers import (
     UpdateTaskSerializer,
     WeeklySnapshotSerializer,
 )
-from .services import onboarding, programs
+from .services import autopilot, onboarding, programs
 from .services.chat import conversation
 from .services.execution import on_demand
 from .services.onboarding import Outcome
@@ -89,6 +89,8 @@ class ProgramListCreateView(GrowthBaseView):
         if org is None:
             return Response({"detail": "Brand not found."}, status=status.HTTP_404_NOT_FOUND)
         program, created = programs.get_or_create_program(email, org)
+        autopilot.advance_onboarding(program)  # report -> plan, with no human step
+        program.refresh_from_db()
         code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
         return Response(GrowthProgramSerializer(program).data, status=code)
 
