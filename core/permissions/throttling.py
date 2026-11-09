@@ -9,6 +9,7 @@ and the client IP otherwise.
 
 Rates live in ``config/settings/base.py``. Don't hardcode rates here.
 """
+
 from rest_framework.throttling import UserRateThrottle
 
 
@@ -34,6 +35,12 @@ class AuditStartThrottle(UserRateThrottle):
     """Sitemap/schema/rank audit kickoffs."""
 
     scope = "audit_start"
+
+
+class GrowthAgentThrottle(UserRateThrottle):
+    """Per-user cap on the Growth Agent API (keyed on the signed caller email)."""
+
+    scope = "growth_agent"
 
 
 class PollingThrottle(UserRateThrottle):

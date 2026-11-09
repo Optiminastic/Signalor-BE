@@ -38,6 +38,7 @@ class Integration(models.Model):
         # Notification target rather than a data source: the bot token lives in
         # access_token_encrypted, the workspace/channel in metadata.
         SLACK = "slack", "Slack"
+        GMAIL = "gmail", "Gmail"
 
     organization = models.ForeignKey(
         "organizations.Organization",

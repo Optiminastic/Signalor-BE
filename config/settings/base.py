@@ -61,6 +61,7 @@ INSTALLED_APPS = [
     "apps.drip.apps.DripConfig",
     "apps.integrations.apps.IntegrationsConfig",
     "apps.github_agent.apps.GithubAgentConfig",
+    "apps.growth_agent.apps.GrowthAgentConfig",
     "apps.visibility.apps.VisibilityConfig",
     "apps.recommendation.apps.RecommendationConfig",
     "apps.referrals.apps.ReferralsConfig",
@@ -236,6 +237,8 @@ REST_FRAMEWORK = {
         # Public API (Bearer-token) — per-key ceilings; plan tiers can refine later.
         "public_api_read": "300/minute",
         "public_api_write": "30/minute",
+        # Growth Agent API, per signed user (chat polling included).
+        "growth_agent": "120/minute",
     },
     "EXCEPTION_HANDLER": "shared.exceptions.custom_exception_handler",
 }
@@ -334,6 +337,19 @@ GITHUB_APP_ID = os.getenv("GITHUB_APP_ID", "")
 GITHUB_APP_SLUG = os.getenv("GITHUB_APP_SLUG", "")
 GITHUB_APP_PRIVATE_KEY = os.getenv("GITHUB_APP_PRIVATE_KEY", "")
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+
+# Growth Agent (apps.growth_agent). HMAC secret shared ONLY with the
+# ai-agent-signalor Next.js server, which signs every request after checking
+# the user's Signalor session. Empty = the API rejects every request.
+GROWTH_AGENT_SIGNING_SECRET = os.getenv("GROWTH_AGENT_SIGNING_SECRET", "")
+# Parallel prompt re-checks per weekly snapshot (each one calls every AI engine).
+GROWTH_RECHECK_WORKERS = int(os.getenv("GROWTH_RECHECK_WORKERS", 4))
+# Gmail outreach (server-side OAuth callback on this backend; add it to the Google
+# Cloud OAuth client's redirect URIs). The app URL is where the browser returns.
+GROWTH_GMAIL_REDIRECT_URI = os.getenv(
+    "GROWTH_GMAIL_REDIRECT_URI", "http://localhost:8000/api/growth/oauth/gmail/callback/"
+)
+GROWTH_AGENT_APP_URL = os.getenv("GROWTH_AGENT_APP_URL", "http://localhost:3100")
 
 # Knowledge base ingestion (Epic 3). Each analysis run chunks + embeds the pages
 # it already crawled into BrandCorpusChunk rows (org-scoped, fail-soft). Bounds
