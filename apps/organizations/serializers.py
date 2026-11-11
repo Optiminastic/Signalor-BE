@@ -13,6 +13,18 @@ class OrganizationSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "slug", "owner_email", "created_at"]
 
 
+class OrganizationUpdateSerializer(serializers.ModelSerializer):
+    """Input for editing a brand. These two fields are the whole allowlist.
+
+    Kept separate from ``OrganizationSerializer`` on purpose: a field added to
+    the read shape later must not become editable by accident (SEC-1a).
+    """
+
+    class Meta:
+        model = Organization
+        fields = ["name", "url"]
+
+
 class BrandProfileSerializer(serializers.ModelSerializer):
     """The 7 content sections are editable (a reviewer can correct copy or facts);
     workflow fields (status/confidence/last_verified_at/source_run/sources) are

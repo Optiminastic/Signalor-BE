@@ -1,12 +1,11 @@
-"""SEC-1a-0: observe the brand edit/delete endpoint and lock the owner field.
+"""Observation of the brand edit/delete endpoint, now that sign-in is enforced.
 
-The endpoint is still open during the observation, so these tests pin three
-things: responses do not change (apart from owner_email being rejected), every
-request is classified by whether the caller WOULD be authorized once sign-in is
-enforced, and an alert fires for the attempts that would not be.
+The endpoint refuses unauthorized callers (see test_org_detail_authz). These
+tests pin what is recorded about every request and which refused attempts
+alert, and that the observation can never change what the endpoint returns.
 
-A valid token is not treated as authorization: a signed-in stranger deleting
-someone else's brand must alert exactly like an anonymous caller does.
+A valid token is not treated as authorization: a signed-in stranger trying to
+delete someone else's brand alerts exactly like an anonymous caller does.
 
 Run: manage.py test apps.organizations.tests.test_org_detail_observation
          --settings=config.settings.test
@@ -22,7 +21,6 @@ from django.test import TestCase, override_settings
 from apps.accounts.models import AccountProfile, AgencyMembership
 from apps.organizations import observation
 from apps.organizations.models import Organization
-from apps.organizations.serializers import OrganizationSerializer
 from core.auth.jwt import VerifiedUser
 
 OWNER = "owner@example.test"
@@ -32,6 +30,8 @@ AGENCY_ADMIN = "admin@example.test"
 AGENCY_MEMBER = "member@example.test"
 ALERT_INBOX = "alerts@example.test"
 FAKE_TOKEN = "aaa.bbb.ccc"
+JWKS_URL = "https://auth.example.test/jwks"
+MISSING_PK = 999999
 
 OBSERVATION_EVENT = "org_detail_observation"
 ALERT_EVENT = "org_detail_unauthorized_attempt"
@@ -50,6 +50,7 @@ def run_inline(target) -> None:
     target()
 
 
+@override_settings(BETTER_AUTH_JWKS_URL=JWKS_URL)
 class ObservationTestCase(TestCase):
     def setUp(self):
         self.org = Organization.objects.create(name="Acme", url="https://acme.test", owner_email=OWNER)
@@ -57,18 +58,16 @@ class ObservationTestCase(TestCase):
         self.agency_org = Organization.objects.create(
             name="Agency brand", url="https://agency-brand.test", owner_email=AGENCY
         )
-        AgencyMembership.objects.create(
-            agency_email=AGENCY,
-            member_email=AGENCY_ADMIN,
-            role=AgencyMembership.Role.ADMIN,
-            status=AgencyMembership.Status.ACTIVE,
-        )
-        AgencyMembership.objects.create(
-            agency_email=AGENCY,
-            member_email=AGENCY_MEMBER,
-            role=AgencyMembership.Role.MEMBER,
-            status=AgencyMembership.Status.ACTIVE,
-        )
+        for member, role in (
+            (AGENCY_ADMIN, AgencyMembership.Role.ADMIN),
+            (AGENCY_MEMBER, AgencyMembership.Role.MEMBER),
+        ):
+            AgencyMembership.objects.create(
+                agency_email=AGENCY,
+                member_email=member,
+                role=role,
+                status=AgencyMembership.Status.ACTIVE,
+            )
 
     def url(self, org: Organization | None = None, pk: int | None = None) -> str:
         return f"/api/organizations/{pk if pk is not None else (org or self.org).pk}/"
@@ -97,7 +96,7 @@ class ObservationTestCase(TestCase):
 
 
 class WouldBeAuthorizedTests(ObservationTestCase):
-    """One case per row of the authorization table SEC-1a will enforce."""
+    """The observation reports against the same rule the endpoint enforces."""
 
     def assert_verdict(self, method: str, email: str, org: Organization, expected: bool):
         self.assertIs(observation.would_be_authorized(method, email, org), expected)
@@ -130,14 +129,14 @@ class WouldBeAuthorizedTests(ObservationTestCase):
 
 
 class ObservationLineTests(ObservationTestCase):
-    def test_anonymous_patch_is_observed_as_not_authorized(self):
+    def test_anonymous_edit_is_observed_as_refused(self):
         _, messages = self.captured(lambda: self.patch({"name": "Renamed"}))
         line = self.observation_line(messages)
         self.assertIn("method=PATCH", line)
         self.assertIn("caller=anonymous", line)
         self.assertIn("would_be_authorized=no", line)
         self.assertIn("owner_change_attempted=no", line)
-        self.assertIn("status=200", line)
+        self.assertIn("status=401", line)
         self.assertIn(f"org_id={self.org.pk}", line)
 
     def test_unverified_token_is_observed_as_invalid_token(self):
@@ -158,20 +157,38 @@ class ObservationLineTests(ObservationTestCase):
         line = self.observation_line(messages)
         self.assertIn("caller=verified", line)
         self.assertIn("would_be_authorized=yes", line)
+        self.assertIn("status=200", line)
 
-    def test_verified_stranger_is_observed_as_not_authorized(self):
+    def test_verified_stranger_is_observed_as_refused(self):
         with as_verified(STRANGER):
             _, messages = self.captured(lambda: self.patch({"name": "Renamed"}))
         line = self.observation_line(messages)
         self.assertIn("caller=verified", line)
         self.assertIn("would_be_authorized=no", line)
+        self.assertIn("status=404", line)
 
     def test_missing_brand_is_observed_as_not_applicable(self):
-        response, messages = self.captured(lambda: self.delete(pk=999999))
+        with as_verified(STRANGER):
+            response, messages = self.captured(lambda: self.delete(pk=MISSING_PK))
         self.assertEqual(response.status_code, 404)
         line = self.observation_line(messages)
         self.assertIn("would_be_authorized=n/a", line)
         self.assertIn("status=404", line)
+
+    def test_invalid_value_from_the_owner_is_observed_with_its_400(self):
+        with as_verified(OWNER):
+            response, messages = self.captured(lambda: self.patch({"name": ""}))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("status=400", self.observation_line(messages))
+
+    def test_malformed_json_from_the_owner_is_observed_with_its_400(self):
+        def call():
+            return self.client.patch(self.url(), data="{not json", content_type="application/json")
+
+        with as_verified(OWNER):
+            response, messages = self.captured(call)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("status=400", self.observation_line(messages))
 
     def test_origin_host_is_recorded_without_scheme_or_path(self):
         _, messages = self.captured(
@@ -210,122 +227,65 @@ class ObservationLineTests(ObservationTestCase):
             self.client.get("/api/organizations/check/", {"email": OWNER})
 
 
-class BehaviorUnchangedTests(ObservationTestCase):
-    """The endpoint stays open during the observation. Only owner_email is locked."""
+class ObservationNeverChangesTheOutcomeTests(ObservationTestCase):
+    """Enforcement does not depend on the observation, in either direction."""
 
-    def test_anonymous_rename_still_works(self):
-        response = self.patch({"name": "Renamed", "url": "https://renamed.test"})
-        self.assertEqual(response.status_code, 200)
-        self.org.refresh_from_db()
-        self.assertEqual(self.org.name, "Renamed")
-        self.assertEqual(self.org.url, "https://renamed.test")
-        self.assertEqual(set(response.json()), {"id", "name", "slug", "url", "owner_email", "created_at"})
-
-    def test_anonymous_delete_still_works(self):
-        response = self.delete()
-        self.assertEqual(response.status_code, 204)
-        self.assertFalse(Organization.objects.filter(pk=self.org.pk).exists())
-
-    def test_signed_in_stranger_delete_still_succeeds_during_observation(self):
-        with as_verified(STRANGER):
-            response = self.delete()
-        self.assertEqual(response.status_code, 204)
-        self.assertFalse(Organization.objects.filter(pk=self.org.pk).exists())
-
-    def test_missing_brand_keeps_its_404_body(self):
-        response = self.patch({"name": "x"}, pk=999999)
-        self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json(), {"error": "Organization not found."})
-
-    def test_invalid_body_is_still_rejected_and_observed(self):
-        response, messages = self.captured(lambda: self.patch({"name": ""}))
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("status=400", self.observation_line(messages))
-
-    def test_malformed_json_edit_is_still_a_400_and_changes_nothing(self):
-        def call():
-            return self.client.patch(self.url(), data="{not json", content_type="application/json")
-
-        response, messages = self.captured(call)
-        self.assertEqual(response.status_code, 400)
-        self.org.refresh_from_db()
-        self.assertEqual(self.org.name, "Acme")
-        self.assertIn("status=400", self.observation_line(messages))
-
-    def test_malformed_json_edit_of_a_missing_brand_is_still_a_404(self):
-        response = self.client.patch(self.url(pk=999999), data="{not json", content_type="application/json")
-        self.assertEqual(response.status_code, 404)
-
-    def test_delete_never_reads_the_body(self):
-        response = self.client.delete(self.url(), data="{not json", content_type="application/json")
-        self.assertEqual(response.status_code, 204)
-
-    def test_failing_authorization_check_never_changes_the_response(self):
+    def test_failing_observation_check_does_not_block_the_owner(self):
         with mock.patch.object(observation, "would_be_authorized", side_effect=RuntimeError("boom")):
             with as_verified(OWNER):
                 response, messages = self.captured(lambda: self.patch({"name": "Renamed"}))
         self.assertEqual(response.status_code, 200)
         self.assertIn("would_be_authorized=error", self.observation_line(messages))
 
-    def test_failing_log_call_never_changes_the_response(self):
-        with mock.patch.object(observation.logger, "info", side_effect=RuntimeError("boom")):
-            response = self.patch({"name": "Renamed"})
-        self.assertEqual(response.status_code, 200)
+    def test_failing_observation_check_does_not_admit_a_stranger(self):
+        with mock.patch.object(observation, "would_be_authorized", side_effect=RuntimeError("boom")):
+            with as_verified(STRANGER):
+                response = self.delete()
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(Organization.objects.filter(pk=self.org.pk).exists())
 
+    def test_failing_record_step_does_not_change_the_response(self):
+        with mock.patch.object(observation.Observation, "fields", side_effect=RuntimeError("boom")):
+            anonymous = self.patch({"name": "Renamed"})
+            with as_verified(OWNER):
+                owner = self.patch({"name": "Renamed"})
+        self.assertEqual((anonymous.status_code, owner.status_code), (401, 200))
 
-class OwnerEmailLockTests(ObservationTestCase):
-    def assert_locked(self, response):
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["code"], "owner_email_read_only")
-        self.org.refresh_from_db()
-        self.assertEqual(self.org.owner_email, OWNER)
-
-    def test_anonymous_owner_change_is_rejected(self):
-        self.assert_locked(self.patch({"owner_email": STRANGER}))
-
-    def test_verified_owner_cannot_change_owner_here_either(self):
-        with as_verified(OWNER):
-            self.assert_locked(self.patch({"owner_email": STRANGER}))
-
-    def test_same_value_is_rejected_too(self):
-        self.assert_locked(self.patch({"owner_email": OWNER}))
-
-    def test_a_request_carrying_owner_email_changes_nothing_else(self):
-        self.assert_locked(self.patch({"name": "Renamed", "owner_email": STRANGER}))
-        self.assertEqual(self.org.name, "Acme")
-
-    def test_owner_email_is_still_returned(self):
-        self.assertEqual(self.patch({"name": "Renamed"}).json()["owner_email"], OWNER)
-
-    def test_serializer_declares_owner_email_read_only(self):
-        self.assertIn("owner_email", OrganizationSerializer.Meta.read_only_fields)
-        self.assertIn("owner_email", OrganizationSerializer.Meta.fields)
+    def test_failing_classification_does_not_change_the_response(self):
+        with mock.patch.object(observation, "verified_email", side_effect=RuntimeError("boom")):
+            response = self.delete()
+        self.assertEqual(response.status_code, 401)
+        self.assertTrue(Organization.objects.filter(pk=self.org.pk).exists())
 
 
 class AlertTests(ObservationTestCase):
-    """One case per row of the alert table."""
+    """Refused destructive attempts alert. A valid token alone never silences one."""
 
     def alerts_for(self, call) -> list[str]:
         _, messages = self.captured(call)
         return self.alert_lines(messages)
 
-    def test_anonymous_delete_alerts(self):
+    def test_anonymous_delete_alerts_and_is_refused(self):
         lines = self.alerts_for(self.delete)
         self.assertEqual(len(lines), 1)
         self.assertIn("attempt=delete", lines[0])
         self.assertIn("caller=anonymous", lines[0])
+        self.assertIn("status=401", lines[0])
+        self.assertTrue(Organization.objects.filter(pk=self.org.pk).exists())
 
     def test_invalid_token_delete_alerts(self):
         lines = self.alerts_for(lambda: self.delete(HTTP_AUTHORIZATION=f"Bearer {FAKE_TOKEN}"))
         self.assertEqual(len(lines), 1)
         self.assertIn("caller=invalid_token", lines[0])
 
-    def test_signed_in_stranger_delete_alerts(self):
+    def test_signed_in_stranger_delete_alerts_and_is_refused(self):
         with as_verified(STRANGER):
             lines = self.alerts_for(self.delete)
         self.assertEqual(len(lines), 1)
         self.assertIn("attempt=delete", lines[0])
         self.assertIn("caller=verified", lines[0])
+        self.assertIn("status=404", lines[0])
+        self.assertTrue(Organization.objects.filter(pk=self.org.pk).exists())
 
     def test_agency_admin_delete_alerts(self):
         with as_verified(AGENCY_ADMIN):
@@ -333,21 +293,20 @@ class AlertTests(ObservationTestCase):
         self.assertEqual(len(lines), 1)
         self.assertIn("attempt=delete", lines[0])
 
-    def test_owner_change_attempt_alerts_for_anyone(self):
-        self.assertIn(
-            "attempt=owner_change", self.alerts_for(lambda: self.patch({"owner_email": STRANGER}))[0]
-        )
+    def test_owner_change_attempt_by_an_authorized_caller_alerts(self):
         with as_verified(OWNER):
             lines = self.alerts_for(lambda: self.patch({"owner_email": STRANGER}))
+        self.assertEqual(len(lines), 1)
         self.assertIn("attempt=owner_change", lines[0])
+        self.assertIn("status=400", lines[0])
 
-    def test_signed_in_stranger_rename_alerts(self):
+    def test_signed_in_stranger_edit_alerts(self):
         with as_verified(STRANGER):
             lines = self.alerts_for(lambda: self.patch({"name": "Renamed"}))
         self.assertEqual(len(lines), 1)
         self.assertIn("attempt=cross_account_edit", lines[0])
 
-    def test_agency_member_rename_alerts(self):
+    def test_agency_member_edit_alerts(self):
         with as_verified(AGENCY_MEMBER):
             lines = self.alerts_for(lambda: self.patch({"name": "Renamed"}, org=self.agency_org))
         self.assertIn("attempt=cross_account_edit", lines[0])
@@ -356,24 +315,33 @@ class AlertTests(ObservationTestCase):
         with as_verified(OWNER):
             self.assertEqual(self.alerts_for(self.delete), [])
 
-    def test_owner_rename_does_not_alert(self):
+    def test_owner_edit_does_not_alert(self):
         with as_verified(OWNER):
             self.assertEqual(self.alerts_for(lambda: self.patch({"name": "Renamed"})), [])
 
-    def test_agency_admin_rename_does_not_alert(self):
+    def test_agency_admin_edit_does_not_alert(self):
         with as_verified(AGENCY_ADMIN):
             lines = self.alerts_for(lambda: self.patch({"name": "Renamed"}, org=self.agency_org))
         self.assertEqual(lines, [])
 
-    def test_anonymous_rename_is_counted_but_does_not_alert(self):
+    def test_anonymous_edit_is_counted_but_does_not_alert(self):
         self.assertEqual(self.alerts_for(lambda: self.patch({"name": "Renamed"})), [])
 
-    def test_delete_of_missing_brand_does_not_alert(self):
-        self.assertEqual(self.alerts_for(lambda: self.delete(pk=999999)), [])
+    def test_anonymous_request_body_is_never_read(self):
+        """An unverified caller is refused before the body is parsed, so an
+        owner_email in it is not reported as an owner-change attempt."""
+        response, messages = self.captured(lambda: self.patch({"owner_email": STRANGER}))
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("owner_change_attempted=no", self.observation_line(messages))
+        self.assertEqual(self.alert_lines(messages), [])
 
-    def test_delete_alerts_when_the_authorization_check_fails(self):
+    def test_delete_of_a_missing_brand_does_not_alert(self):
+        with as_verified(STRANGER):
+            self.assertEqual(self.alerts_for(lambda: self.delete(pk=MISSING_PK)), [])
+
+    def test_delete_alerts_when_the_observation_check_fails(self):
         with mock.patch.object(observation, "would_be_authorized", side_effect=RuntimeError("boom")):
-            with as_verified(OWNER):
+            with as_verified(STRANGER):
                 lines = self.alerts_for(self.delete)
         self.assertEqual(len(lines), 1)
         self.assertIn("would_be_authorized=error", lines[0])
@@ -405,8 +373,8 @@ class AlertEmailTests(ObservationTestCase):
     @override_settings(ORG_ENDPOINT_ALERT_EMAILS=[ALERT_INBOX], CACHES=LOCMEM_CACHE)
     def test_repeat_alerts_for_the_same_brand_send_one_email_but_log_each_time(self):
         cache.clear()
-        _, first = self.captured(lambda: self.patch({"owner_email": STRANGER}))
-        _, second = self.captured(lambda: self.patch({"owner_email": STRANGER}))
+        _, first = self.captured(self.delete)
+        _, second = self.captured(self.delete)
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(len(self.alert_lines(first)), 1)
         self.assertEqual(len(self.alert_lines(second)), 1)
@@ -414,15 +382,16 @@ class AlertEmailTests(ObservationTestCase):
     @override_settings(ORG_ENDPOINT_ALERT_EMAILS=[ALERT_INBOX], CACHES=LOCMEM_CACHE)
     def test_a_different_attempt_on_the_same_brand_is_emailed_separately(self):
         cache.clear()
-        self.patch({"owner_email": STRANGER})
-        self.delete()
+        with as_verified(STRANGER):
+            self.patch({"name": "Renamed"})
+            self.delete()
         self.assertEqual(len(mail.outbox), 2)
 
     @override_settings(ORG_ENDPOINT_ALERT_EMAILS=[ALERT_INBOX])
     def test_a_failing_mail_backend_never_changes_the_response(self):
         with mock.patch.object(observation, "send_mail", side_effect=RuntimeError("smtp down")):
             response = self.delete()
-        self.assertEqual(response.status_code, 204)
+        self.assertEqual(response.status_code, 401)
 
 
 @mock.patch.object(observation, "_run_in_background", run_inline)
@@ -442,3 +411,11 @@ class NothingSensitiveIsRecordedTests(ObservationTestCase):
         self.assertTrue(mail.outbox)
         for secret in (FAKE_TOKEN, STRANGER, OWNER, self.SECRET_NAME, "acme.test"):
             self.assertNotIn(secret, recorded)
+
+    def test_successful_edit_logs_field_names_but_not_values(self):
+        with as_verified(OWNER):
+            _, messages = self.captured(lambda: self.patch({"name": self.SECRET_NAME}))
+        recorded = "\n".join(messages)
+        self.assertIn("fields=name", recorded)
+        self.assertNotIn(self.SECRET_NAME, recorded)
+        self.assertNotIn(OWNER, recorded)
