@@ -17,7 +17,14 @@ from .views import (
     TaskUpdateView,
     TrackingView,
 )
-from .views_control import APPROVE, REJECT, ActionDecisionView, ActionDetailView, ApprovalListView
+from .views_control import (
+    APPROVE,
+    REJECT,
+    ActionDecisionView,
+    ActionDetailView,
+    ActionResolveView,
+    ApprovalListView,
+)
 
 app_name = "growth_agent"
 
@@ -47,6 +54,11 @@ urlpatterns = [
         "programs/<str:org_slug>/actions/<str:public_id>/reject/",
         ActionDecisionView.as_view(decision=REJECT),
         name="action-reject",
+    ),
+    path(
+        "programs/<str:org_slug>/actions/<str:public_id>/resolve/",
+        ActionResolveView.as_view(),
+        name="action-resolve",
     ),
     path(
         "programs/<str:org_slug>/actions/<str:public_id>/",

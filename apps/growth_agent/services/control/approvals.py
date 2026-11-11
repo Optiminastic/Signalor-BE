@@ -13,6 +13,7 @@ that re-checks the approval before it acts.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
 from django.db import transaction
 
@@ -79,10 +80,18 @@ def _locked_action(program: GrowthProgram, public_id: str) -> GrowthAction:
 def _already_decided(action: GrowthAction, request: DecisionRequest) -> bool:
     """A repeat of the decision already in force is a no-op, not an error, so a
     retried or replayed request can never create a second record."""
-    return action.state == RESULTING_STATE[request.decision] and _matches_current(action, request)
+    return action.state == RESULTING_STATE[request.decision] and matches_current(action, request)
 
 
-def _matches_current(action: GrowthAction, request: DecisionRequest) -> bool:
+class ReviewedDraft(Protocol):
+    """Anything that names the exact draft a person reviewed."""
+
+    version_number: int
+    payload_hash: str
+
+
+def matches_current(action: GrowthAction, request: ReviewedDraft) -> bool:
+    """Whether the request names the action's current version and its hash."""
     version = action.current_version
     return (
         version is not None
@@ -100,7 +109,7 @@ def decide(program: GrowthProgram, public_id: str, request: DecisionRequest) -> 
             return action
         if action.state not in ALLOWED_FROM[request.decision]:
             raise DecisionRefused("illegal_state", f"This action is {action.state} and can no longer change.")
-        if not _matches_current(action, request):
+        if not matches_current(action, request):
             raise DecisionRefused("stale", "The draft changed since you reviewed it. Review it again.")
 
         ApprovalDecision.objects.create(

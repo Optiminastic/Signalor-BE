@@ -423,6 +423,8 @@ class GrowthAction(models.Model):
         SUCCEEDED = "succeeded", "Succeeded"
         FAILED = "failed", "Failed"
         NEEDS_RECONCILIATION = "needs_reconciliation", "Outcome unknown"
+        # Closed by the owner with the outcome still unknown. Never sent again.
+        CANCELLED = "cancelled", "Closed, outcome unknown"
 
     public_id = models.CharField(max_length=16, unique=True, default=new_action_id, editable=False)
     # Denormalized from task.cycle.program so every lookup can be scoped to the
@@ -478,6 +480,9 @@ class ApprovalDecision(ImmutableModel):
     class Decision(models.TextChoices):
         APPROVED = "approved", "Approved"
         REJECTED = "rejected", "Rejected"
+        # How the owner closed an action whose send outcome was unknown.
+        RESOLVED_SENT = "resolved_sent", "Confirmed sent"
+        RESOLVED_CANCELLED = "resolved_cancelled", "Closed, outcome unknown"
 
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="growth_decisions")
     action = models.ForeignKey(GrowthAction, on_delete=models.CASCADE, related_name="decisions")
@@ -485,7 +490,7 @@ class ApprovalDecision(ImmutableModel):
     # Copied from the version at decision time: the decision records what the
     # person saw, independently of the row it points at.
     payload_hash = models.CharField(max_length=64)
-    decision = models.CharField(max_length=10, choices=Decision.choices)
+    decision = models.CharField(max_length=24, choices=Decision.choices)
     actor_email = models.EmailField()
     actor_role = models.CharField(max_length=16, default="owner")
     reason = models.CharField(max_length=500, blank=True, default="")

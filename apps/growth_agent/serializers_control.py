@@ -7,7 +7,7 @@ is exactly what would be sent. A recipient is never returned as an address.
 from rest_framework import serializers
 
 from .models import ApprovalDecision, GrowthAction
-from .services.control import actions
+from .services.control import actions, resolution
 
 HASH_LENGTH = 64
 
@@ -18,6 +18,15 @@ class DecisionRequestSerializer(serializers.Serializer):
     version = serializers.IntegerField(min_value=1)
     payload_hash = serializers.CharField(min_length=HASH_LENGTH, max_length=HASH_LENGTH)
     reason = serializers.CharField(max_length=500, required=False, allow_blank=True, default="")
+
+
+class ResolutionRequestSerializer(DecisionRequestSerializer):
+    """How the owner closes an action whose send outcome is unknown.
+
+    There is deliberately no "send it again" choice.
+    """
+
+    resolution = serializers.ChoiceField(choices=resolution.RESOLUTIONS)
 
 
 class ApprovalDecisionSerializer(serializers.ModelSerializer):

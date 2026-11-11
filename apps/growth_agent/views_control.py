@@ -13,9 +13,14 @@ from rest_framework import status
 from rest_framework.response import Response
 
 from .models import ApprovalDecision, GrowthAction
-from .serializers_control import ActionDetailSerializer, ActionSerializer, DecisionRequestSerializer
+from .serializers_control import (
+    ActionDetailSerializer,
+    ActionSerializer,
+    DecisionRequestSerializer,
+    ResolutionRequestSerializer,
+)
 from .services import programs
-from .services.control import approvals
+from .services.control import approvals, resolution
 from .views import GrowthBaseView
 
 PAGE_SIZE = 50
@@ -86,6 +91,35 @@ class ActionDecisionView(GrowthBaseView):
         )
         try:
             action = approvals.decide(program, public_id, decision_request)
+        except approvals.ActionNotFound:
+            return Response(NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        except approvals.DecisionRefused as exc:
+            return Response({"detail": str(exc), "code": exc.code}, status=status.HTTP_409_CONFLICT)
+        action = _actions_for(program).prefetch_related("decisions__version").get(pk=action.pk)
+        return Response({"action": ActionDetailSerializer(action).data})
+
+
+class ActionResolveView(GrowthBaseView):
+    """POST .../actions/<id>/resolve/: close an action whose send outcome is unknown.
+
+    ``resolution`` is ``confirmed_sent`` or ``cancel``. Nothing is sent either way.
+    """
+
+    def post(self, request, org_slug: str, public_id: str):
+        program, missing = _program_or_404(request, org_slug)
+        if missing:
+            return missing
+        payload = ResolutionRequestSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        resolution_request = resolution.ResolutionRequest(
+            resolution=payload.validated_data["resolution"],
+            version_number=payload.validated_data["version"],
+            payload_hash=payload.validated_data["payload_hash"],
+            actor_email=request.user.email,
+            reason=payload.validated_data["reason"],
+        )
+        try:
+            action = resolution.resolve(program, public_id, resolution_request)
         except approvals.ActionNotFound:
             return Response(NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
         except approvals.DecisionRefused as exc:
