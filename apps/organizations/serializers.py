@@ -7,7 +7,10 @@ class OrganizationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Organization
         fields = ["id", "name", "slug", "url", "owner_email", "created_at"]
-        read_only_fields = ["id", "slug", "created_at"]
+        # owner_email is returned but never writable through this serializer:
+        # ownership is assigned at onboarding and must not be reassignable by
+        # whoever can reach the edit endpoint (SEC-1a-0).
+        read_only_fields = ["id", "slug", "owner_email", "created_at"]
 
 
 class BrandProfileSerializer(serializers.ModelSerializer):

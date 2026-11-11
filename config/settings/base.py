@@ -255,6 +255,15 @@ BETTER_AUTH_JWT_ALGORITHMS = [
 ]
 REQUIRE_VERIFIED_IDENTITY = os.getenv("REQUIRE_VERIFIED_IDENTITY", "false").strip().lower() == "true"
 
+# ── Brand endpoint observation (SEC-1a-0) ───────────────────────────────────
+# Fallback channel for unauthorized-attempt alerts on the brand edit/delete
+# endpoint (apps/organizations/observation.py). Sentry is the primary channel;
+# these addresses also get a direct email. Comma-separated. Empty disables the
+# email only, never the error-level log. See docs/runbooks/ORG_ENDPOINT_ALERTS.md.
+ORG_ENDPOINT_ALERT_EMAILS = [
+    address.strip() for address in os.getenv("ORG_ENDPOINT_ALERT_EMAILS", "").split(",") if address.strip()
+]
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
