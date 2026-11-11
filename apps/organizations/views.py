@@ -4,6 +4,7 @@ import logging
 
 from django.db import connection, transaction
 from rest_framework import status
+from rest_framework.exceptions import APIException
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -11,6 +12,7 @@ from rest_framework.views import APIView
 from apps.analyzer.onboarding_security import gate_onboarding_endpoint
 from core.permissions.throttling import PollingThrottle
 
+from . import observation
 from .models import BrandProfile, Organization
 from .serializers import BrandProfileSerializer, OnboardSerializer, OrganizationSerializer
 from .throttling import OnboardEmailThrottle
@@ -172,34 +174,62 @@ class OrganizationListView(APIView):
 
 
 class OrganizationDetailView(APIView):
+    """Edit or delete a brand.
+
+    SEC-1a-0 (observation): this endpoint does not require sign-in yet. Until it
+    does, every request is classified by whether the caller WOULD be authorized
+    and unauthorized attempts are alerted (see ``observation``). The one thing
+    already enforced is that ``owner_email`` cannot be changed here by anyone.
+    """
+
     permission_classes = [AllowAny]
     throttle_classes = [PollingThrottle]
 
     def patch(self, request, pk):
-        try:
-            org = Organization.objects.get(pk=pk)
-        except Organization.DoesNotExist:
-            return Response(
-                {"error": "Organization not found."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+        return self._observed(request, pk, observation.METHOD_PATCH, self._update)
 
+    def delete(self, request, pk):
+        return self._observed(request, pk, observation.METHOD_DELETE, self._destroy)
+
+    def _observed(self, request, pk, method, operation):
+        org = Organization.objects.filter(pk=pk).first()
+        owner_change = False
+        try:
+            # The body is read only where it was read before (an edit of a brand
+            # that exists), so a malformed body keeps producing the same response.
+            if org is not None and method == observation.METHOD_PATCH:
+                owner_change = observation.owner_change_attempted(request)
+            # Classified before the operation: after a delete the owner can't be read.
+            seen = observation.observe(request, method, org, pk, owner_change)
+            response = operation(request, org, owner_change)
+        except APIException as exc:
+            observation.record(observation.observe(request, method, org, pk, owner_change), exc.status_code)
+            raise
+        observation.record(seen, response.status_code)
+        return response
+
+    def _update(self, request, org, owner_change):
+        if org is None:
+            return _organization_not_found()
+        if owner_change:
+            return Response(
+                {"detail": "The owner of a brand cannot be changed here.", "code": "owner_email_read_only"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         serializer = OrganizationSerializer(org, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
 
-    def delete(self, request, pk):
-        try:
-            org = Organization.objects.get(pk=pk)
-        except Organization.DoesNotExist:
-            return Response(
-                {"error": "Organization not found."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
+    def _destroy(self, request, org, owner_change):
+        if org is None:
+            return _organization_not_found()
         org.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _organization_not_found() -> Response:
+    return Response({"error": "Organization not found."}, status=status.HTTP_404_NOT_FOUND)
 
 
 # ── Brand Profile (Epic 2) ────────────────────────────────────────────────
