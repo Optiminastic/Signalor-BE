@@ -1,7 +1,9 @@
 import contextlib
 import hashlib
 import logging
+from collections.abc import Mapping
 
+from django.conf import settings
 from django.db import connection, transaction
 from rest_framework import status
 from rest_framework.exceptions import APIException
@@ -10,15 +12,25 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.analyzer.onboarding_security import gate_onboarding_endpoint
+from core.auth.identity import resolve_request_email
 from core.permissions.throttling import PollingThrottle
 
-from . import observation
+from . import access, observation
 from .models import BrandProfile, Organization
-from .serializers import BrandProfileSerializer, OnboardSerializer, OrganizationSerializer
+from .serializers import (
+    BrandProfileSerializer,
+    OnboardSerializer,
+    OrganizationSerializer,
+    OrganizationUpdateSerializer,
+)
 from .throttling import OnboardEmailThrottle
 from .utils import normalize_url
 
 logger = logging.getLogger("apps")
+
+# The whole edit allowlist for a brand. Derived from the update serializer so
+# the two cannot disagree.
+EDITABLE_FIELDS = frozenset(OrganizationUpdateSerializer.Meta.fields)
 
 # Postgres advisory locks are keyed by bigint, so hash the email down to one.
 # Signed 63-bit range — pg_advisory_xact_lock takes a signed bigint.
@@ -174,58 +186,112 @@ class OrganizationListView(APIView):
 
 
 class OrganizationDetailView(APIView):
-    """Edit or delete a brand.
+    """Edit or delete a brand (SEC-1a).
 
-    SEC-1a-0 (observation): this endpoint does not require sign-in yet. Until it
-    does, every request is classified by whether the caller WOULD be authorized
-    and unauthorized attempts are alerted (see ``observation``). The one thing
-    already enforced is that ``owner_email`` cannot be changed here by anyone.
+    A verified caller is always required here, whatever the global
+    ``REQUIRE_VERIFIED_IDENTITY`` flag says. The brand id in the URL is a
+    sequential integer, so identity can never come from the request itself.
+
+    - Edit: the owner, or an admin of the agency that owns the brand.
+    - Delete: the owner only.
+    - Only ``name`` and ``url`` can be edited.
+
+    A brand the caller may not touch answers exactly like one that does not
+    exist, so the ids cannot be probed. Every request is also recorded by
+    ``observation``, which alerts on the attempts that are refused.
     """
 
+    # Identity and ownership are enforced in ``_refusal``. The DRF permission
+    # stays open so an unverified caller gets this view's own 401 body.
     permission_classes = [AllowAny]
     throttle_classes = [PollingThrottle]
 
     def patch(self, request, pk):
-        return self._observed(request, pk, observation.METHOD_PATCH, self._update)
+        return self._handle(request, pk, observation.METHOD_PATCH, access.may_edit, self._update)
 
     def delete(self, request, pk):
-        return self._observed(request, pk, observation.METHOD_DELETE, self._destroy)
+        return self._handle(request, pk, observation.METHOD_DELETE, access.may_delete, self._destroy)
 
-    def _observed(self, request, pk, method, operation):
+    def _handle(self, request, pk, method, is_allowed, operation):
         org = Organization.objects.filter(pk=pk).first()
         owner_change = False
         try:
-            # The body is read only where it was read before (an edit of a brand
-            # that exists), so a malformed body keeps producing the same response.
-            if org is not None and method == observation.METHOD_PATCH:
+            refusal = _refusal(request, org, is_allowed)
+            # The body is read only for a caller who is allowed to edit, so an
+            # unauthenticated request is refused before anything is parsed.
+            if refusal is None and method == observation.METHOD_PATCH:
                 owner_change = observation.owner_change_attempted(request)
             # Classified before the operation: after a delete the owner can't be read.
             seen = observation.observe(request, method, org, pk, owner_change)
-            response = operation(request, org, owner_change)
+            response = refusal if refusal is not None else operation(request, org)
         except APIException as exc:
             observation.record(observation.observe(request, method, org, pk, owner_change), exc.status_code)
             raise
         observation.record(seen, response.status_code)
         return response
 
-    def _update(self, request, org, owner_change):
-        if org is None:
-            return _organization_not_found()
-        if owner_change:
+    def _update(self, request, org):
+        rejected = _fields_not_editable(request.data)
+        if observation.OWNER_FIELD in rejected:
             return Response(
                 {"detail": "The owner of a brand cannot be changed here.", "code": "owner_email_read_only"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        serializer = OrganizationSerializer(org, data=request.data, partial=True)
+        if rejected:
+            return Response(
+                {
+                    "detail": "These fields cannot be edited.",
+                    "code": "field_not_editable",
+                    "fields": rejected,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        serializer = OrganizationUpdateSerializer(org, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        return Response(serializer.data)
+        logger.info(
+            "organization updated org_id=%s fields=%s", org.pk, ",".join(sorted(serializer.validated_data))
+        )
+        return Response(OrganizationSerializer(org).data)
 
-    def _destroy(self, request, org, owner_change):
-        if org is None:
-            return _organization_not_found()
+    def _destroy(self, request, org):
+        org_id = org.pk
         org.delete()
+        logger.info("organization deleted org_id=%s", org_id)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _refusal(request, org, is_allowed) -> Response | None:
+    """Why this caller may not act on ``org``, or None when they may.
+
+    Order matters. Identity is checked before the brand is considered, so an
+    unverified caller learns nothing about which ids exist.
+    """
+    if not getattr(settings, "BETTER_AUTH_JWKS_URL", ""):
+        # Distinct from 401: no caller can authenticate on this deployment, and
+        # the operator should not go hunting for a bad token.
+        logger.error(
+            "Refusing %s %s: BETTER_AUTH_JWKS_URL is unset, so no caller can authenticate.",
+            request.method,
+            request.path,
+        )
+        return Response(
+            {"detail": "Authentication is not configured on this server.", "code": "auth_unavailable"},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    email, unauthenticated = resolve_request_email(request, require_verified=True)
+    if unauthenticated is not None:
+        return unauthenticated
+    if org is None or not is_allowed(email, org):
+        return _organization_not_found()
+    return None
+
+
+def _fields_not_editable(data) -> list[str]:
+    """Keys in the request body that are outside the edit allowlist, sorted."""
+    if not isinstance(data, Mapping):
+        return []  # not an object: the serializer rejects it with its usual 400
+    return sorted(str(key) for key in data if key not in EDITABLE_FIELDS)
 
 
 def _organization_not_found() -> Response:

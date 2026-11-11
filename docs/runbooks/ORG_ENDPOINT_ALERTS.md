@@ -94,6 +94,28 @@ A table of counts by `(origin_host, caller, would_be_authorized, method)`.
 The window passes when every row with real traffic shows `would_be_authorized=yes`.
 Any other row is a caller to identify and fix before SEC-1a is enforced, or to accept in writing.
 
+## Once sign-in is enforced (SEC-1a)
+
+SEC-1a is a separate change, deployed to an environment only after that environment's observation has passed.
+
+After it is deployed:
+
+- A caller with no verified token gets `401`, whatever the brand id.
+- A signed-in caller who may not act on the brand gets `404`, the same answer as for a brand that does not exist.
+- Only `name` and `url` can be edited. Any other key in the body is rejected with `400`.
+- With `BETTER_AUTH_JWKS_URL` unset, both methods return `503` and nothing can be edited or deleted.
+
+The observation line and the alerts stay on.
+The `status` field now shows that an attempt was refused (`401` or `404`), so an alert means "someone tried", not "something was changed".
+An unverified caller is refused before the body is read, so an `owner_email` sent without a valid token is not reported as an owner-change attempt.
+
+Watch the count of `status=401` by `origin_host` for the first 7 days.
+A legitimate caller that still sends no token shows up there, and is fixed by making it send one.
+Rolling the enforcement back is not the remedy for a broken caller, because it reopens the endpoint.
+
+Changing the owner of an existing brand has no application or admin path until the audited transfer view (SEC-1b) exists.
+Until then it needs a database administrator and a written change record: who, why, when, and digests of the old and new owner.
+
 ## Limits
 
 - This change does not stop renames or deletes. It only stops ownership changes, and makes the rest visible.

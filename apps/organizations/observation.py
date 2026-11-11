@@ -26,9 +26,9 @@ from django.conf import settings
 from django.core.cache import cache
 from django.core.mail import send_mail
 
-from apps.accounts.agency_utils import writable_owner_emails
 from core.auth.identity import verified_email
 
+from . import access
 from .models import Organization
 
 logger = logging.getLogger("apps")
@@ -82,18 +82,14 @@ class Observation:
 
 
 def would_be_authorized(method: str, email: str, org: Organization) -> bool:
-    """Whether ``email`` would be allowed ``method`` on ``org`` once sign-in is enforced.
+    """Whether ``email`` is allowed ``method`` on ``org``.
 
-    Edit: the owner, or an admin of the agency that owns the brand.
-    Delete: the owner only.
+    Delegates to ``access``, the same rule the endpoint enforces, so what is
+    reported and what is enforced can never drift apart.
     """
-    caller = (email or "").strip().lower()
-    if not caller:
-        return False
-    owner = (org.owner_email or "").strip().lower()
     if method == METHOD_DELETE:
-        return caller == owner
-    return owner in writable_owner_emails(caller)
+        return access.may_delete(email, org)
+    return access.may_edit(email, org)
 
 
 def owner_change_attempted(request) -> bool:
