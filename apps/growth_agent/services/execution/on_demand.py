@@ -1,10 +1,12 @@
 """
 On-demand task actions: preview a task now, or pull its scheduled run forward.
 
-Preview runs the channel's real work (writing, contact discovery, the full
-brand-safety gate) in dry-run mode: nothing is published or sent, the task
-keeps its place in the schedule, and it does not count toward daily caps
-(audited as ``preview``, not ``publish``). No platform connection is needed.
+Preview runs the channel's preparation (writing, contact discovery, the full
+brand-safety gate) and nothing else: no action is created, nothing is published
+or sent, the task keeps its place in the schedule, and it does not count toward
+daily caps (audited as ``preview``, not ``publish``). No platform connection is
+needed. A preview is a sample: the draft the owner later approves is prepared
+separately, when the task is due.
 """
 
 from __future__ import annotations
@@ -13,8 +15,9 @@ import logging
 
 from django.utils import timezone
 
-from ...models import AgentActionLog, ChannelMode, GrowthProgram, GrowthTask
+from ...models import AgentActionLog, GrowthProgram, GrowthTask
 from . import audit
+from .channel_base import ChannelOutcome
 from .channels import REGISTRY
 
 logger = logging.getLogger("apps")
@@ -44,16 +47,17 @@ def run_preview(task_id: int) -> None:
     task = GrowthTask.objects.select_related("cycle__program__organization").get(pk=task_id)
     program = task.cycle.program
     try:
-        outcome = REGISTRY[task.channel].run(task, ChannelMode.DRY_RUN)
+        prepared = REGISTRY[task.channel].prepare(task)
     except Exception as exc:  # a crash must end the preview, not leave it "running"
         logger.exception("growth preview for task %s crashed", task_id)
         _set_preview(task, {"status": "failed", "error": str(exc)[:500]})
         audit.record(program, task, "preview", AgentActionLog.Outcome.FAILED, {"error": str(exc)})
         return
-    if outcome.succeeded:
-        _set_preview(task, {"status": "complete", **outcome.payload})
-        audit.record(program, task, "preview", AgentActionLog.Outcome.DRY_RUN, outcome.payload)
+    if not isinstance(prepared, ChannelOutcome):
+        _set_preview(task, {"status": "complete", **prepared.preview})
+        audit.record(program, task, "preview", AgentActionLog.Outcome.DRY_RUN, prepared.preview)
         return
+    outcome = prepared
     detail = {"status": "failed", "error": outcome.reason, **outcome.payload}
     _set_preview(task, detail)
     audit.record(program, task, "preview", AgentActionLog.Outcome.FAILED, detail)

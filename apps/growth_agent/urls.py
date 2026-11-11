@@ -17,6 +17,7 @@ from .views import (
     TaskUpdateView,
     TrackingView,
 )
+from .views_control import APPROVE, REJECT, ActionDecisionView, ActionDetailView, ApprovalListView
 
 app_name = "growth_agent"
 
@@ -35,6 +36,22 @@ urlpatterns = [
         "programs/<str:org_slug>/chats/<str:public_id>/",
         ConversationChatView.as_view(),
         name="chat",
+    ),
+    path("programs/<str:org_slug>/approvals/", ApprovalListView.as_view(), name="approvals"),
+    path(
+        "programs/<str:org_slug>/actions/<str:public_id>/approve/",
+        ActionDecisionView.as_view(decision=APPROVE),
+        name="action-approve",
+    ),
+    path(
+        "programs/<str:org_slug>/actions/<str:public_id>/reject/",
+        ActionDecisionView.as_view(decision=REJECT),
+        name="action-reject",
+    ),
+    path(
+        "programs/<str:org_slug>/actions/<str:public_id>/",
+        ActionDetailView.as_view(),
+        name="action-detail",
     ),
     path("programs/<str:org_slug>/activity/", ActivityView.as_view(), name="activity"),
     path("programs/<str:org_slug>/tracking/", TrackingView.as_view(), name="tracking"),

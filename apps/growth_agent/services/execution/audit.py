@@ -23,7 +23,11 @@ def record(
     action: str,
     outcome: str,
     detail: dict | None = None,
+    *,
+    actor_email: str = "",
 ) -> AgentActionLog:
+    """``actor_email`` is set only when a person caused the entry (an approval
+    or a rejection). It is stored on the row, never inside ``detail``."""
     return AgentActionLog.objects.create(
         program=program,
         task=task,
@@ -31,4 +35,5 @@ def record(
         action=action,
         outcome=outcome,
         detail=_trim(detail or {}),
+        actor_email=actor_email,
     )

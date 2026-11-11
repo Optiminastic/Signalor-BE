@@ -144,3 +144,21 @@ def dispatch_task_run(task_id: int) -> None:
         threading.Thread(target=_run, args=(task_id,), daemon=True).start()
     else:
         run_growth_task.delay(task_id)
+
+
+def _dispatch_action(action_id: int) -> None:
+    from django.db import close_old_connections
+
+    from .services.control.dispatch import dispatch
+
+    close_old_connections()
+    try:
+        dispatch(action_id)
+    finally:
+        close_old_connections()
+
+
+@analysis_app.task(name="growth_agent.dispatch_action")
+def dispatch_action_task(action_id: int) -> None:
+    """Send one approved action. Safe to deliver twice: the second finds nothing to claim."""
+    _dispatch_action(action_id)

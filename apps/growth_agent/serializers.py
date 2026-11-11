@@ -12,6 +12,8 @@ from .models import (
     PositioningReport,
     WeeklySnapshot,
 )
+from .serializers_control import TaskActionSummarySerializer
+from .services.control import actions
 from .services.execution.publishers.resolver import connected_platform
 from .services.outreach.channel import gmail_integration
 
@@ -94,6 +96,14 @@ class PositioningReportSerializer(serializers.ModelSerializer):
 
 
 class GrowthTaskSerializer(serializers.ModelSerializer):
+    # Additive: the task's draft action, when it has one. ``status`` keeps its
+    # existing values; the precise approval state lives here.
+    action = serializers.SerializerMethodField()
+
+    def get_action(self, task: GrowthTask) -> dict | None:
+        action = actions.latest_action(task)
+        return TaskActionSummarySerializer(action).data if action else None
+
     class Meta:
         model = GrowthTask
         fields = [
@@ -112,12 +122,18 @@ class GrowthTaskSerializer(serializers.ModelSerializer):
             "evidence_url",
             "attempts",
             "result_payload",
+            "action",
         ]
         read_only_fields = fields
 
 
 class GrowthCycleSerializer(serializers.ModelSerializer):
-    tasks = GrowthTaskSerializer(many=True, read_only=True)
+    tasks = serializers.SerializerMethodField()
+
+    def get_tasks(self, cycle: GrowthCycle) -> list:
+        # One query for every task's actions, instead of one per task.
+        tasks = cycle.tasks.prefetch_related("actions__current_version")
+        return GrowthTaskSerializer(tasks, many=True).data
 
     class Meta:
         model = GrowthCycle

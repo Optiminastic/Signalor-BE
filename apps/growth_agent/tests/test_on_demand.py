@@ -9,9 +9,8 @@ from unittest import mock
 
 from django.utils import timezone
 
-from ..models import AgentActionLog, ChannelMode, GrowthTask
+from ..models import AgentActionLog, GrowthAction, GrowthTask
 from ..services.execution import guardrails, on_demand
-from ..services.execution.channel_base import ChannelOutcome
 from .test_api import PRO_EMAIL
 from .test_execution_flow import REGISTRY, ExecutionTestCase, FakeChannel
 
@@ -19,23 +18,18 @@ PREVIEW_DISPATCH = "apps.growth_agent.views.dispatch_preview"
 RUN_DISPATCH = "apps.growth_agent.views.dispatch_task_run"
 
 
-class RecordingChannel(FakeChannel):
-    def run(self, task, mode):
-        self.mode = mode
-        return super().run(task, mode)
-
-
 class PreviewTests(ExecutionTestCase):
     def test_preview_runs_dry_and_keeps_task_scheduled(self):
-        channel = RecordingChannel(outcome=ChannelOutcome(True, payload={"title": "Draft"}, dry_run=True))
+        channel = FakeChannel()
         on_demand.request_preview(self.task)
         with mock.patch.dict(REGISTRY, {"owned_content": channel}):
             on_demand.run_preview(self.task.id)
         self.task.refresh_from_db()
-        self.assertEqual(channel.mode, ChannelMode.DRY_RUN)
+        self.assertEqual((channel.prepares, channel.executed), (1, []))
+        self.assertFalse(GrowthAction.objects.exists())
         self.assertEqual(self.task.status, GrowthTask.Status.PLANNED)
         self.assertEqual(self.task.attempts, 0)
-        self.assertEqual(self.task.result_payload["preview"], {"status": "complete", "title": "Draft"})
+        self.assertEqual(self.task.result_payload["preview"], {"status": "complete", "title": "Draft page"})
 
     def test_preview_does_not_use_the_daily_cap(self):
         with mock.patch.dict(REGISTRY, {"owned_content": FakeChannel()}):

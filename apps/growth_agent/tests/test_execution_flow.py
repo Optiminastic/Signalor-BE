@@ -1,5 +1,8 @@
 """
-Autonomous execution flow: guardrails, executor lifecycle, plan rebuild, activity API.
+Preparation flow: guardrails, executor lifecycle, plan rebuild, activity API.
+
+The executor only prepares drafts. Approving and sending them is covered in
+test_approval_flow.
 
 Run: python manage.py test apps.growth_agent.tests.test_execution_flow --settings=config.settings.test
 """
@@ -9,32 +12,66 @@ from unittest import mock
 
 from django.utils import timezone
 
-from ..models import AgentActionLog, GrowthCycle, GrowthProgram, GrowthTask, PositioningReport
+from ..models import (
+    AgentActionLog,
+    ChannelMode,
+    GrowthAction,
+    GrowthCycle,
+    GrowthProgram,
+    GrowthTask,
+    PositioningReport,
+)
 from ..services.execution import executor, guardrails
-from ..services.execution.channel_base import ChannelOutcome
+from ..services.execution.article import ArticleDraft
+from ..services.execution.channel_base import ChannelOutcome, Prepared
 from ..services.planning import plan as planning
 from .test_api import OTHER_EMAIL, PRO_EMAIL, GrowthApiTestCase
 
 REGISTRY = "apps.growth_agent.services.execution.executor.REGISTRY"
 
 
+def fake_prepared() -> Prepared:
+    """A valid article draft, so the review endpoints can render it."""
+    article = ArticleDraft(title="Draft page", meta_description="About the draft.", answer="A short answer.")
+    return Prepared(
+        kind=GrowthAction.Kind.PUBLISH_ARTICLE,
+        connector="wordpress",
+        payload={"article": article.model_dump(), "slug": "draft-page"},
+        destination={"platform": "wordpress"},
+        preview={"title": "Draft page"},
+    )
+
+
 class FakeChannel:
-    def __init__(self, outcome=None, ready="", crash=False):
-        self.outcome = outcome or ChannelOutcome(
-            True, evidence_url="https://pro.example/blog/x", payload={"t": 1}
-        )
+    """Stands in for a real channel and counts how often each step ran.
+
+    ``failure`` is what ``prepare`` returns instead of a draft. ``sent`` is what
+    ``execute`` returns. Nothing here touches the network.
+    """
+
+    def __init__(self, failure=None, ready="", crash=False, sent=None, send_crash=False):
+        self.failure = failure
         self.ready = ready
         self.crash = crash
-        self.runs = 0
+        self.sent = sent or ChannelOutcome(True, evidence_url="https://pro.example/blog/x", payload={"t": 1})
+        self.send_crash = send_crash
+        self.prepares = 0
+        self.executed = []
 
     def readiness(self, program):
         return self.ready
 
-    def run(self, task, mode):
-        self.runs += 1
+    def prepare(self, task):
+        self.prepares += 1
         if self.crash:
             raise RuntimeError("boom")
-        return self.outcome
+        return self.failure or fake_prepared()
+
+    def execute(self, task, version):
+        self.executed.append(version)
+        if self.send_crash:
+            raise RuntimeError("boom")
+        return self.sent
 
 
 class ExecutionTestCase(GrowthApiTestCase):
@@ -96,12 +133,36 @@ class GuardrailTests(ExecutionTestCase):
 
 
 class ExecutorTests(ExecutionTestCase):
-    def test_success_marks_done_with_evidence_and_audits(self):
-        self.run_with(FakeChannel())
-        self.assertEqual(self.task.status, GrowthTask.Status.DONE)
-        self.assertEqual(self.task.evidence_url, "https://pro.example/blog/x")
+    def test_due_task_becomes_a_draft_awaiting_approval_and_nothing_is_sent(self):
+        channel = FakeChannel()
+        self.run_with(channel)
+        self.assertEqual(self.task.status, GrowthTask.Status.AWAITING_APPROVAL)
+        self.assertEqual(channel.executed, [])
+        action = GrowthAction.objects.get(task=self.task)
+        self.assertEqual(action.state, GrowthAction.State.AWAITING_APPROVAL)
+        self.assertEqual(action.organization, self.pro_org)
         log = AgentActionLog.objects.get(task=self.task)
-        self.assertEqual((log.action, log.outcome), ("publish", AgentActionLog.Outcome.SUCCEEDED))
+        self.assertEqual((log.action, log.outcome), ("prepared", AgentActionLog.Outcome.SUCCEEDED))
+
+    def test_an_old_autonomous_setting_no_longer_skips_approval(self):
+        self.assertEqual(self.program.channel_modes["owned_content"], ChannelMode.AUTONOMOUS.value)
+        channel = FakeChannel()
+        self.run_with(channel)
+        self.assertEqual(self.task.status, GrowthTask.Status.AWAITING_APPROVAL)
+        self.assertEqual(channel.executed, [])
+
+    def test_dry_run_channel_drafts_without_creating_an_action(self):
+        self.program.channel_modes = {
+            **self.program.channel_modes,
+            "owned_content": ChannelMode.DRY_RUN.value,
+        }
+        self.program.save(update_fields=["channel_modes"])
+        channel = FakeChannel()
+        self.run_with(channel)
+        self.assertEqual(self.task.status, GrowthTask.Status.READY)
+        self.assertEqual(self.task.result_payload, {"title": "Draft page"})
+        self.assertFalse(GrowthAction.objects.exists())
+        self.assertEqual(channel.executed, [])
 
     def test_not_connected_waits_without_using_an_attempt(self):
         self.run_with(FakeChannel(ready="Connect WordPress or the Signalor GitHub App to publish content."))
@@ -110,7 +171,7 @@ class ExecutorTests(ExecutionTestCase):
         self.assertIn("Connect", self.task.result_payload["waiting_for"])
 
     def test_failure_retries_tomorrow_then_fails_after_max_attempts(self):
-        channel = FakeChannel(outcome=ChannelOutcome(False, "Blocked by brand-safety check."))
+        channel = FakeChannel(failure=ChannelOutcome(False, "Blocked by brand-safety check."))
         self.run_with(channel)
         self.assertEqual(self.task.status, GrowthTask.Status.PLANNED)
         self.assertEqual(self.task.scheduled_for, timezone.now().date() + timedelta(days=1))
@@ -129,7 +190,7 @@ class ExecutorTests(ExecutionTestCase):
         GrowthTask.objects.filter(pk=self.task.pk).update(status=GrowthTask.Status.EXECUTING)
         channel = FakeChannel()
         self.run_with(channel)
-        self.assertEqual(channel.runs, 0)
+        self.assertEqual(channel.prepares, 0)
 
     def test_due_tasks_only_include_registered_channels_and_due_dates(self):
         self.make_task(channel="entity", tactic="entity_schema")  # no entity executor yet
@@ -141,6 +202,14 @@ class ExecutorTests(ExecutionTestCase):
         GrowthTask.objects.filter(pk=self.task.pk).update(status=GrowthTask.Status.EXECUTING)
         later = timezone.now() + executor.STALE_EXECUTION + timedelta(minutes=1)
         self.assertEqual(executor.release_stale_executions(now=later), 1)
+
+    def test_a_task_with_an_action_is_never_released_for_re_preparation(self):
+        self.run_with(FakeChannel())
+        GrowthTask.objects.filter(pk=self.task.pk).update(status=GrowthTask.Status.EXECUTING)
+        later = timezone.now() + executor.STALE_EXECUTION + timedelta(minutes=1)
+        self.assertEqual(executor.release_stale_executions(now=later), 0)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, GrowthTask.Status.EXECUTING)
 
 
 class PlanRebuildTests(ExecutionTestCase):

@@ -231,6 +231,9 @@ class AgentActionLog(models.Model):
     action = models.CharField(max_length=60)
     outcome = models.CharField(max_length=10, choices=Outcome.choices)
     detail = models.JSONField(default=dict, blank=True)
+    # Who caused this entry, when a person did (an approval or a rejection).
+    # Empty for everything the agent or the scheduler does on its own.
+    actor_email = models.EmailField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -354,3 +357,143 @@ class OutreachThread(models.Model):
 
     def __str__(self) -> str:
         return f"OutreachThread<{self.task_id}:{self.status}>"
+
+
+# ── External actions and their approval (Phase 1 control foundation) ───────
+# A task that needs something done outside Signalor (send an email, publish a
+# page) first becomes a GrowthAction holding an exact, immutable draft. The
+# brand owner approves or rejects that exact draft, and only an approved draft
+# can be executed.
+
+ACTION_ID_LENGTH = 12
+
+
+def new_action_id() -> str:
+    """Short, unguessable, URL-friendly id (same alphabet as chat ids)."""
+    return "".join(secrets.choice(CONVERSATION_ID_ALPHABET) for _ in range(ACTION_ID_LENGTH))
+
+
+class ImmutableRecordError(Exception):
+    """An append-only record was about to be changed or deleted."""
+
+
+class ImmutableQuerySet(models.QuerySet):
+    """Blocks bulk changes. Rows of these tables are evidence: written once."""
+
+    def update(self, **kwargs):
+        raise ImmutableRecordError(f"{self.model.__name__} rows cannot be updated.")
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        raise ImmutableRecordError(f"{self.model.__name__} rows cannot be updated.")
+
+    def delete(self):
+        raise ImmutableRecordError(f"{self.model.__name__} rows cannot be deleted.")
+
+
+class ImmutableModel(models.Model):
+    """Insert-only. A row leaves only when the brand it belongs to is deleted,
+    which cascades at the database level and does not pass through here."""
+
+    objects = ImmutableQuerySet.as_manager()
+
+    class Meta:
+        abstract = True
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ImmutableRecordError(f"{type(self).__name__} rows cannot be changed.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ImmutableRecordError(f"{type(self).__name__} rows cannot be deleted.")
+
+
+class GrowthAction(models.Model):
+    """One external action a task wants to take, and where it stands."""
+
+    class Kind(models.TextChoices):
+        SEND_OUTREACH_EMAIL = "send_outreach_email", "Send outreach email"
+        PUBLISH_ARTICLE = "publish_article", "Publish article"
+
+    class State(models.TextChoices):
+        AWAITING_APPROVAL = "awaiting_approval", "Awaiting approval"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+        DISPATCHING = "dispatching", "Being sent"
+        SUCCEEDED = "succeeded", "Succeeded"
+        FAILED = "failed", "Failed"
+        NEEDS_RECONCILIATION = "needs_reconciliation", "Outcome unknown"
+
+    public_id = models.CharField(max_length=16, unique=True, default=new_action_id, editable=False)
+    # Denormalized from task.cycle.program so every lookup can be scoped to the
+    # brand in one filter. Set once, on creation, from the task itself.
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="growth_actions")
+    task = models.ForeignKey(GrowthTask, on_delete=models.CASCADE, related_name="actions")
+    kind = models.CharField(max_length=32, choices=Kind.choices)
+    connector = models.CharField(max_length=32)
+    state = models.CharField(
+        max_length=24, choices=State.choices, default=State.AWAITING_APPROVAL, db_index=True
+    )
+    current_version = models.ForeignKey(
+        "ActionVersion", on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [models.Index(fields=["organization", "state"], name="growth_action_org_state_idx")]
+
+    def __str__(self) -> str:
+        return f"GrowthAction<{self.public_id}:{self.kind}:{self.state}>"
+
+
+class ActionVersion(ImmutableModel):
+    """The exact content and destination of an action. Never changes.
+
+    An approval is bound to one version through its hash, so what was approved
+    is provably what gets sent.
+    """
+
+    action = models.ForeignKey(GrowthAction, on_delete=models.CASCADE, related_name="versions")
+    number = models.PositiveIntegerField()
+    payload = models.JSONField()
+    destination = models.JSONField()
+    payload_hash = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["number"]
+        constraints = [
+            models.UniqueConstraint(fields=["action", "number"], name="growth_action_version_number_uniq")
+        ]
+
+    def __str__(self) -> str:
+        return f"ActionVersion<{self.action_id}:v{self.number}>"
+
+
+class ApprovalDecision(ImmutableModel):
+    """A person's decision on one exact version of an action. Never changes."""
+
+    class Decision(models.TextChoices):
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="growth_decisions")
+    action = models.ForeignKey(GrowthAction, on_delete=models.CASCADE, related_name="decisions")
+    version = models.ForeignKey(ActionVersion, on_delete=models.CASCADE, related_name="decisions")
+    # Copied from the version at decision time: the decision records what the
+    # person saw, independently of the row it points at.
+    payload_hash = models.CharField(max_length=64)
+    decision = models.CharField(max_length=10, choices=Decision.choices)
+    actor_email = models.EmailField()
+    actor_role = models.CharField(max_length=16, default="owner")
+    reason = models.CharField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        indexes = [models.Index(fields=["action", "version"], name="growth_decision_action_ver_idx")]
+
+    def __str__(self) -> str:
+        return f"ApprovalDecision<{self.action_id}:{self.decision}>"

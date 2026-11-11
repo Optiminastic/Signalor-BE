@@ -66,3 +66,26 @@ They are frozen.
 - `check_db_target`: read-only database target and role check.
 - `growth_inventory_modes`: read-only inventory of existing programs.
 - `deploy/sql/phase1_roles.sql`: role setup script. Written, not run.
+
+## Approval slice (done)
+
+The smallest complete flow, for the two existing channels (owned content and outreach email).
+
+- A due task is prepared into a `GrowthAction` with an immutable `ActionVersion` and a content hash. Nothing is sent.
+- The task shows `awaiting_approval`. The plan response carries an additive `action` object on each task.
+- The brand owner approves or rejects that exact version: `POST programs/<slug>/actions/<id>/approve/` or `/reject/` with `{version, payload_hash}`.
+- `GET programs/<slug>/approvals/` lists pending drafts. `GET programs/<slug>/actions/<id>/` shows one with its decisions.
+- Each decision is an immutable `ApprovalDecision` and an audit entry that names who decided.
+- Approving sends nothing. The scheduler sends approved actions through `services/control/dispatch.py`.
+- Before sending, the dispatcher checks the decision record and recomputes the content hash. A changed draft is refused.
+- A send whose outcome is not certain becomes `needs_reconciliation` and is never retried automatically.
+- A stored `autonomous` channel mode no longer skips approval. `dry_run` still only drafts.
+- Automatic follow-up emails are switched off. A follow-up will be its own approved action.
+
+Not in this slice yet:
+
+- Editing a draft, revoking, expiry and batches.
+- Resolving a `needs_reconciliation` item (there is no endpoint for it yet).
+- The claim, final check and result protocol with full lock ordering, the attempt ledger, and provider reconciliation.
+- Database triggers and the role split. Immutability is enforced in the model and queryset only for now.
+- Follow-up actions, and the per-brand scheduling for 10 brands.

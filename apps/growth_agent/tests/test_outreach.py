@@ -1,5 +1,5 @@
 """
-Outreach: contact discovery, pitch rules, the email channel, follow-ups, Gmail connect.
+Outreach: contact discovery, pitch rules, the email channel, reply detection, Gmail connect.
 
 Gmail, page fetching and the LLM are faked: nothing is fetched or sent.
 Run: python manage.py test apps.growth_agent.tests.test_outreach --settings=config.settings.test
@@ -13,12 +13,14 @@ from django.utils import timezone
 
 from apps.integrations.models import Integration
 
-from ..models import AgentActionLog, GrowthTask, OutreachContact, OutreachThread
+from ..models import AgentActionLog, GrowthAction, GrowthTask, OutreachContact, OutreachThread
+from ..services.control import actions
 from ..services.execution import executor
+from ..services.execution.channel_base import ChannelOutcome
 from ..services.execution.safety import SafetyVerdict
 from ..services.outreach import connect, contacts, followups, pitch
 from ..services.outreach.channel import OutreachEmailChannel
-from ..services.outreach.gmail import SentMessage, ThreadMessage
+from ..services.outreach.gmail import GmailError, SentMessage, ThreadMessage
 from .test_api import PRO_EMAIL
 from .test_execution_flow import ExecutionTestCase
 
@@ -87,9 +89,8 @@ class OutreachTestCase(ExecutionTestCase):
         )
         self.channel = OutreachEmailChannel()
 
-    def run_channel(
-        self, contact=contacts.Contact("editor@site.com", "https://site.com/best-tools"), mode="autonomous"
-    ):
+    def prepare(self, contact=contacts.Contact("editor@site.com", "https://site.com/best-tools")):
+        """Prepare a draft with the page fetch and the model faked. Returns (result, gmail)."""
         draft = pitch.PitchDraft(subject="Your analytics roundup", body=GOOD_BODY)
         with (
             mock.patch(f"{CH}.discover_contact", return_value=contact),
@@ -98,45 +99,92 @@ class OutreachTestCase(ExecutionTestCase):
             mock.patch(f"{CH}.check_pitch", return_value=SafetyVerdict(True, ())),
             mock.patch(f"{CH}.GmailClient") as client,
         ):
+            return self.channel.prepare(self.task), client
+
+    def send(self, prepared, error=None):
+        """Store ``prepared`` as an action and execute it. Returns (outcome, gmail)."""
+        version = actions.create_action(self.task, prepared).current_version
+        with mock.patch(f"{CH}.GmailClient") as client:
             client.return_value.send.return_value = SentMessage("m1", "t1", "<id@mail>")
-            outcome = self.channel.run(self.task, mode)
-        return outcome, client
+            if error:
+                client.return_value.send.side_effect = error
+            return self.channel.execute(self.task, version), client
 
 
 class OutreachChannelTests(OutreachTestCase):
-    def test_sends_pitch_opens_thread_and_keeps_email_out_of_payload(self):
-        outcome, client = self.run_channel()
+    def test_preparing_never_sends_and_keeps_the_address_out_of_the_draft(self):
+        prepared, client = self.prepare()
+        client.return_value.send.assert_not_called()
+        self.assertFalse(OutreachThread.objects.exists())
+        self.assertEqual(prepared.kind, GrowthAction.Kind.SEND_OUTREACH_EMAIL)
+        stored = str(prepared.payload) + str(prepared.destination) + str(prepared.preview)
+        self.assertNotIn("editor@site.com", stored)
+        self.assertEqual(prepared.destination["sender"], "owner@brand-pro.com")
+        self.assertIn(pitch.OPT_OUT_LINE, prepared.payload["body"])
+
+    def test_sends_exactly_the_stored_draft_and_opens_a_thread(self):
+        prepared, _ = self.prepare()
+        outcome, client = self.send(prepared)
         self.assertTrue(outcome.succeeded)
         self.assertNotIn("editor@site.com", str(outcome.payload))
-        to, _subject, body = client.return_value.send.call_args.args
+        to, subject, body = client.return_value.send.call_args.args
         self.assertEqual(to, "editor@site.com")
-        self.assertIn(pitch.OPT_OUT_LINE, body)
+        self.assertEqual((subject, body), (prepared.payload["subject"], prepared.payload["body"]))
         thread = OutreachThread.objects.get()
         self.assertEqual((thread.gmail_thread_id, thread.last_message_id), ("t1", "<id@mail>"))
         self.assertEqual(thread.next_follow_up_on, timezone.now().date() + timedelta(days=4))
 
     def test_no_contact_is_not_retried(self):
-        outcome, client = self.run_channel(contact=None)
+        outcome, client = self.prepare(contact=None)
+        self.assertIsInstance(outcome, ChannelOutcome)
         self.assertFalse(outcome.succeeded)
         self.assertFalse(outcome.retryable)
+        self.assertFalse(outcome.external_call_made)
         client.return_value.send.assert_not_called()
 
     def test_opted_out_and_recent_contacts_are_never_emailed(self):
         OutreachContact.objects.create(
             organization=self.pro_org, email="editor@site.com", domain="site.com", opted_out=True
         )
-        outcome, client = self.run_channel()
+        outcome, client = self.prepare()
         self.assertFalse(outcome.retryable)
         client.return_value.send.assert_not_called()
         OutreachContact.objects.update(opted_out=False, last_contacted_at=timezone.now() - timedelta(days=10))
-        outcome, client = self.run_channel()
+        outcome, client = self.prepare()
         self.assertIn("90 days", outcome.reason)
         client.return_value.send.assert_not_called()
 
-    def test_dry_run_never_sends(self):
-        outcome, client = self.run_channel(mode="dry_run")
-        self.assertTrue(outcome.dry_run)
+    def test_contact_who_opts_out_after_the_draft_is_not_emailed(self):
+        prepared, _ = self.prepare()
+        OutreachContact.objects.update(opted_out=True)
+        outcome, client = self.send(prepared)
+        self.assertFalse(outcome.succeeded)
+        self.assertFalse(outcome.external_call_made)
         client.return_value.send.assert_not_called()
+
+    def test_draft_is_not_sent_from_a_different_mailbox(self):
+        prepared, _ = self.prepare()
+        self.integration.metadata = {"email": "someone-else@brand-pro.com"}
+        self.integration.save()
+        outcome, client = self.send(prepared)
+        self.assertFalse(outcome.succeeded)
+        self.assertFalse(outcome.external_call_made)
+        client.return_value.send.assert_not_called()
+
+    def test_draft_is_not_sent_once_gmail_is_disconnected(self):
+        prepared, _ = self.prepare()
+        Integration.objects.all().delete()
+        outcome, client = self.send(prepared)
+        self.assertFalse(outcome.succeeded)
+        self.assertFalse(outcome.external_call_made)
+        client.return_value.send.assert_not_called()
+
+    def test_gmail_error_during_send_is_not_reported_as_not_sent(self):
+        prepared, _ = self.prepare()
+        outcome, _ = self.send(prepared, error=GmailError("Gmail /messages/send failed (HTTP 500)"))
+        self.assertFalse(outcome.succeeded)
+        self.assertTrue(outcome.external_call_made)
+        self.assertFalse(OutreachThread.objects.exists())
 
     def test_not_ready_without_gmail(self):
         Integration.objects.all().delete()
@@ -169,7 +217,7 @@ class FollowUpTests(OutreachTestCase):
 
     def process(self, messages):
         self.client.thread_messages.return_value = messages
-        followups.process_thread(self.client, self.thread, "owner@brand-pro.com", timezone.now().date())
+        followups.process_thread(self.client, self.thread, "owner@brand-pro.com")
         self.thread.refresh_from_db()
 
     def test_reply_stops_follow_ups(self):
@@ -185,18 +233,15 @@ class FollowUpTests(OutreachTestCase):
         self.assertTrue(self.thread.contact.opted_out)
         self.assertTrue(AgentActionLog.objects.filter(action="opt_out_received").exists())
 
-    def test_due_follow_up_goes_in_thread_then_closes(self):
+    def test_a_due_follow_up_is_not_sent_without_approval(self):
+        """A follow-up is its own email and needs its own approval. Until that
+        exists the thread stays open, with its due date kept, and nothing goes out."""
+        due = self.thread.next_follow_up_on
         self.process([ThreadMessage("owner@brand-pro.com", "pitch")])
-        kwargs = self.client.send.call_args.kwargs
-        self.assertEqual((kwargs["thread_id"], kwargs["in_reply_to"]), ("t1", "<id@mail>"))
-        self.assertEqual(self.thread.followups_sent, 1)
-        self.thread.next_follow_up_on = timezone.now().date()
-        self.thread.save()
-        self.process([])
-        self.assertEqual(self.thread.followups_sent, 2)
-        self.assertIsNone(self.thread.next_follow_up_on)
-        self.process([])
-        self.assertEqual(self.thread.status, OutreachThread.Status.CLOSED)
+        self.client.send.assert_not_called()
+        self.assertEqual(self.thread.status, OutreachThread.Status.SENT)
+        self.assertEqual(self.thread.followups_sent, 0)
+        self.assertEqual(self.thread.next_follow_up_on, due)
 
     def test_paused_programs_are_skipped(self):
         self.program.status = "paused"
