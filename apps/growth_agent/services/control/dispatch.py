@@ -75,7 +75,7 @@ def _claim(action_id: int) -> GrowthAction | None:
     """Move one approved action to "being sent", or return None when it may not go."""
     with transaction.atomic():
         action = (
-            GrowthAction.objects.select_for_update()
+            actions.lock_actions()
             .select_related("current_version", "task__cycle__program__organization")
             .filter(pk=action_id, state=GrowthAction.State.APPROVED)
             .first()

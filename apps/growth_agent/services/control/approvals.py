@@ -18,6 +18,7 @@ from django.db import transaction
 
 from ...models import AgentActionLog, ApprovalDecision, GrowthAction, GrowthProgram, GrowthTask
 from ..execution import audit
+from . import actions
 
 ROLE_OWNER = "owner"
 REJECTED_NOTE = "Rejected by the brand owner."
@@ -65,7 +66,7 @@ class DecisionRequest:
 
 def _locked_action(program: GrowthProgram, public_id: str) -> GrowthAction:
     action = (
-        GrowthAction.objects.select_for_update()
+        actions.lock_actions()
         .select_related("current_version", "task")
         .filter(organization=program.organization, public_id=public_id)
         .first()

@@ -490,6 +490,13 @@ class ServiceTests(ApprovalFlowTestCase):
         }
         return approvals.DecisionRequest(**{**fields, **overrides})
 
+    def test_row_locks_take_only_the_action_row(self):
+        # Regression: locking the joined, nullable current_version made Postgres
+        # refuse every approve, reject and send ("FOR UPDATE cannot be applied to
+        # the nullable side of an outer join"). sqlite ignores FOR UPDATE, so this
+        # pins the lock target; the Postgres suites will exercise it for real.
+        self.assertEqual(actions.lock_actions().query.select_for_update_of, ("self",))
+
     def test_another_programs_action_is_not_found(self):
         other = GrowthProgram.objects.create(organization=self.other_org, created_by_email=OTHER_EMAIL)
         with self.assertRaises(approvals.ActionNotFound):

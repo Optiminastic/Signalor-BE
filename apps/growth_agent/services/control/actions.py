@@ -24,6 +24,17 @@ FIRST_VERSION = 1
 AUDIT_PREPARED = "prepared"
 
 
+def lock_actions():
+    """Actions, row-locked on the action row only.
+
+    ``current_version`` is nullable, so ``select_related`` reaches it with an
+    outer join, and Postgres refuses ``FOR UPDATE`` on the nullable side of an
+    outer join. Locking only the action's own row avoids that, and the action
+    row is the one every decision and send serializes on.
+    """
+    return GrowthAction.objects.select_for_update(of=("self",))
+
+
 def content_hash(kind: str, connector: str, payload: dict, destination: dict) -> str:
     """SHA-256 over a canonical encoding, so equal content always hashes equally."""
     canonical = json.dumps(
