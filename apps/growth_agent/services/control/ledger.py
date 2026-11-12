@@ -96,6 +96,11 @@ def backoff(failures: int) -> timedelta:
     return timedelta(minutes=min(2 ** (failures - 1), MAX_BACKOFF_MINUTES))
 
 
+def last_attempt_at(public_id: str):
+    last = _rows(public_id).filter(kind=Kind.ATTEMPT).order_by("-seq").first()
+    return last.created_at if last else None
+
+
 def _eligible(public_id: str) -> bool:
     failures = consecutive_failures(public_id)
     if failures >= MAX_CONSECUTIVE_FAILURES:

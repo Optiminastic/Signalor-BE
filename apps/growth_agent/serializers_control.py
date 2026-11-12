@@ -7,7 +7,7 @@ is exactly what would be sent. A recipient is never returned as an address.
 from rest_framework import serializers
 
 from .models import ApprovalDecision, GrowthAction
-from .services.control import actions, approvals, resolution
+from .services.control import actions, approvals, resolution, timeline
 
 HASH_LENGTH = 64
 
@@ -108,13 +108,21 @@ class ActionSerializer(serializers.ModelSerializer):
 
 
 class ActionDetailSerializer(ActionSerializer):
-    """An action with its decision history."""
+    """An action with its decision history and everything that happened to it."""
 
     decisions = ApprovalDecisionSerializer(many=True, read_only=True)
+    timeline = serializers.SerializerMethodField()
+    send_attempts = serializers.SerializerMethodField()
 
     class Meta(ActionSerializer.Meta):
-        fields = [*ActionSerializer.Meta.fields, "decisions"]
+        fields = [*ActionSerializer.Meta.fields, "decisions", "timeline", "send_attempts"]
         read_only_fields = fields
+
+    def get_timeline(self, action: GrowthAction) -> list[dict]:
+        return timeline.timeline(action)
+
+    def get_send_attempts(self, action: GrowthAction) -> dict:
+        return timeline.send_attempts(action)
 
 
 class TaskActionSummarySerializer(serializers.ModelSerializer):

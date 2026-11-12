@@ -36,6 +36,11 @@ def _program_or_404(request, org_slug: str):
     return program, None
 
 
+def _detail_queryset(program):
+    """Actions with everything the detail view reads, in a fixed number of queries."""
+    return _actions_for(program).prefetch_related("decisions__version", "versions", "execution_events")
+
+
 def _actions_for(program):
     return GrowthAction.objects.filter(organization=program.organization).select_related(
         "current_version", "task"
@@ -63,9 +68,7 @@ class ActionDetailView(GrowthBaseView):
         program, missing = _program_or_404(request, org_slug)
         if missing:
             return missing
-        action = (
-            _actions_for(program).prefetch_related("decisions__version").filter(public_id=public_id).first()
-        )
+        action = _detail_queryset(program).filter(public_id=public_id).first()
         if action is None:
             return Response(NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
         return Response({"action": ActionDetailSerializer(action).data})
@@ -99,7 +102,7 @@ class ActionDecisionView(GrowthBaseView):
             return Response(NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
         except approvals.DecisionRefused as exc:
             return Response({"detail": str(exc), "code": exc.code}, status=status.HTTP_409_CONFLICT)
-        action = _actions_for(program).prefetch_related("decisions__version").get(pk=action.pk)
+        action = _detail_queryset(program).get(pk=action.pk)
         return Response({"action": ActionDetailSerializer(action).data})
 
 
@@ -128,7 +131,7 @@ class ActionResolveView(GrowthBaseView):
             return Response(NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
         except approvals.DecisionRefused as exc:
             return Response({"detail": str(exc), "code": exc.code}, status=status.HTTP_409_CONFLICT)
-        action = _actions_for(program).prefetch_related("decisions__version").get(pk=action.pk)
+        action = _detail_queryset(program).get(pk=action.pk)
         return Response({"action": ActionDetailSerializer(action).data})
 
 
@@ -158,7 +161,7 @@ class ActionEditView(GrowthBaseView):
         except approvals.DecisionRefused as exc:
             code = status.HTTP_400_BAD_REQUEST if exc.code == editing.INVALID else status.HTTP_409_CONFLICT
             return Response({"detail": str(exc), "code": exc.code}, status=code)
-        action = _actions_for(program).prefetch_related("decisions__version").get(pk=action.pk)
+        action = _detail_queryset(program).get(pk=action.pk)
         return Response({"action": ActionDetailSerializer(action).data})
 
 
