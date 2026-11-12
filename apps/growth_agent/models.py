@@ -425,6 +425,10 @@ class GrowthAction(models.Model):
         NEEDS_RECONCILIATION = "needs_reconciliation", "Outcome unknown"
         # Closed by the owner with the outcome still unknown. Never sent again.
         CANCELLED = "cancelled", "Closed, outcome unknown"
+        # The approval ran out before sending. Never sent.
+        EXPIRED = "expired", "Approval expired"
+        # The owner withdrew the approval before sending. Never sent.
+        REVOKED = "revoked", "Approval withdrawn"
 
     public_id = models.CharField(max_length=16, unique=True, default=new_action_id, editable=False)
     # Denormalized from task.cycle.program so every lookup can be scoped to the
@@ -483,6 +487,9 @@ class ApprovalDecision(ImmutableModel):
         # How the owner closed an action whose send outcome was unknown.
         RESOLVED_SENT = "resolved_sent", "Confirmed sent"
         RESOLVED_CANCELLED = "resolved_cancelled", "Closed, outcome unknown"
+        REVOKED = "revoked", "Approval withdrawn"
+        # Recorded by the system when an approval runs out.
+        EXPIRED = "expired", "Approval expired"
 
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="growth_decisions")
     action = models.ForeignKey(GrowthAction, on_delete=models.CASCADE, related_name="decisions")
@@ -491,7 +498,8 @@ class ApprovalDecision(ImmutableModel):
     # person saw, independently of the row it points at.
     payload_hash = models.CharField(max_length=64)
     decision = models.CharField(max_length=24, choices=Decision.choices)
-    actor_email = models.EmailField()
+    # Empty for a decision the system records (an expiry).
+    actor_email = models.EmailField(blank=True)
     actor_role = models.CharField(max_length=16, default="owner")
     reason = models.CharField(max_length=500, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)

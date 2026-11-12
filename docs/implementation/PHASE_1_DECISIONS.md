@@ -111,9 +111,18 @@ Run locally against the Docker stack's Postgres (Django creates and drops its ow
 
     TEST_DATABASE_URL=postgres://<user>:<password>@localhost:55432/signalor         python manage.py test apps.growth_agent.tests.<module> --settings=config.settings.test_postgres
 
+## Expiry and revoke (done)
+
+- An approval counts for 14 days (`GROWTH_APPROVAL_TTL_DAYS`). After that the action becomes `expired` and is never sent.
+- The sender checks expiry itself before every send, so an expired approval can't go out even if the sweep doesn't run. `run_growth_tasks` also expires them each round.
+- An expiry is recorded as an immutable decision with the system as the actor (`actor_role="system"`, empty actor email).
+- `POST programs/<slug>/actions/<id>/revoke/` withdraws an approval before sending starts. The action becomes `revoked`; the task is skipped.
+- Revoking while a send is in progress needs the claim, final check and result protocol, and comes with it.
+- Responses carry an additive `approval_expires_at`. Migration `0011` changes only choices and blank-ness (no SQL).
+
 Not done yet:
 
-- Revoke, expiry and batches.
+- Batches, and revoking an action that is already being sent.
 - The claim, final check and result protocol with full lock ordering, the attempt ledger, and provider reconciliation.
 - Database triggers and the role split. Immutability is enforced in the model and queryset only for now.
 - Follow-up actions, and the per-brand scheduling for 10 brands.

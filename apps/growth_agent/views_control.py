@@ -49,7 +49,10 @@ class ApprovalListView(GrowthBaseView):
         program, missing = _program_or_404(request, org_slug)
         if missing:
             return missing
-        pending = _actions_for(program).filter(state__in=PENDING_STATES)[:PAGE_SIZE]
+        # Decisions are prefetched for each action's approval expiry.
+        pending = (
+            _actions_for(program).filter(state__in=PENDING_STATES).prefetch_related("decisions")[:PAGE_SIZE]
+        )
         return Response({"actions": ActionSerializer(pending, many=True).data})
 
 
@@ -161,3 +164,4 @@ class ActionEditView(GrowthBaseView):
 
 APPROVE = ApprovalDecision.Decision.APPROVED
 REJECT = ApprovalDecision.Decision.REJECTED
+REVOKE = ApprovalDecision.Decision.REVOKED

@@ -13,9 +13,12 @@ that re-checks the approval before it acts.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Protocol
 
+from django.conf import settings
 from django.db import transaction
+from django.utils import timezone
 
 from ...models import AgentActionLog, ApprovalDecision, GrowthAction, GrowthProgram, GrowthTask
 from ..execution import audit
@@ -23,24 +26,35 @@ from . import actions
 
 ROLE_OWNER = "owner"
 REJECTED_NOTE = "Rejected by the brand owner."
+REVOKED_NOTE = "Approval withdrawn by the brand owner."
+# How long an approval counts. After this the action expires and is never sent.
+APPROVAL_TTL = timedelta(days=getattr(settings, "GROWTH_APPROVAL_TTL_DAYS", 14))
 REASON_MAX_CHARS = 500
 
 AUDIT_ACTION = {
     ApprovalDecision.Decision.APPROVED: "approved",
     ApprovalDecision.Decision.REJECTED: "rejected",
+    ApprovalDecision.Decision.REVOKED: "revoked",
 }
 # Which states a decision may be taken from. A rejection is also allowed after
-# an approval, as long as the action has not started being sent.
+# an approval, as long as the action has not started being sent. Revoking
+# withdraws an approval, before sending starts.
 ALLOWED_FROM = {
     ApprovalDecision.Decision.APPROVED: (GrowthAction.State.AWAITING_APPROVAL,),
     ApprovalDecision.Decision.REJECTED: (
         GrowthAction.State.AWAITING_APPROVAL,
         GrowthAction.State.APPROVED,
     ),
+    ApprovalDecision.Decision.REVOKED: (GrowthAction.State.APPROVED,),
 }
 RESULTING_STATE = {
     ApprovalDecision.Decision.APPROVED: GrowthAction.State.APPROVED,
     ApprovalDecision.Decision.REJECTED: GrowthAction.State.REJECTED,
+    ApprovalDecision.Decision.REVOKED: GrowthAction.State.REVOKED,
+}
+SKIPPED_NOTE = {
+    ApprovalDecision.Decision.REJECTED: REJECTED_NOTE,
+    ApprovalDecision.Decision.REVOKED: REVOKED_NOTE,
 }
 
 
@@ -124,8 +138,8 @@ def decide(program: GrowthProgram, public_id: str, request: DecisionRequest) -> 
         )
         action.state = RESULTING_STATE[request.decision]
         action.save(update_fields=["state", "updated_at"])
-        if request.decision == ApprovalDecision.Decision.REJECTED:
-            _skip_task(action.task)
+        if request.decision in SKIPPED_NOTE:
+            skip_task(action.task, SKIPPED_NOTE[request.decision])
         audit.record(
             program,
             action.task,
@@ -137,21 +151,47 @@ def decide(program: GrowthProgram, public_id: str, request: DecisionRequest) -> 
     return action
 
 
-def _skip_task(task: GrowthTask) -> None:
+def skip_task(task: GrowthTask, note: str) -> None:
     task.status = GrowthTask.Status.SKIPPED
-    task.result_payload = {**(task.result_payload or {}), "skipped": REJECTED_NOTE}
+    task.result_payload = {**(task.result_payload or {}), "skipped": note}
     task.save(update_fields=["status", "result_payload", "updated_at"])
+
+
+def _now() -> datetime:
+    """The clock the approval checks use (a seam for tests)."""
+    return timezone.now()
+
+
+def _latest_decision(action: GrowthAction) -> ApprovalDecision | None:
+    """The newest decision on the current version. Uses a prefetch when one was made."""
+    version = action.current_version
+    if version is None:
+        return None
+    on_version = [d for d in action.decisions.all() if d.version_id == version.id]
+    return max(on_version, key=lambda d: (d.created_at, d.id), default=None)
+
+
+def approval_expires_at(action: GrowthAction) -> datetime | None:
+    """When the approval in force runs out, or None if the action isn't approved."""
+    latest = _latest_decision(action)
+    if latest is None or latest.decision != ApprovalDecision.Decision.APPROVED:
+        return None
+    return latest.created_at + APPROVAL_TTL
+
+
+def approval_expired(action: GrowthAction, now: datetime | None = None) -> bool:
+    expires_at = approval_expires_at(action)
+    return expires_at is not None and (now or _now()) >= expires_at
 
 
 def has_valid_approval(action: GrowthAction) -> bool:
     """Whether the newest decision on the current version is an approval, made
-    for exactly this content."""
+    for exactly this content, that has not run out."""
     version = action.current_version
-    if version is None:
-        return False
-    latest = action.decisions.filter(version=version).order_by("-created_at", "-id").first()
+    latest = _latest_decision(action)
     return (
         latest is not None
         and latest.decision == ApprovalDecision.Decision.APPROVED
         and latest.payload_hash == version.payload_hash
+        and not approval_expired(action)
     )

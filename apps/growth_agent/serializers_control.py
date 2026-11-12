@@ -7,7 +7,7 @@ is exactly what would be sent. A recipient is never returned as an address.
 from rest_framework import serializers
 
 from .models import ApprovalDecision, GrowthAction
-from .services.control import actions, resolution
+from .services.control import actions, approvals, resolution
 
 HASH_LENGTH = 64
 
@@ -71,6 +71,8 @@ class ActionSerializer(serializers.ModelSerializer):
     version = serializers.SerializerMethodField()
     payload_hash = serializers.SerializerMethodField()
     content = serializers.SerializerMethodField()
+    # When the approval in force runs out; null unless the action is approved.
+    approval_expires_at = serializers.SerializerMethodField()
 
     class Meta:
         model = GrowthAction
@@ -83,6 +85,7 @@ class ActionSerializer(serializers.ModelSerializer):
             "version",
             "payload_hash",
             "content",
+            "approval_expires_at",
             "created_at",
             "updated_at",
         ]
@@ -93,6 +96,12 @@ class ActionSerializer(serializers.ModelSerializer):
 
     def get_payload_hash(self, action: GrowthAction) -> str:
         return action.current_version.payload_hash if action.current_version else ""
+
+    def get_approval_expires_at(self, action: GrowthAction) -> str | None:
+        if action.state != GrowthAction.State.APPROVED:
+            return None
+        expires_at = approvals.approval_expires_at(action)
+        return serializers.DateTimeField().to_representation(expires_at) if expires_at else None
 
     def get_content(self, action: GrowthAction) -> dict:
         return actions.present(action, action.current_version) if action.current_version else {}

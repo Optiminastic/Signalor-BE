@@ -20,6 +20,7 @@ from .views import (
 from .views_control import (
     APPROVE,
     REJECT,
+    REVOKE,
     ActionDecisionView,
     ActionDetailView,
     ActionEditView,
@@ -55,6 +56,11 @@ urlpatterns = [
         "programs/<str:org_slug>/actions/<str:public_id>/reject/",
         ActionDecisionView.as_view(decision=REJECT),
         name="action-reject",
+    ),
+    path(
+        "programs/<str:org_slug>/actions/<str:public_id>/revoke/",
+        ActionDecisionView.as_view(decision=REVOKE),
+        name="action-revoke",
     ),
     path(
         "programs/<str:org_slug>/actions/<str:public_id>/edit/",

@@ -26,7 +26,7 @@ from ...models import AgentActionLog, GrowthAction, GrowthCycle, GrowthProgram, 
 from ..execution import audit, guardrails
 from ..execution.channel_base import ChannelOutcome
 from ..execution.channels import REGISTRY
-from . import actions, approvals
+from . import actions, approvals, expiry
 
 logger = logging.getLogger("apps")
 
@@ -85,6 +85,11 @@ def _claim(action_id: int) -> GrowthAction | None:
         task = action.task
         if task.channel not in REGISTRY:
             _refuse(action, CHANNEL_GONE)
+            return None
+        if approvals.approval_expired(action):
+            # Checked here, not only by the sweep, so an expired approval can
+            # never be sent even if the sweep didn't run.
+            expiry.expire_locked(action)
             return None
         if not approvals.has_valid_approval(action):
             _refuse(action, NOT_APPROVED)
