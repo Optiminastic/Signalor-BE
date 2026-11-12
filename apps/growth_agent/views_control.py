@@ -236,7 +236,7 @@ def _use_candidate(task: GrowthTask, picked: dict, actor: str) -> Response:
     if match is None:
         return Response(NOT_IN_LIST, status=status.HTTP_409_CONFLICT)
     try:
-        email = finders.email_for(match)  # Apollo reveals the email here (1 credit)
+        email = finders.email_for(match, task.cycle.program.organization)  # Apollo reveal: 1 credit
     except FinderError as exc:
         return Response({"detail": str(exc), "code": "finder_failed"}, status=status.HTTP_502_BAD_GATEWAY)
     label = finders.LABELS.get(match["provider"], match["provider"])
@@ -256,7 +256,7 @@ class FindContactsView(GrowthBaseView):
         if task is None:
             return Response(NOT_WAITING, status=status.HTTP_409_CONFLICT)
         need = task.result_payload.get("needs_contact", {})
-        result = finders.find_all(need.get("domain", ""))
+        result = finders.find_all(need.get("domain", ""), program.organization)
         candidates = [c.as_dict() for c in result.candidates]
         task.result_payload = {**task.result_payload, "needs_contact": {**need, "candidates": candidates}}
         task.save(update_fields=["result_payload", "updated_at"])

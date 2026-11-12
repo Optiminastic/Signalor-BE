@@ -39,6 +39,10 @@ class Integration(models.Model):
         # access_token_encrypted, the workspace/channel in metadata.
         SLACK = "slack", "Slack"
         GMAIL = "gmail", "Gmail"
+        # Contact finders for Growth Agent outreach: the brand's own API key
+        # lives in access_token_encrypted, its last 4 characters in metadata.
+        HUNTER = "hunter", "Hunter"
+        APOLLO = "apollo", "Apollo"
 
     organization = models.ForeignKey(
         "organizations.Organization",

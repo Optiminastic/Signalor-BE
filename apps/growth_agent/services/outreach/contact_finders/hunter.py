@@ -12,6 +12,7 @@ from .base import TIMEOUT_SECONDS, Candidate, FinderError
 
 PROVIDER = "hunter"
 DOMAIN_SEARCH_URL = "https://api.hunter.io/v2/domain-search"
+ACCOUNT_URL = "https://api.hunter.io/v2/account"
 # Departments that usually handle editorial and partnership pitches.
 DEPARTMENTS = "marketing,communication,management,executive"
 LIMIT = 10  # the free plan's maximum per search
@@ -31,6 +32,16 @@ def _candidate(item: dict) -> Candidate | None:
         email=email,
         confidence=f"{confidence}%" if confidence is not None else "",
     )
+
+
+def check_key(api_key: str) -> None:
+    """Raise FinderError unless Hunter accepts the key. The account call costs no credits."""
+    try:
+        reply = requests.get(ACCOUNT_URL, headers={"X-API-KEY": api_key}, timeout=TIMEOUT_SECONDS)
+    except requests.RequestException as exc:
+        raise FinderError(f"Hunter couldn't be reached: {type(exc).__name__}") from exc
+    if not reply.ok:
+        raise FinderError("Hunter didn't accept this API key.")
 
 
 def find(domain: str, api_key: str) -> list[Candidate]:

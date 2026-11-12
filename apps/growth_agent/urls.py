@@ -29,6 +29,7 @@ from .views_control import (
     FindContactsView,
     TaskContactView,
 )
+from .views_finders import FinderConnectView, FinderDisconnectView, FinderListView
 
 app_name = "growth_agent"
 
@@ -103,5 +104,16 @@ urlpatterns = [
         name="task-run",
     ),
     path("programs/<str:org_slug>/tasks/<int:task_id>/", TaskUpdateView.as_view(), name="task"),
+    path("programs/<str:org_slug>/finders/", FinderListView.as_view(), name="finders"),
+    path(
+        "programs/<str:org_slug>/finders/<str:provider>/connect/",
+        FinderConnectView.as_view(),
+        name="finder-connect",
+    ),
+    path(
+        "programs/<str:org_slug>/finders/<str:provider>/disconnect/",
+        FinderDisconnectView.as_view(),
+        name="finder-disconnect",
+    ),
     path("programs/<str:org_slug>/", ProgramDetailView.as_view(), name="program-detail"),
 ]

@@ -53,6 +53,14 @@ def find(domain: str, api_key: str) -> list[Candidate]:
     return candidates
 
 
+def check_key(api_key: str) -> None:
+    """Raise FinderError unless Apollo accepts the key. A one-result search costs no credits."""
+    try:
+        _post(SEARCH_URL, api_key, {"q_organization_domains_list": ["apollo.io"], "per_page": 1})
+    except FinderError as exc:
+        raise FinderError("Apollo didn't accept this API key.") from exc
+
+
 def reveal(person_id: str, api_key: str) -> str:
     """The person's work email. Costs 1 Apollo credit when an email is found."""
     person = _post(MATCH_URL, api_key, {"id": person_id}).get("person") or {}
