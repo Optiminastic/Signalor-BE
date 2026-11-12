@@ -20,6 +20,7 @@ from django.utils import timezone
 from apps.growth_agent.analysis_tasks import dispatch_action_task, run_growth_task
 from apps.growth_agent.services.control.dispatch import dispatch, dispatchable
 from apps.growth_agent.services.control.expiry import expire_due
+from apps.growth_agent.services.control.recovery import recover_stuck
 from apps.growth_agent.services.execution.executor import due_tasks, release_stale_executions, run_task
 from apps.growth_agent.services.outreach.followups import process_open_threads
 from config.celery_rabbit import analysis_app
@@ -50,6 +51,9 @@ class Command(BaseCommand):
         verb = "Due" if options["dry_run"] else "Preparing"
         self.stdout.write(self.style.SUCCESS(f"{verb}: {len(tasks)} task(s)."))
         if not options["dry_run"]:
+            recovered = recover_stuck()
+            if recovered:
+                self.stdout.write(f"Recovered {recovered} send(s) whose worker stopped part-way.")
             expired = expire_due()
             if expired:
                 self.stdout.write(f"Expired {expired} approval(s) older than the approval window.")

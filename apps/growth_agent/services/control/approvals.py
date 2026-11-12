@@ -22,7 +22,7 @@ from django.utils import timezone
 
 from ...models import AgentActionLog, ApprovalDecision, GrowthAction, GrowthProgram, GrowthTask
 from ..execution import audit
-from . import actions
+from . import actions, trail
 
 ROLE_OWNER = "owner"
 REJECTED_NOTE = "Rejected by the brand owner."
@@ -30,6 +30,8 @@ REVOKED_NOTE = "Approval withdrawn by the brand owner."
 # How long an approval counts. After this the action expires and is never sent.
 APPROVAL_TTL = timedelta(days=getattr(settings, "GROWTH_APPROVAL_TTL_DAYS", 14))
 REASON_MAX_CHARS = 500
+IN_FLIGHT = "in_flight"
+IN_FLIGHT_MESSAGE = "This is being sent right now and can't be stopped. Its result will show here shortly."
 
 AUDIT_ACTION = {
     ApprovalDecision.Decision.APPROVED: "approved",
@@ -45,7 +47,8 @@ ALLOWED_FROM = {
         GrowthAction.State.AWAITING_APPROVAL,
         GrowthAction.State.APPROVED,
     ),
-    ApprovalDecision.Decision.REVOKED: (GrowthAction.State.APPROVED,),
+    # Also while claimed for sending, until the provider call starts.
+    ApprovalDecision.Decision.REVOKED: (GrowthAction.State.APPROVED, GrowthAction.State.DISPATCHING),
 }
 RESULTING_STATE = {
     ApprovalDecision.Decision.APPROVED: GrowthAction.State.APPROVED,
@@ -121,6 +124,8 @@ def decide(program: GrowthProgram, public_id: str, request: DecisionRequest) -> 
         action = _locked_action(program, public_id)
         if _already_decided(action, request):
             return action
+        if action.state == GrowthAction.State.DISPATCHING and trail.provider_call_in_progress(action):
+            raise DecisionRefused(IN_FLIGHT, IN_FLIGHT_MESSAGE)
         if action.state not in ALLOWED_FROM[request.decision]:
             raise DecisionRefused("illegal_state", f"This action is {action.state} and can no longer change.")
         if not matches_current(action, request):

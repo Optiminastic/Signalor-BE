@@ -510,3 +510,48 @@ class ApprovalDecision(ImmutableModel):
 
     def __str__(self) -> str:
         return f"ApprovalDecision<{self.action_id}:{self.decision}>"
+
+
+class ActionExecutionEvent(ImmutableModel):
+    """One step of sending an action. Append-only; never changes.
+
+    Each attempt writes ``claimed``, then ``provider_started`` immediately
+    before the provider is called, then ``provider_result``. An attempt can
+    instead end ``aborted`` (stopped before any outside call). The trail is
+    what crash recovery reads: claimed but never started means nothing went
+    out; started with no result means it may have.
+    """
+
+    class Event(models.TextChoices):
+        CLAIMED = "claimed", "Claimed for sending"
+        PROVIDER_STARTED = "provider_started", "Provider call started"
+        PROVIDER_RESULT = "provider_result", "Provider call finished"
+        ABORTED = "aborted", "Stopped before any outside call"
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="growth_execution_events"
+    )
+    action = models.ForeignKey(GrowthAction, on_delete=models.CASCADE, related_name="execution_events")
+    version = models.ForeignKey(ActionVersion, on_delete=models.CASCADE, related_name="execution_events")
+    attempt = models.PositiveIntegerField()
+    event = models.CharField(max_length=20, choices=Event.choices)
+    # For provider_result: succeeded / failed / unknown. Empty otherwise.
+    outcome = models.CharField(max_length=16, blank=True, default="")
+    # Short reason or provider reference. Never a recipient address or token.
+    detail = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        constraints = [
+            # One claim, one provider start and one result per attempt, at most.
+            models.UniqueConstraint(
+                fields=["action", "attempt", "event"],
+                condition=models.Q(event__in=["claimed", "provider_started", "provider_result"]),
+                name="growth_exec_event_once_per_attempt",
+            )
+        ]
+        indexes = [models.Index(fields=["action", "attempt"], name="growth_exec_event_attempt_idx")]
+
+    def __str__(self) -> str:
+        return f"ActionExecutionEvent<{self.action_id}:#{self.attempt}:{self.event}>"

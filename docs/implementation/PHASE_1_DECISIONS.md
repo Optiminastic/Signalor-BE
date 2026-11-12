@@ -120,9 +120,18 @@ Run locally against the Docker stack's Postgres (Django creates and drops its ow
 - Revoking while a send is in progress needs the claim, final check and result protocol, and comes with it.
 - Responses carry an additive `approval_expires_at`. Migration `0011` changes only choices and blank-ness (no SQL).
 
+## Send protocol, part 1: trail, final check, crash recovery (done)
+
+- Every attempt writes an append-only `ActionExecutionEvent` trail: `claimed`, then `provider_started` (committed immediately before the provider is called), then `provider_result` (succeeded / failed / unknown). An attempt stopped before any outside call ends `aborted`. Migration `0012`.
+- At most one claim, one provider start and one result per attempt (database constraint).
+- A final check runs under the action lock right before the call: still dispatching (not withdrawn), approval valid and unexpired, content intact, guardrails allow. If anything changed, the attempt is aborted and nothing is sent.
+- `services/control/recovery.py` (run by the scheduler before sending): claimed but never started for 5 minutes goes back to approved; started with no result for 15 minutes becomes `needs_reconciliation` and is never resent.
+- Revoke works while an action is claimed but the call hasn't started. Once the provider call has started it is refused with 409 `in_flight`.
+- Not yet: the full canonical lock set (organization to action) and the complete preflight list (P1 to P14).
+
 Not done yet:
 
-- Batches, and revoking an action that is already being sent.
-- The claim, final check and result protocol with full lock ordering, the attempt ledger, and provider reconciliation.
+- Batches.
+- The attempt ledger (failure counting, backoff, blocking after 10), the full canonical lock set and preflight, and provider reconciliation.
 - Database triggers and the role split. Immutability is enforced in the model and queryset only for now.
 - Follow-up actions, and the per-brand scheduling for 10 brands.
