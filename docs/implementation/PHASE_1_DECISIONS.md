@@ -129,9 +129,18 @@ Run locally against the Docker stack's Postgres (Django creates and drops its ow
 - Revoke works while an action is claimed but the call hasn't started. Once the provider call has started it is refused with 409 `in_flight`.
 - Not yet: the full canonical lock set (organization to action) and the complete preflight list (P1 to P14).
 
+## Send protocol, part 2: the attempt ledger (done)
+
+- `DispatchAttemptLedger` (append-only, migration `0013`): before any attempt an `attempt` ticket is written; if it can't be (number taken by another worker, database trouble), the attempt doesn't happen.
+- Each ticket gets a `result`: `provider_started`, `preflight_wait` (pause, kill switch, cap), `closed`, `lock_conflict` (Postgres 40P01 / 55P03) or `error`. A ticket with no result counts as a failure.
+- `seq` only goes up and is never reused. The consecutive-failure count is derived: attempts after the newest resetting result or unblock.
+- One failure or more: a wait of 1, 2, 4... minutes (capped at 60) before the next ticket. Ten in a row: blocked.
+- `manage.py growth_unblock_dispatch --action <id> --admin-username <superuser> --reason "..."` authenticates a superuser by password in an interactive terminal and records the unblock against them.
+- Deleting a brand removes its trail and ledger rows.
+
 Not done yet:
 
 - Batches.
-- The attempt ledger (failure counting, backoff, blocking after 10), the full canonical lock set and preflight, and provider reconciliation.
+- The full canonical lock set (organization to action), the complete preflight list (P1 to P14), and provider reconciliation.
 - Database triggers and the role split. Immutability is enforced in the model and queryset only for now.
 - Follow-up actions, and the per-brand scheduling for 10 brands.

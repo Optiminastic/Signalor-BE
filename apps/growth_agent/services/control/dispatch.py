@@ -27,14 +27,14 @@ from __future__ import annotations
 import logging
 from datetime import date
 
-from django.db import transaction
+from django.db import OperationalError, transaction
 from django.db.models import QuerySet
 
 from ...models import AgentActionLog, GrowthAction, GrowthCycle, GrowthProgram, GrowthTask
 from ..execution import audit, guardrails
 from ..execution.channel_base import ChannelOutcome
 from ..execution.channels import REGISTRY
-from . import actions, approvals, expiry, trail
+from . import actions, approvals, expiry, ledger, trail
 
 logger = logging.getLogger("apps")
 
@@ -49,6 +49,8 @@ CHANNEL_GONE = "This channel can no longer run."
 OUTCOME_SUCCEEDED = "succeeded"
 OUTCOME_FAILED = "failed"
 OUTCOME_UNKNOWN = "unknown"
+# Postgres deadlock and lock timeout: a lock conflict, not a bug in the action.
+LOCK_CONFLICT_CODES = frozenset({"40P01", "55P03"})
 
 
 def dispatchable(today: date) -> QuerySet[GrowthAction]:
@@ -111,32 +113,37 @@ def _set_task_status(task: GrowthTask, status: str) -> None:
     task.save(update_fields=["status", "updated_at"])
 
 
-def _claim(action_id: int) -> GrowthAction | None:
-    """Step 1: move one approved action to "being sent", or return None when it
-    may not go. The returned action carries its attempt number."""
+def _claim_step(action_id: int) -> tuple[GrowthAction | None, str]:
+    """Step 1: move one approved action to "being sent". Returns the claimed
+    action (carrying its attempt number), or None and how the attempt ended."""
     with transaction.atomic():
         action = _locked(action_id, GrowthAction.State.APPROVED)
         if action is None:
-            return None
+            return None, ledger.CLOSED
         if approvals.approval_expired(action):
             # Checked here, not only by the sweep, so an expired approval can
             # never be sent even if the sweep didn't run.
             expiry.expire_locked(action)
-            return None
+            return None, ledger.CLOSED
         reason = _blocking_reason(action)
         if reason:
             _refuse(action, reason)
-            return None
+            return None, ledger.CLOSED
         if not guardrails.check(action.task).allowed:
             # Paused, kill switch on, or a daily cap reached: the approval
             # stands and the action simply waits for a later round.
-            return None
+            return None, ledger.PREFLIGHT_WAIT
         action.dispatch_attempt = trail.next_attempt_number(action)
         trail.record(action, action.dispatch_attempt, Event.CLAIMED)
         action.state = GrowthAction.State.DISPATCHING
         action.save(update_fields=["state", "updated_at"])
         _set_task_status(action.task, GrowthTask.Status.EXECUTING)
-        return action
+        return action, ledger.PROVIDER_STARTED
+
+
+def _claim(action_id: int) -> GrowthAction | None:
+    """Step 1, returning only the claimed action (or None)."""
+    return _claim_step(action_id)[0]
 
 
 def _abort(action: GrowthAction, attempt: int, reason: str) -> None:
@@ -144,8 +151,15 @@ def _abort(action: GrowthAction, attempt: int, reason: str) -> None:
 
 
 def _gate(claimed: GrowthAction) -> bool:
+    """Step 2: the final check. True only if ``provider_started`` was committed
+    and the call may proceed."""
+    return _gate_step(claimed) == ledger.PROVIDER_STARTED
+
+
+def _gate_step(claimed: GrowthAction) -> str:
     """Step 2: the final check, immediately before the provider call. Returns
-    True only if ``provider_started`` was committed and the call may proceed."""
+    how it ended: ``PROVIDER_STARTED`` (committed; the call may proceed),
+    ``PREFLIGHT_WAIT`` (a guardrail, approval kept) or ``CLOSED``."""
     attempt = claimed.dispatch_attempt
     with transaction.atomic():
         action = _locked(claimed.id, GrowthAction.State.DISPATCHING)
@@ -153,25 +167,25 @@ def _gate(claimed: GrowthAction) -> bool:
             # Withdrawn (or otherwise moved on) since the claim. Nothing is sent.
             current = GrowthAction.objects.select_related("current_version").get(pk=claimed.id)
             _abort(current, attempt, f"The action became {current.state} before sending.")
-            return False
+            return ledger.CLOSED
         if approvals.approval_expired(action):
             _abort(action, attempt, "The approval expired before sending.")
             expiry.expire_locked(action)
-            return False
+            return ledger.CLOSED
         reason = _blocking_reason(action)
         if reason:
             _abort(action, attempt, reason)
             _refuse(action, reason)
-            return False
+            return ledger.CLOSED
         decision = guardrails.check(action.task)
         if not decision.allowed:
             _abort(action, attempt, decision.reason)
             action.state = GrowthAction.State.APPROVED
             action.save(update_fields=["state", "updated_at"])
             _set_task_status(action.task, GrowthTask.Status.AWAITING_APPROVAL)
-            return False
+            return ledger.PREFLIGHT_WAIT
         trail.record(action, attempt, Event.PROVIDER_STARTED)
-        return True
+        return ledger.PROVIDER_STARTED
 
 
 def _finalize(action: GrowthAction, outcome: ChannelOutcome) -> None:
@@ -227,11 +241,48 @@ def park_unknown(action: GrowthAction, attempt: int, reason: str, payload: dict 
         )
 
 
+def _failure_kind(exc: Exception) -> str:
+    code = getattr(exc.__cause__, "pgcode", None) or getattr(exc, "pgcode", None)
+    return ledger.LOCK_CONFLICT if code in LOCK_CONFLICT_CODES else ledger.ERROR
+
+
+def _prepare_send(action: GrowthAction, seq: int) -> GrowthAction | None:
+    """Claim and final check, under a paid ticket. Always records the ticket's
+    result. Returns the action only if the provider call may proceed."""
+    outcome = ledger.ERROR
+    try:
+        claimed, outcome = _claim_step(action.id)
+        if claimed is None:
+            return None
+        outcome = _gate_step(claimed)
+        return claimed if outcome == ledger.PROVIDER_STARTED else None
+    except OperationalError as exc:
+        # The transaction rolled back: no provider_started, so nothing was sent.
+        outcome = _failure_kind(exc)
+        logger.warning("growth action %s: %s before sending", action.public_id, outcome)
+        return None
+    except Exception:  # noqa: BLE001 - counted as a failure; never sent
+        logger.exception("growth action %s failed before sending", action.public_id)
+        return None
+    finally:
+        ledger.record_result(action, seq, outcome)
+
+
 def dispatch(action_id: int) -> None:
     """Send one approved action, once. Safe to call twice: the second call finds
-    nothing to claim."""
-    action = _claim(action_id)
-    if action is None or not _gate(action):
+    nothing to claim.
+
+    Every attempt first reserves a ticket in the attempt ledger; with no ticket
+    (not eligible yet, blocked, taken by another worker, or the ledger
+    unavailable) nothing happens."""
+    current = GrowthAction.objects.filter(pk=action_id, state=GrowthAction.State.APPROVED).first()
+    if current is None:
+        return
+    seq = ledger.reserve(current)
+    if seq is None:
+        return
+    action = _prepare_send(current, seq)
+    if action is None:
         return
     try:
         outcome = REGISTRY[action.task.channel].execute(action.task, action.current_version)

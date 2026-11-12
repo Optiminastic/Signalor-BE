@@ -555,3 +555,42 @@ class ActionExecutionEvent(ImmutableModel):
 
     def __str__(self) -> str:
         return f"ActionExecutionEvent<{self.action_id}:#{self.attempt}:{self.event}>"
+
+
+class DispatchAttemptLedger(ImmutableModel):
+    """Append-only record of send attempts, paid for before they run.
+
+    ``attempt`` is written before an attempt; if it can't be, the attempt
+    doesn't happen. ``result`` records how it ended. ``unblock`` is an
+    operator clearing a blocked action. ``seq`` numbers an action's attempts:
+    it only goes up and is never reused. It refers to the action by public id
+    with no foreign key, so writing a ticket never waits on the action's lock.
+    """
+
+    class Kind(models.TextChoices):
+        ATTEMPT = "attempt", "Attempt reserved"
+        RESULT = "result", "Attempt ended"
+        UNBLOCK = "unblock", "Unblocked by an operator"
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="growth_attempt_ledger"
+    )
+    action_public_id = models.CharField(max_length=16)
+    kind = models.CharField(max_length=8, choices=Kind.choices)
+    seq = models.PositiveIntegerField()
+    outcome = models.CharField(max_length=20, blank=True, default="")
+    actor = models.CharField(max_length=64, blank=True, default="")
+    reason = models.CharField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["action_public_id", "kind", "seq"], name="growth_ledger_ticket_once"
+            )
+        ]
+        indexes = [models.Index(fields=["action_public_id", "seq"], name="growth_ledger_action_seq_idx")]
+
+    def __str__(self) -> str:
+        return f"DispatchAttemptLedger<{self.action_public_id}:{self.kind}:{self.seq}>"
