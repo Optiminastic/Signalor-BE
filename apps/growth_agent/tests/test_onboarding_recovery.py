@@ -10,7 +10,10 @@ the chat agent gets the real setup stage instead of guessing.
 Run: python manage.py test apps.growth_agent.tests.test_onboarding_recovery --settings=config.settings.test
 """
 
+from datetime import timedelta
 from unittest import mock
+
+from django.utils import timezone
 
 from apps.analyzer.models import AnalysisRun
 
@@ -56,6 +59,18 @@ class OnboardingRecoveryTests(GrowthApiTestCase):
     def test_a_brand_with_no_analysis_gets_one(self, start, _dispatch, _allowed):
         autopilot.advance_onboarding(self.program)
         start.assert_called_once()
+
+    @mock.patch(ALLOWED, return_value="")
+    @mock.patch(DISPATCH)
+    @mock.patch(START)
+    def test_an_analysis_whose_worker_died_is_restarted(self, start, _dispatch, _allowed):
+        run = self.run_with(AnalysisRun.Status.SCORING)
+        stale = timezone.now() - timedelta(minutes=10)
+        AnalysisRun.objects.filter(pk=run.pk).update(updated_at=stale)
+        autopilot.advance_onboarding(self.program)
+        start.assert_called_once()
+        run.refresh_from_db()
+        self.assertEqual(run.status, AnalysisRun.Status.FAILED)
 
     @mock.patch(ALLOWED, return_value="")
     @mock.patch(DISPATCH)

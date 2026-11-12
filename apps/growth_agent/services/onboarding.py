@@ -26,6 +26,7 @@ from apps.accounts.subscription_utils import (
     prompt_batch_would_exceed,
 )
 from apps.analyzer.models import AnalysisRun
+from apps.analyzer.run_guard import maybe_fail_stale
 from apps.analyzer.tasks import start_analysis_task
 from apps.organizations.models import Organization
 from apps.organizations.utils import normalize_url
@@ -76,7 +77,10 @@ def _brand_name(url: str) -> str:
 
 
 def latest_run(org: Organization) -> AnalysisRun | None:
-    return AnalysisRun.objects.filter(organization=org).order_by("-created_at").first()
+    """The brand's newest analysis. A run whose worker died is marked failed
+    first (the analyzer's own stale check), so it never looks "still running"."""
+    run = AnalysisRun.objects.filter(organization=org).order_by("-created_at").first()
+    return maybe_fail_stale(run) if run is not None else None
 
 
 def _reusable_run(org: Organization) -> AnalysisRun | None:
