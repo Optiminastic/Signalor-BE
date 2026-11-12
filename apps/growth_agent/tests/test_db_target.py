@@ -13,6 +13,7 @@ from io import StringIO
 from django.core.management import CommandError, call_command
 from django.db import connection
 from django.test import SimpleTestCase, TestCase
+from django.test.utils import CaptureQueriesContext
 
 from ..services import db_target
 from ..services.db_target import RoleFacts
@@ -168,5 +169,9 @@ class CommandTests(TestCase):
             self.run_command(role=db_target.ROLE_RUNTIME)
 
     def test_changes_nothing(self):
-        with self.assertNumQueries(0):
+        # On Postgres the command reads the current role; on SQLite it runs no
+        # query at all. Either way, it must never write.
+        with CaptureQueriesContext(connection) as queries:
             self.run_command()
+        writes = [q["sql"] for q in queries if not q["sql"].lstrip().upper().startswith("SELECT")]
+        self.assertEqual(writes, [])

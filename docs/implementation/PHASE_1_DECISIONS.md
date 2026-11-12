@@ -82,10 +82,38 @@ The smallest complete flow, for the two existing channels (owned content and out
 - A stored `autonomous` channel mode no longer skips approval. `dry_run` still only drafts.
 - Automatic follow-up emails are switched off. A follow-up will be its own approved action.
 
-Not in this slice yet:
+## Resolving an unknown outcome (done)
 
-- Editing a draft, revoking, expiry and batches.
-- Resolving a `needs_reconciliation` item (there is no endpoint for it yet).
+- `POST programs/<slug>/actions/<id>/resolve/` with `{resolution, version, payload_hash, reason?}`.
+- Only from `needs_reconciliation`, only by the owner.
+- `confirmed_sent`: the action succeeds and the task is done. It is counted against the daily cap and budget like any send.
+- `cancel`: the action becomes `cancelled` ("closed, outcome unknown") and the task is skipped.
+- "Send it again" is not offered. A resend after an unknown outcome needs its own decision first.
+- Each resolution is an immutable `ApprovalDecision` (`resolved_sent` / `resolved_cancelled`) and an audit entry. Migration `0010`.
+
+## Editing a draft (done)
+
+- `POST programs/<slug>/actions/<id>/edit/` with `{version, payload_hash, fields}`.
+- An edit creates the next `ActionVersion` with the same destination. The action goes back to `awaiting_approval`; an approval of an earlier version stops counting.
+- Editable from `awaiting_approval`, `approved` and `rejected`.
+- Outreach email: subject and message. The footer (sender line and opt-out) is kept and re-attached by the server.
+- Article: title, meta description, slug and opening answer. Sections and FAQ are not editable yet.
+- Recipient and destination are never editable. Validation is deterministic. No migration.
+
+## Postgres tests (done)
+
+- `config/settings/test_postgres.py` runs the tests on a real Postgres with real migrations. It reads only `TEST_DATABASE_URL` and refuses any host that is not local or a CI service.
+- `tests/test_concurrency_pg.py` releases two operations on one action at the same moment: identical approvals, approve against edit, two sends, reject against send, two different resolutions. It is skipped on SQLite.
+- Removing the action row lock makes every one of those tests fail, including a duplicate send.
+- CI job `postgres-suites` runs the whole Growth Agent suite this way. It runs as a single database role; the role split comes with the triggers.
+
+Run locally against the Docker stack's Postgres (Django creates and drops its own `test_<name>` database):
+
+    TEST_DATABASE_URL=postgres://<user>:<password>@localhost:55432/signalor         python manage.py test apps.growth_agent.tests.<module> --settings=config.settings.test_postgres
+
+Not done yet:
+
+- Revoke, expiry and batches.
 - The claim, final check and result protocol with full lock ordering, the attempt ledger, and provider reconciliation.
 - Database triggers and the role split. Immutability is enforced in the model and queryset only for now.
 - Follow-up actions, and the per-brand scheduling for 10 brands.
