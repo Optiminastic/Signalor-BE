@@ -24,6 +24,19 @@ FIRST_VERSION = 1
 AUDIT_PREPARED = "prepared"
 
 
+# Separates an outreach email's message from its footer (sender line and opt-out).
+FOOTER_SEPARATOR = "\n\n--\n"
+
+
+def split_footer(body: str) -> tuple[str, str]:
+    """An email body as (message, footer). The footer is everything after the
+    last separator; a body without one has no footer."""
+    index = body.rfind(FOOTER_SEPARATOR)
+    if index < 0:
+        return body, ""
+    return body[:index], body[index + len(FOOTER_SEPARATOR) :]
+
+
 def lock_actions():
     """Actions, row-locked on the action row only.
 
@@ -104,10 +117,15 @@ def present(action: GrowthAction, version: ActionVersion) -> dict:
             "slug": version.payload["slug"],
             "markdown": render_markdown(article, {}),
             "platform": version.destination.get("platform", ""),
+            "answer": article.answer,
         }
+    message, footer = split_footer(version.payload["body"])
     return {
         "subject": version.payload["subject"],
         "body": version.payload["body"],
+        # The editable part and the fixed footer (sender line and opt-out).
+        "message": message,
+        "footer": footer,
         "recipient_domain": version.destination.get("domain", ""),
         "sender": version.destination.get("sender", ""),
     }

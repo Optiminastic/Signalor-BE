@@ -22,6 +22,7 @@ from .views_control import (
     REJECT,
     ActionDecisionView,
     ActionDetailView,
+    ActionEditView,
     ActionResolveView,
     ApprovalListView,
 )
@@ -54,6 +55,11 @@ urlpatterns = [
         "programs/<str:org_slug>/actions/<str:public_id>/reject/",
         ActionDecisionView.as_view(decision=REJECT),
         name="action-reject",
+    ),
+    path(
+        "programs/<str:org_slug>/actions/<str:public_id>/edit/",
+        ActionEditView.as_view(),
+        name="action-edit",
     ),
     path(
         "programs/<str:org_slug>/actions/<str:public_id>/resolve/",

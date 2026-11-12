@@ -17,10 +17,11 @@ from .serializers_control import (
     ActionDetailSerializer,
     ActionSerializer,
     DecisionRequestSerializer,
+    EditRequestSerializer,
     ResolutionRequestSerializer,
 )
 from .services import programs
-from .services.control import approvals, resolution
+from .services.control import approvals, editing, resolution
 from .views import GrowthBaseView
 
 PAGE_SIZE = 50
@@ -124,6 +125,36 @@ class ActionResolveView(GrowthBaseView):
             return Response(NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
         except approvals.DecisionRefused as exc:
             return Response({"detail": str(exc), "code": exc.code}, status=status.HTTP_409_CONFLICT)
+        action = _actions_for(program).prefetch_related("decisions__version").get(pk=action.pk)
+        return Response({"action": ActionDetailSerializer(action).data})
+
+
+class ActionEditView(GrowthBaseView):
+    """POST .../actions/<id>/edit/: save the owner's edit as the next version.
+
+    The action goes back to awaiting approval; any earlier approval stops
+    counting. A field that can't be edited, or invalid content, is a 400.
+    """
+
+    def post(self, request, org_slug: str, public_id: str):
+        program, missing = _program_or_404(request, org_slug)
+        if missing:
+            return missing
+        payload = EditRequestSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        edit_request = editing.EditRequest(
+            version_number=payload.validated_data["version"],
+            payload_hash=payload.validated_data["payload_hash"],
+            fields=payload.validated_data["fields"],
+            actor_email=request.user.email,
+        )
+        try:
+            action = editing.edit(program, public_id, edit_request)
+        except approvals.ActionNotFound:
+            return Response(NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        except approvals.DecisionRefused as exc:
+            code = status.HTTP_400_BAD_REQUEST if exc.code == editing.INVALID else status.HTTP_409_CONFLICT
+            return Response({"detail": str(exc), "code": exc.code}, status=code)
         action = _actions_for(program).prefetch_related("decisions__version").get(pk=action.pk)
         return Response({"action": ActionDetailSerializer(action).data})
 

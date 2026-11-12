@@ -29,6 +29,21 @@ class ResolutionRequestSerializer(DecisionRequestSerializer):
     resolution = serializers.ChoiceField(choices=resolution.RESOLUTIONS)
 
 
+class EditRequestSerializer(serializers.Serializer):
+    """The owner's edit, naming the exact version it was made on.
+
+    Which fields are allowed, and their limits, depend on the kind of action
+    and are checked in ``services.control.editing``.
+    """
+
+    version = serializers.IntegerField(min_value=1)
+    payload_hash = serializers.CharField(min_length=HASH_LENGTH, max_length=HASH_LENGTH)
+    fields = serializers.DictField(
+        child=serializers.CharField(allow_blank=True, trim_whitespace=False, max_length=10_000),
+        allow_empty=False,
+    )
+
+
 class ApprovalDecisionSerializer(serializers.ModelSerializer):
     version = serializers.IntegerField(source="version.number", read_only=True)
 
