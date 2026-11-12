@@ -26,6 +26,7 @@ from .views_control import (
     ActionEditView,
     ActionResolveView,
     ApprovalListView,
+    TaskContactView,
 )
 
 app_name = "growth_agent"
@@ -80,6 +81,11 @@ urlpatterns = [
     path("programs/<str:org_slug>/activity/", ActivityView.as_view(), name="activity"),
     path("programs/<str:org_slug>/tracking/", TrackingView.as_view(), name="tracking"),
     path("programs/<str:org_slug>/plan/", PlanView.as_view(), name="plan"),
+    path(
+        "programs/<str:org_slug>/tasks/<int:task_id>/contact/",
+        TaskContactView.as_view(),
+        name="task-contact",
+    ),
     path(
         "programs/<str:org_slug>/tasks/<int:task_id>/preview/",
         TaskActionView.as_view(action="preview"),

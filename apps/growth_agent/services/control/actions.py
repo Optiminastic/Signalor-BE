@@ -22,6 +22,7 @@ from ..execution.channel_base import Prepared
 
 FIRST_VERSION = 1
 AUDIT_PREPARED = "prepared"
+AUDIT_DRAFTED_WITH_CONCERNS = "drafted_with_concerns"
 
 
 # Separates an outreach email's message from its footer (sender line and opt-out).
@@ -101,16 +102,15 @@ def create_action(task: GrowthTask, prepared: Prepared, *, thread=None, sequence
             payload_hash=content_hash(
                 prepared.kind, prepared.connector, prepared.payload, prepared.destination
             ),
+            review_notes=list(prepared.review_notes),
         )
         action.current_version = version
         action.save(update_fields=["current_version", "updated_at"])
-        audit.record(
-            program,
-            task,
-            AUDIT_PREPARED,
-            AgentActionLog.Outcome.SUCCEEDED,
-            {"action": action.public_id, "version": version.number, "kind": action.kind},
-        )
+        detail = {"action": action.public_id, "version": version.number, "kind": action.kind}
+        if prepared.review_notes:
+            detail["concerns"] = list(prepared.review_notes)
+        audit_action = AUDIT_DRAFTED_WITH_CONCERNS if prepared.review_notes else AUDIT_PREPARED
+        audit.record(program, task, audit_action, AgentActionLog.Outcome.SUCCEEDED, detail)
     return action
 
 
@@ -136,6 +136,7 @@ def present(action: GrowthAction, version: ActionVersion) -> dict:
             "markdown": render_markdown(article, {}),
             "platform": version.destination.get("platform", ""),
             "answer": article.answer,
+            "review_notes": version.review_notes,
         }
     message, footer = split_footer(version.payload["body"])
     return {
@@ -144,6 +145,7 @@ def present(action: GrowthAction, version: ActionVersion) -> dict:
         # The editable part and the fixed footer (sender line and opt-out).
         "message": message,
         "footer": footer,
+        "review_notes": version.review_notes,
         "recipient_domain": version.destination.get("domain", ""),
         "sender": version.destination.get("sender", ""),
     }

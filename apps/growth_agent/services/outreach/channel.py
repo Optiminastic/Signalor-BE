@@ -41,6 +41,8 @@ MAILBOX_CHANGED = "The connected mailbox changed after this draft was approved."
 CONTACT_GONE = "The contact for this draft no longer exists."
 SENDER_PLACEHOLDER = "your connected mailbox"
 CONNECTOR = "gmail"
+NEEDS_CONTACT = "contact"
+UNVERIFIED = "The fact-check couldn't verify this pitch against the brand's facts."
 RECONTACT_COOLDOWN = timedelta(days=90)
 FIRST_FOLLOW_UP_AFTER = FOLLOW_UP_GAPS[0]
 KNOWLEDGE_CHARS = 1500
@@ -67,15 +69,34 @@ class OutreachEmailChannel:
         """Sending does: an approved email waits until Gmail is connected."""
         return "" if gmail_integration(program.organization) else NOT_CONNECTED
 
-    def prepare(self, task: GrowthTask) -> Prepared | ChannelOutcome:
+    def _contact(self, task: GrowthTask, domain: str) -> OutreachContact | None:
+        """The owner's chosen contact if they gave one, otherwise one found on the site."""
         org = task.cycle.program.organization
-        domain = bare_domain(task.target_url) or bare_domain(task.target)
+        owner_contact_id = (task.result_payload or {}).get("owner_contact_id")
+        if owner_contact_id:
+            return OutreachContact.objects.filter(pk=owner_contact_id, organization=org).first()
         found = discover_contact(task.target_url, domain)
         if found is None:
-            return _not_sent(f"No published contact email found on {domain}.")
+            return None
         contact, _ = OutreachContact.objects.get_or_create(
             organization=org, email=found.email, defaults={"domain": domain, "source_url": found.source_url}
         )
+        return contact
+
+    def prepare(self, task: GrowthTask) -> Prepared | ChannelOutcome:
+        org = task.cycle.program.organization
+        domain = bare_domain(task.target_url) or bare_domain(task.target)
+        contact = self._contact(task, domain)
+        if contact is None:
+            # Not a refusal: the owner may know a contact. They add one or skip.
+            return ChannelOutcome(
+                False,
+                f"No published contact email found on {domain}.",
+                payload={"domain": domain},
+                retryable=False,
+                external_call_made=False,
+                needs_owner=NEEDS_CONTACT,
+            )
         blocked = _contact_block(contact)
         if blocked:
             return _not_sent(blocked, domain=domain)
@@ -85,13 +106,8 @@ class OutreachEmailChannel:
         if pitch is None:
             return ChannelOutcome(False, "The writer model did not return a pitch.", external_call_made=False)
         verdict = check_pitch(pitch, display_name(org), knowledge)
-        if not verdict.passed:
-            return ChannelOutcome(
-                False,
-                "Blocked by brand-safety check.",
-                payload={"issues": list(verdict.issues)},
-                external_call_made=False,
-            )
+        # The fact-check informs the owner; it doesn't decide for them.
+        concerns = () if verdict.passed else (tuple(verdict.issues) or (UNVERIFIED,))
         sender = mailbox_address(gmail_integration(org))
         # The footer names the sender, so the stored body is the complete email.
         body = with_footer(pitch.body, sender or SENDER_PLACEHOLDER, display_name(org), org.url)
@@ -101,6 +117,7 @@ class OutreachEmailChannel:
             payload={"subject": pitch.subject, "body": body},
             destination={"contact_id": contact.id, "domain": domain, "sender": sender},
             preview={"domain": domain, "subject": pitch.subject, "body": body},
+            review_notes=concerns,
         )
 
     def execute(self, task: GrowthTask, version: ActionVersion) -> ChannelOutcome:

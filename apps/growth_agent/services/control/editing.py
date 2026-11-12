@@ -155,6 +155,8 @@ def edit(program: GrowthProgram, public_id: str, request: EditRequest) -> Growth
             payload=payload,
             destination=current.destination,
             payload_hash=payload_hash,
+            # The concerns stay visible until the owner decides; an edit may not fix them.
+            review_notes=current.review_notes,
         )
         _back_to_review(action, version)
         audit.record(

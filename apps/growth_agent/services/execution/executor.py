@@ -90,6 +90,16 @@ def _wait(task: GrowthTask, reason: str) -> None:
     _set(task, GrowthTask.Status.PLANNED, result_payload={**task.result_payload, "waiting_for": reason})
 
 
+def _wait_for_owner(task: GrowthTask, outcome: ChannelOutcome) -> None:
+    """The agent can't go on without the owner (e.g. no contact email was found).
+    The task waits for them instead of failing; they add what's missing or skip it."""
+    need = {**outcome.payload, "reason": outcome.reason}
+    _set(task, GrowthTask.Status.AWAITING_APPROVAL, result_payload={f"needs_{outcome.needs_owner}": need})
+    audit.record(
+        task.cycle.program, task, f"{outcome.needs_owner}_not_found", AgentActionLog.Outcome.BLOCKED, need
+    )
+
+
 def _retry_or_fail(task: GrowthTask, reason: str, payload: dict, *, retryable: bool = True) -> None:
     detail = {**payload, "error": reason[:REASON_LIMIT], "attempt": task.attempts}
     if not retryable or task.attempts >= MAX_ATTEMPTS:
@@ -97,7 +107,7 @@ def _retry_or_fail(task: GrowthTask, reason: str, payload: dict, *, retryable: b
     else:
         tomorrow = timezone.now().date() + timedelta(days=1)
         _set(task, GrowthTask.Status.PLANNED, scheduled_for=tomorrow, result_payload=detail)
-    audit.record(task.cycle.program, task, "publish", AgentActionLog.Outcome.FAILED, detail)
+    audit.record(task.cycle.program, task, "draft_failed", AgentActionLog.Outcome.FAILED, detail)
 
 
 def run_task(task_id: int) -> None:
@@ -126,8 +136,11 @@ def run_task(task_id: int) -> None:
         logger.exception("growth task %s crashed", task.id)
         _retry_or_fail(task, str(exc), {})
         return
-    if isinstance(prepared, ChannelOutcome):  # preparation failed; nothing was sent
-        _retry_or_fail(task, prepared.reason, prepared.payload, retryable=prepared.retryable)
+    if isinstance(prepared, ChannelOutcome):  # nothing was drafted, nothing was sent
+        if prepared.needs_owner:
+            _wait_for_owner(task, prepared)
+        else:
+            _retry_or_fail(task, prepared.reason, prepared.payload, retryable=prepared.retryable)
         return
     if program.channel_modes.get(task.channel) == ChannelMode.DRY_RUN:
         # A dry-run channel only ever drafts: no action, so nothing to approve or send.

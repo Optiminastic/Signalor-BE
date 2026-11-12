@@ -33,6 +33,9 @@ class ChannelOutcome:
     # call. Then nothing can have been sent. Left True whenever a send or a
     # publish may have gone out, so the result is never assumed to be "not sent".
     external_call_made: bool = True
+    # Set when the owner must decide before the agent can go on, e.g. "contact"
+    # (no published email was found: the owner can add one or skip the task).
+    needs_owner: str = ""
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,9 @@ class Prepared:
     destination: dict
     # What a person reviewing the draft is shown. Derived from the payload.
     preview: dict = field(default_factory=dict)
+    # Concerns for the owner to weigh, e.g. claims the fact-check couldn't
+    # verify. The draft still goes to them; they decide.
+    review_notes: tuple[str, ...] = ()
 
 
 class Channel(Protocol):

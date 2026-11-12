@@ -44,6 +44,18 @@ class EditRequestSerializer(serializers.Serializer):
     )
 
 
+class OwnerContactSerializer(serializers.Serializer):
+    """The owner's answer when no contact email was found: an email to use, or skip."""
+
+    email = serializers.EmailField(required=False)
+    skip = serializers.BooleanField(required=False, default=False)
+
+    def validate(self, attrs):
+        if bool(attrs.get("email")) == bool(attrs.get("skip")):
+            raise serializers.ValidationError("Give an email, or skip, but not both.")
+        return attrs
+
+
 class ApprovalDecisionSerializer(serializers.ModelSerializer):
     version = serializers.IntegerField(source="version.number", read_only=True)
 

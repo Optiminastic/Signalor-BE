@@ -483,6 +483,9 @@ class ActionVersion(ImmutableModel):
     payload = models.JSONField()
     destination = models.JSONField()
     payload_hash = models.CharField(max_length=64)
+    # Concerns shown to the owner with this version (e.g. fact-check doubts).
+    # Not sent and not part of the hash: they describe the draft, they aren't it.
+    review_notes = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

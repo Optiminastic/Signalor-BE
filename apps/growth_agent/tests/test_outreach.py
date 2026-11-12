@@ -192,12 +192,13 @@ class OutreachChannelTests(OutreachTestCase):
         self.assertEqual(self.channel.readiness(self.program), "")
         self.assertIn("Connect Gmail", self.channel.send_blocker(self.program))
 
-    def test_executor_fails_non_retryable_task_immediately(self):
+    def test_no_contact_waits_for_the_owner_instead_of_failing(self):
+        # Changed on purpose (2026-11-12): the owner decides, by adding an email or skipping.
         with mock.patch(f"{CH}.discover_contact", return_value=None):
             executor.run_task(self.task.id)
         self.task.refresh_from_db()
-        self.assertEqual(self.task.status, GrowthTask.Status.FAILED)
-        self.assertEqual(self.task.attempts, 1)
+        self.assertEqual(self.task.status, GrowthTask.Status.AWAITING_APPROVAL)
+        self.assertIn("needs_contact", self.task.result_payload)
 
 
 class FollowUpTests(OutreachTestCase):
