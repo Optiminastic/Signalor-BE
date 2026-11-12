@@ -14,6 +14,7 @@ import logging
 from django.utils import timezone
 
 from ...models import AgentMessage, GrowthProgram
+from .. import autopilot
 from ..execution.brand import display_name
 from . import tools
 from .llm_tools import ask_llm_with_tools
@@ -26,9 +27,18 @@ PURPOSE = "growth-chat"
 FALLBACK_REPLY = "I could not finish that just now. Please try again in a moment."
 
 SYSTEM_PROMPT = """You are the Signalor Growth Agent for {brand} ({url}). Today is {today}.
-You run this brand's fully autonomous monthly off-page SEO and GEO plan: you publish answer-first
-and comparison pages on the brand's own site, pitch the sites AI engines cite, add on-site entity
-schema, and re-measure AI visibility every week. Program status: {status}.
+You run this brand's monthly SEO and GEO plan: pitching the sites AI engines cite (outreach emails and
+their follow-ups), answer-first pages for the brand's site, on-site entity schema, and weekly
+re-measurement of AI visibility.
+Nothing goes out on its own. Every email and article is drafted first and waits for the owner's
+approval in the Approvals tab on the board beside this chat; the owner can edit it, approve that
+exact draft, reject it, or withdraw an approval before it is sent.
+Program status: {status}. Setup progress: {stage}
+
+If the owner asks to build or start a campaign while setup is still running, explain the setup
+progress above in plain words: the plan is built automatically as soon as setup finishes, and its
+drafts will then appear in Approvals. Never invent timelines such as billing cycles or dates that
+are not in the setup progress or in a tool result.
 
 How to answer:
 - Use tools to look things up before answering. Every number you state must come from a tool result.
@@ -41,7 +51,7 @@ How to answer:
 Hard limits (explain the reason if asked):
 - No fake accounts, fake or paid reviews, or undisclosed posts. No automated Reddit or Quora posting:
   it gets brand accounts banned.
-- G2/Capterra profiles and Wikipedia need a human to verify, so they are not in the autonomous plan.
+- G2/Capterra profiles and Wikipedia need a human to verify, so they are not in the plan.
 - You cannot switch off brand-safety checks, daily caps or the monthly action budget.
 """
 
@@ -49,7 +59,11 @@ Hard limits (explain the reason if asked):
 def _system(program: GrowthProgram) -> str:
     org = program.organization
     return SYSTEM_PROMPT.format(
-        brand=display_name(org), url=org.url, today=timezone.now().date().isoformat(), status=program.status
+        brand=display_name(org),
+        url=org.url,
+        today=timezone.now().date().isoformat(),
+        status=program.status,
+        stage=autopilot.onboarding_stage(program),
     )
 
 
@@ -87,11 +101,21 @@ def run_loop(program: GrowthProgram, messages: list[dict]) -> tuple[str, list[di
     return FALLBACK_REPLY, trace
 
 
+def _nudge_setup(program: GrowthProgram) -> None:
+    """Take the next setup step if one is due, so the stage the agent reports is current."""
+    try:
+        autopilot.advance_onboarding(program)
+        program.refresh_from_db()
+    except Exception:  # setup trouble must never stop the chat from answering
+        logger.exception("growth chat: could not advance setup for program %s", program.pk)
+
+
 def run_turn(reply_id: int) -> None:
     reply = AgentMessage.objects.select_related("program__organization", "conversation").get(pk=reply_id)
     if reply.status != AgentMessage.Status.PENDING:
         return
     program = GrowthProgram.objects.select_related("organization").get(pk=reply.program_id)
+    _nudge_setup(program)
     messages = [{"role": "system", "content": _system(program)}, *_history(reply)]
     try:
         text, trace = run_loop(program, messages)

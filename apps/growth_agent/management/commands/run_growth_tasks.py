@@ -18,6 +18,8 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from apps.growth_agent.analysis_tasks import dispatch_action_task, run_growth_task
+from apps.growth_agent.models import GrowthProgram
+from apps.growth_agent.services.autopilot import advance_onboarding
 from apps.growth_agent.services.control.dispatch import dispatch, dispatchable
 from apps.growth_agent.services.control.expiry import expire_due
 from apps.growth_agent.services.control.recovery import recover_stuck
@@ -37,6 +39,10 @@ class Command(BaseCommand):
         parser.add_argument("--dry-run", action="store_true", help="List due tasks without running them.")
 
     def handle(self, *args, **options):
+        if not options["dry_run"]:
+            # Setup moves on even if nobody opens Agent mode (e.g. a failed analysis is restarted).
+            for program in GrowthProgram.objects.filter(status=GrowthProgram.Status.ONBOARDING):
+                advance_onboarding(program)
         released = release_stale_executions()
         if released:
             self.stdout.write(f"Re-queued {released} stale task(s).")

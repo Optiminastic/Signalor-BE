@@ -31,6 +31,12 @@ class GrowthApiTestCase(APITestCase):
     def setUp(self):
         # DRF throttles count requests in the default cache; reset so each test starts under the limit.
         cache.clear()
+        # Never start a real site analysis from a test: without a broker it runs in a
+        # background thread with real network and model calls. Tests that check a
+        # start patch this themselves.
+        no_analysis = mock.patch("apps.growth_agent.services.onboarding.start_analysis_task")
+        no_analysis.start()
+        self.addCleanup(no_analysis.stop)
         Subscription.objects.create(email=PRO_EMAIL, plan="pro", status="active")
         self.pro_org = Organization.objects.create(
             name="Pro Brand", url="https://pro.example", owner_email=PRO_EMAIL

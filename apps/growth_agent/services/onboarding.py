@@ -110,6 +110,22 @@ def _start_analysis(email: str, org: Organization) -> AnalysisRun:
     return run
 
 
+def analysis_block_reason(organization: Organization) -> str:
+    """Why the owner can't start an analysis right now (plan or usage limits), or ""."""
+    return _analysis_block_reason(organization.owner_email)
+
+
+def restart_analysis(organization: Organization) -> AnalysisRun | None:
+    """Start a new analysis for the brand unless one is running or the owner's
+    limits forbid it. Returns the running analysis, or None if none could start."""
+    run = latest_run(organization)
+    if run is not None and run.status in IN_FLIGHT_STATUSES:
+        return run
+    if analysis_block_reason(organization):
+        return None
+    return _start_analysis(organization.owner_email, organization)
+
+
 def _find_owned_brand(email: str, url: str) -> Organization | None:
     normalized = normalize_url(url)
     return owned_organizations(email).filter(normalized_url=normalized).order_by("created_at").first()
