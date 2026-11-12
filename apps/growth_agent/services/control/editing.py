@@ -105,7 +105,7 @@ def _article_payload(current: dict, fields: dict) -> dict:
 
 def edited_payload(action: GrowthAction, fields: dict) -> dict:
     current = action.current_version.payload
-    if action.kind == GrowthAction.Kind.SEND_OUTREACH_EMAIL:
+    if action.kind in actions.EMAIL_KINDS:
         return _email_payload(current, fields)
     if action.kind == GrowthAction.Kind.PUBLISH_ARTICLE:
         return _article_payload(current, fields)
@@ -128,6 +128,8 @@ def _back_to_review(action: GrowthAction, version: ActionVersion) -> None:
     action.current_version = version
     action.state = GrowthAction.State.AWAITING_APPROVAL
     action.save(update_fields=["current_version", "state", "updated_at"])
+    if not actions.updates_task(action):
+        return
     task = action.task
     task.status = GrowthTask.Status.AWAITING_APPROVAL
     task.result_payload = {k: v for k, v in (task.result_payload or {}).items() if k != "skipped"}

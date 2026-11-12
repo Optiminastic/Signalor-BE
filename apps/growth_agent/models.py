@@ -414,6 +414,8 @@ class GrowthAction(models.Model):
     class Kind(models.TextChoices):
         SEND_OUTREACH_EMAIL = "send_outreach_email", "Send outreach email"
         PUBLISH_ARTICLE = "publish_article", "Publish article"
+        # A follow-up email in an existing outreach thread, approved on its own.
+        SEND_FOLLOW_UP = "send_follow_up", "Send follow-up email"
 
     class State(models.TextChoices):
         AWAITING_APPROVAL = "awaiting_approval", "Awaiting approval"
@@ -429,6 +431,8 @@ class GrowthAction(models.Model):
         EXPIRED = "expired", "Approval expired"
         # The owner withdrew the approval before sending. Never sent.
         REVOKED = "revoked", "Approval withdrawn"
+        # A follow-up no longer needed because the contact replied. Never sent.
+        STOPPED = "stopped", "Stopped, they replied"
 
     public_id = models.CharField(max_length=16, unique=True, default=new_action_id, editable=False)
     # Denormalized from task.cycle.program so every lookup can be scoped to the
@@ -443,12 +447,25 @@ class GrowthAction(models.Model):
     current_version = models.ForeignKey(
         "ActionVersion", on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
     )
+    # For a follow-up: the thread it continues and its step (1, 2, ...).
+    thread = models.ForeignKey(
+        OutreachThread, on_delete=models.CASCADE, null=True, blank=True, related_name="follow_up_actions"
+    )
+    sequence_no = models.PositiveSmallIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-created_at", "-id"]
         indexes = [models.Index(fields=["organization", "state"], name="growth_action_org_state_idx")]
+        constraints = [
+            # One follow-up action per step of a thread.
+            models.UniqueConstraint(
+                fields=["thread", "sequence_no"],
+                condition=models.Q(thread__isnull=False),
+                name="growth_action_one_follow_up_per_step",
+            )
+        ]
 
     def __str__(self) -> str:
         return f"GrowthAction<{self.public_id}:{self.kind}:{self.state}>"
@@ -490,6 +507,8 @@ class ApprovalDecision(ImmutableModel):
         REVOKED = "revoked", "Approval withdrawn"
         # Recorded by the system when an approval runs out.
         EXPIRED = "expired", "Approval expired"
+        # Recorded by the system when a reply makes a follow-up unnecessary.
+        STOPPED = "stopped", "Stopped, they replied"
 
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="growth_decisions")
     action = models.ForeignKey(GrowthAction, on_delete=models.CASCADE, related_name="decisions")

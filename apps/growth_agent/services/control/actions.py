@@ -65,8 +65,23 @@ def version_is_intact(action: GrowthAction, version: ActionVersion) -> bool:
     return recomputed == version.payload_hash
 
 
-def create_action(task: GrowthTask, prepared: Prepared) -> GrowthAction:
-    """Persist a draft for ``task`` and leave it waiting for the owner's decision."""
+EMAIL_KINDS = (GrowthAction.Kind.SEND_OUTREACH_EMAIL, GrowthAction.Kind.SEND_FOLLOW_UP)
+
+
+def updates_task(action: GrowthAction) -> bool:
+    """Whether this action's progress is reflected on its task.
+
+    A follow-up belongs to an outreach task whose first email already went
+    out; the task keeps that status, whatever happens to the follow-up.
+    """
+    return action.kind != GrowthAction.Kind.SEND_FOLLOW_UP
+
+
+def create_action(task: GrowthTask, prepared: Prepared, *, thread=None, sequence_no=None) -> GrowthAction:
+    """Persist a draft for ``task`` and leave it waiting for the owner's decision.
+
+    A follow-up also names its outreach thread and step.
+    """
     program = task.cycle.program
     with transaction.atomic():
         action = GrowthAction.objects.create(
@@ -75,6 +90,8 @@ def create_action(task: GrowthTask, prepared: Prepared) -> GrowthAction:
             kind=prepared.kind,
             connector=prepared.connector,
             state=GrowthAction.State.AWAITING_APPROVAL,
+            thread=thread,
+            sequence_no=sequence_no,
         )
         version = ActionVersion.objects.create(
             action=action,
@@ -98,9 +115,10 @@ def create_action(task: GrowthTask, prepared: Prepared) -> GrowthAction:
 
 
 def latest_action(task: GrowthTask) -> GrowthAction | None:
-    """The task's newest action. Uses a prefetch when one was made."""
-    actions = sorted(task.actions.all(), key=lambda a: (a.created_at, a.id), reverse=True)
-    return actions[0] if actions else None
+    """The task's newest action, not counting follow-ups. Uses a prefetch when one was made."""
+    own = [a for a in task.actions.all() if updates_task(a)]
+    own.sort(key=lambda a: (a.created_at, a.id), reverse=True)
+    return own[0] if own else None
 
 
 def present(action: GrowthAction, version: ActionVersion) -> dict:

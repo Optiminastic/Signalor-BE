@@ -38,7 +38,8 @@ def expire_locked(action: GrowthAction) -> None:
     )
     action.state = GrowthAction.State.EXPIRED
     action.save(update_fields=["state", "updated_at"])
-    approvals.skip_task(action.task, EXPIRED_NOTE)
+    if actions.updates_task(action):
+        approvals.skip_task(action.task, EXPIRED_NOTE)
     audit.record(
         action.task.cycle.program,
         action.task,

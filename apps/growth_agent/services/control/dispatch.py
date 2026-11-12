@@ -34,6 +34,7 @@ from ...models import AgentActionLog, GrowthAction, GrowthCycle, GrowthProgram, 
 from ..execution import audit, guardrails
 from ..execution.channel_base import ChannelOutcome
 from ..execution.channels import REGISTRY
+from ..outreach.follow_up_actions import follow_up_block
 from . import actions, approvals, expiry, ledger, trail
 
 logger = logging.getLogger("apps")
@@ -82,9 +83,10 @@ def _refuse(action: GrowthAction, reason: str) -> None:
     task = action.task
     action.state = GrowthAction.State.FAILED
     action.save(update_fields=["state", "updated_at"])
-    task.status = GrowthTask.Status.FAILED
-    task.result_payload = {**(task.result_payload or {}), "error": reason}
-    task.save(update_fields=["status", "result_payload", "updated_at"])
+    if actions.updates_task(action):
+        task.status = GrowthTask.Status.FAILED
+        task.result_payload = {**(task.result_payload or {}), "error": reason}
+        task.save(update_fields=["status", "result_payload", "updated_at"])
     audit.record(
         task.cycle.program,
         task,
@@ -105,12 +107,16 @@ def _blocking_reason(action: GrowthAction) -> str:
         return NOT_APPROVED
     if not actions.version_is_intact(action, action.current_version):
         return TAMPERED
+    if action.kind == GrowthAction.Kind.SEND_FOLLOW_UP:
+        return follow_up_block(action)
     return ""
 
 
-def _set_task_status(task: GrowthTask, status: str) -> None:
-    task.status = status
-    task.save(update_fields=["status", "updated_at"])
+def _set_task_status(action: GrowthAction, status: str) -> None:
+    if not actions.updates_task(action):
+        return
+    action.task.status = status
+    action.task.save(update_fields=["status", "updated_at"])
 
 
 def _claim_step(action_id: int) -> tuple[GrowthAction | None, str]:
@@ -137,7 +143,7 @@ def _claim_step(action_id: int) -> tuple[GrowthAction | None, str]:
         trail.record(action, action.dispatch_attempt, Event.CLAIMED)
         action.state = GrowthAction.State.DISPATCHING
         action.save(update_fields=["state", "updated_at"])
-        _set_task_status(action.task, GrowthTask.Status.EXECUTING)
+        _set_task_status(action, GrowthTask.Status.EXECUTING)
         return action, ledger.PROVIDER_STARTED
 
 
@@ -182,7 +188,7 @@ def _gate_step(claimed: GrowthAction) -> str:
             _abort(action, attempt, decision.reason)
             action.state = GrowthAction.State.APPROVED
             action.save(update_fields=["state", "updated_at"])
-            _set_task_status(action.task, GrowthTask.Status.AWAITING_APPROVAL)
+            _set_task_status(action, GrowthTask.Status.AWAITING_APPROVAL)
             return ledger.PREFLIGHT_WAIT
         trail.record(action, attempt, Event.PROVIDER_STARTED)
         return ledger.PROVIDER_STARTED
@@ -219,7 +225,8 @@ def _finalize(action: GrowthAction, outcome: ChannelOutcome) -> None:
             detail = {**task.result_payload, **reference}
             audit.record(program, task, AUDIT_PUBLISH, AgentActionLog.Outcome.FAILED, detail)
         action.save(update_fields=["state", "updated_at"])
-        task.save(update_fields=["status", "evidence_url", "result_payload", "updated_at"])
+        if actions.updates_task(action):
+            task.save(update_fields=["status", "evidence_url", "result_payload", "updated_at"])
 
 
 def park_unknown(action: GrowthAction, attempt: int, reason: str, payload: dict | None = None) -> None:
@@ -230,8 +237,9 @@ def park_unknown(action: GrowthAction, attempt: int, reason: str, payload: dict 
         trail.record(action, attempt, Event.PROVIDER_RESULT, outcome=OUTCOME_UNKNOWN, reason=reason)
         action.state = GrowthAction.State.NEEDS_RECONCILIATION
         action.save(update_fields=["state", "updated_at"])
-        task.result_payload = {**(payload or {}), "outcome_unknown": reason[:REASON_LIMIT]}
-        task.save(update_fields=["result_payload", "updated_at"])
+        if actions.updates_task(action):
+            task.result_payload = {**(payload or {}), "outcome_unknown": reason[:REASON_LIMIT]}
+            task.save(update_fields=["result_payload", "updated_at"])
         audit.record(
             task.cycle.program,
             task,

@@ -22,6 +22,7 @@ from apps.growth_agent.services.control.dispatch import dispatch, dispatchable
 from apps.growth_agent.services.control.expiry import expire_due
 from apps.growth_agent.services.control.recovery import recover_stuck
 from apps.growth_agent.services.execution.executor import due_tasks, release_stale_executions, run_task
+from apps.growth_agent.services.outreach.follow_up_actions import prepare_due_follow_ups
 from apps.growth_agent.services.outreach.followups import process_open_threads
 from config.celery_rabbit import analysis_app
 
@@ -54,6 +55,9 @@ class Command(BaseCommand):
             recovered = recover_stuck()
             if recovered:
                 self.stdout.write(f"Recovered {recovered} send(s) whose worker stopped part-way.")
+            drafted = prepare_due_follow_ups(today)
+            if drafted:
+                self.stdout.write(f"Drafted {drafted} follow-up(s) for the owner to approve.")
             expired = expire_due()
             if expired:
                 self.stdout.write(f"Expired {expired} approval(s) older than the approval window.")

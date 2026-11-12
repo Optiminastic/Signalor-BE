@@ -19,8 +19,6 @@ from datetime import timedelta
 
 from django.utils import timezone
 
-from apps.integrations.models import Integration
-
 from ...models import (
     ActionVersion,
     GrowthAction,
@@ -33,7 +31,9 @@ from ..execution.brand import brand_facts, display_name
 from ..execution.channel_base import ChannelOutcome, Prepared
 from ..positioning.inputs import bare_domain
 from .contacts import discover_contact
+from .follow_up_actions import FOLLOW_UP_GAPS, execute_follow_up
 from .gmail import GmailClient, GmailError
+from .mailbox import gmail_integration, mailbox_address
 from .pitch import check_pitch, with_footer, write_pitch
 
 NOT_CONNECTED = "Connect Gmail so the agent can send outreach emails."
@@ -42,22 +42,8 @@ CONTACT_GONE = "The contact for this draft no longer exists."
 SENDER_PLACEHOLDER = "your connected mailbox"
 CONNECTOR = "gmail"
 RECONTACT_COOLDOWN = timedelta(days=90)
-FIRST_FOLLOW_UP_AFTER = timedelta(days=4)
+FIRST_FOLLOW_UP_AFTER = FOLLOW_UP_GAPS[0]
 KNOWLEDGE_CHARS = 1500
-
-
-def gmail_integration(organization) -> Integration | None:
-    return (
-        Integration.objects.filter(
-            organization=organization, provider=Integration.Provider.GMAIL, is_active=True
-        )
-        .order_by("-updated_at")
-        .first()
-    )
-
-
-def _sender(integration: Integration | None) -> str:
-    return (integration.metadata.get("email", "") if integration else "") or ""
 
 
 def _contact_block(contact: OutreachContact) -> str:
@@ -101,7 +87,7 @@ class OutreachEmailChannel:
                 payload={"issues": list(verdict.issues)},
                 external_call_made=False,
             )
-        sender = _sender(gmail_integration(org))
+        sender = mailbox_address(gmail_integration(org))
         # The footer names the sender, so the stored body is the complete email.
         body = with_footer(pitch.body, sender or SENDER_PLACEHOLDER, display_name(org), org.url)
         return Prepared(
@@ -113,13 +99,18 @@ class OutreachEmailChannel:
         )
 
     def execute(self, task: GrowthTask, version: ActionVersion) -> ChannelOutcome:
+        if version.action.kind == GrowthAction.Kind.SEND_FOLLOW_UP:
+            integration = gmail_integration(task.cycle.program.organization)
+            if integration is None:
+                return ChannelOutcome(False, NOT_CONNECTED, external_call_made=False)
+            return execute_follow_up(task, version, GmailClient(integration))
         org = task.cycle.program.organization
         destination = version.destination
         domain = destination.get("domain", "")
         integration = gmail_integration(org)
         if integration is None:
             return ChannelOutcome(False, NOT_CONNECTED, external_call_made=False)
-        if not destination.get("sender") or _sender(integration) != destination["sender"]:
+        if not destination.get("sender") or mailbox_address(integration) != destination["sender"]:
             return _not_sent(MAILBOX_CHANGED, domain=domain)
         contact = OutreachContact.objects.filter(pk=destination.get("contact_id"), organization=org).first()
         if contact is None:

@@ -138,6 +138,16 @@ Run locally against the Docker stack's Postgres (Django creates and drops its ow
 - `manage.py growth_unblock_dispatch --action <id> --admin-username <superuser> --reason "..."` authenticates a superuser by password in an interactive terminal and records the unblock against them.
 - Deleting a brand removes its trail and ledger rows.
 
+## Follow-up actions (done)
+
+- When a follow-up is due on an open thread (4 days after the first email, then 5), the scheduler drafts it as a `send_follow_up` action linked to the thread and its step. A database constraint allows one action per step. Migration `0014`.
+- The owner approves that exact follow-up; it can be edited like any email (the footer stays fixed). Its approval lasts 3 days (`GROWTH_FOLLOW_UP_APPROVAL_TTL_DAYS`).
+- Final check before sending: the thread is still open, the contact hasn't opted out, no other email was sent in the thread since the draft, and the step is next in order.
+- Just before sending, the Gmail thread is read live. If the contact replied, nothing is sent and the reply (or opt-out) is recorded.
+- A reply recorded at any time stops pending follow-ups (state `stopped`, recorded as a system decision).
+- A rejected, expired or stopped follow-up ends the sequence: the next step is drafted only after the previous one is sent.
+- Follow-ups never change the original task's status (`actions.updates_task`). The plan's `task.action` stays the original action.
+
 Not done yet:
 
 - Batches.

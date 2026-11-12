@@ -42,6 +42,8 @@ def _put_back(action: GrowthAction, attempt: int) -> None:
     trail.record(action, attempt, Event.ABORTED, reason=STOPPED_BEFORE_CALL)
     action.state = GrowthAction.State.APPROVED
     action.save(update_fields=["state", "updated_at"])
+    if not actions.updates_task(action):
+        return
     task = action.task
     task.status = GrowthTask.Status.AWAITING_APPROVAL
     task.save(update_fields=["status", "updated_at"])

@@ -127,6 +127,7 @@ def resolve(program: GrowthProgram, public_id: str, request: ResolutionRequest) 
         )
         action.state = outcome.state
         action.save(update_fields=["state", "updated_at"])
-        _settle_task(action.task, request.resolution)
+        if actions.updates_task(action):
+            _settle_task(action.task, request.resolution)
         _audit(program, action, request)
     return action

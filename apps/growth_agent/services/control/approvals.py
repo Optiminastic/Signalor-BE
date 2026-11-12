@@ -29,6 +29,8 @@ REJECTED_NOTE = "Rejected by the brand owner."
 REVOKED_NOTE = "Approval withdrawn by the brand owner."
 # How long an approval counts. After this the action expires and is never sent.
 APPROVAL_TTL = timedelta(days=getattr(settings, "GROWTH_APPROVAL_TTL_DAYS", 14))
+# A follow-up is time-sensitive: its approval lasts much less.
+FOLLOW_UP_APPROVAL_TTL = timedelta(days=getattr(settings, "GROWTH_FOLLOW_UP_APPROVAL_TTL_DAYS", 3))
 REASON_MAX_CHARS = 500
 IN_FLIGHT = "in_flight"
 IN_FLIGHT_MESSAGE = "This is being sent right now and can't be stopped. Its result will show here shortly."
@@ -143,7 +145,7 @@ def decide(program: GrowthProgram, public_id: str, request: DecisionRequest) -> 
         )
         action.state = RESULTING_STATE[request.decision]
         action.save(update_fields=["state", "updated_at"])
-        if request.decision in SKIPPED_NOTE:
+        if request.decision in SKIPPED_NOTE and actions.updates_task(action):
             skip_task(action.task, SKIPPED_NOTE[request.decision])
         audit.record(
             program,
@@ -181,7 +183,11 @@ def approval_expires_at(action: GrowthAction) -> datetime | None:
     latest = _latest_decision(action)
     if latest is None or latest.decision != ApprovalDecision.Decision.APPROVED:
         return None
-    return latest.created_at + APPROVAL_TTL
+    return latest.created_at + approval_ttl(action)
+
+
+def approval_ttl(action: GrowthAction) -> timedelta:
+    return FOLLOW_UP_APPROVAL_TTL if action.kind == GrowthAction.Kind.SEND_FOLLOW_UP else APPROVAL_TTL
 
 
 def approval_expired(action: GrowthAction, now: datetime | None = None) -> bool:
