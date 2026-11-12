@@ -47,6 +47,10 @@ REASON_LIMIT = 500
 NOT_APPROVED = "This draft has no valid approval."
 TAMPERED = "The stored draft no longer matches what was approved."
 CHANNEL_GONE = "This channel can no longer run."
+DRAFTED_WITHOUT_MAILBOX = (
+    "This email was drafted before Gmail was connected, so its footer names no sender. "
+    "Edit it or let the agent draft it again."
+)
 OUTCOME_SUCCEEDED = "succeeded"
 OUTCOME_FAILED = "failed"
 OUTCOME_UNKNOWN = "unknown"
@@ -109,7 +113,18 @@ def _blocking_reason(action: GrowthAction) -> str:
         return TAMPERED
     if action.kind == GrowthAction.Kind.SEND_FOLLOW_UP:
         return follow_up_block(action)
+    no_sender = not action.current_version.destination.get("sender")
+    if action.kind in actions.EMAIL_KINDS and no_sender and not _send_blocker(action):
+        # A mailbox is connected now, but this draft's footer names none.
+        return DRAFTED_WITHOUT_MAILBOX
     return ""
+
+
+def _send_blocker(action: GrowthAction) -> str:
+    """A temporary reason the channel can't send yet (e.g. no mailbox). The
+    approval stands and the action waits, like a guardrail."""
+    check = getattr(REGISTRY.get(action.task.channel), "send_blocker", None)
+    return check(action.task.cycle.program) if check else ""
 
 
 def _set_task_status(action: GrowthAction, status: str) -> None:
@@ -135,9 +150,9 @@ def _claim_step(action_id: int) -> tuple[GrowthAction | None, str]:
         if reason:
             _refuse(action, reason)
             return None, ledger.CLOSED
-        if not guardrails.check(action.task).allowed:
-            # Paused, kill switch on, or a daily cap reached: the approval
-            # stands and the action simply waits for a later round.
+        if not guardrails.check(action.task).allowed or _send_blocker(action):
+            # Paused, kill switch on, a daily cap reached, or no mailbox yet:
+            # the approval stands and the action simply waits.
             return None, ledger.PREFLIGHT_WAIT
         action.dispatch_attempt = trail.next_attempt_number(action)
         trail.record(action, action.dispatch_attempt, Event.CLAIMED)

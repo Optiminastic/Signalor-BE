@@ -60,6 +60,11 @@ def _not_sent(reason: str, **payload) -> ChannelOutcome:
 
 class OutreachEmailChannel:
     def readiness(self, program: GrowthProgram) -> str:
+        """Drafting needs no mailbox: the owner can review pitches before connecting Gmail."""
+        return ""
+
+    def send_blocker(self, program: GrowthProgram) -> str:
+        """Sending does: an approved email waits until Gmail is connected."""
         return "" if gmail_integration(program.organization) else NOT_CONNECTED
 
     def prepare(self, task: GrowthTask) -> Prepared | ChannelOutcome:

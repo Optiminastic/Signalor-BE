@@ -188,7 +188,9 @@ class OutreachChannelTests(OutreachTestCase):
 
     def test_not_ready_without_gmail(self):
         Integration.objects.all().delete()
-        self.assertIn("Connect Gmail", self.channel.readiness(self.program))
+        # Drafting doesn't need a mailbox any more; sending does.
+        self.assertEqual(self.channel.readiness(self.program), "")
+        self.assertIn("Connect Gmail", self.channel.send_blocker(self.program))
 
     def test_executor_fails_non_retryable_task_immediately(self):
         with mock.patch(f"{CH}.discover_contact", return_value=None):
