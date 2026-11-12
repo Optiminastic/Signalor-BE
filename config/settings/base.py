@@ -535,3 +535,10 @@ OUTREACH_REUSE_HOURS = _env_number("OUTREACH_REUSE_HOURS", 24.0, float)
 # so the same question yields the same answer for every prospect and paying
 # twice buys identical words. 0 disables.
 OUTREACH_ANSWER_CACHE_SECONDS = _env_number("OUTREACH_ANSWER_CACHE_SECONDS", 86400, int)
+
+# ── Contact finders (Growth Agent outreach) ─────────────────────────────────
+# Used only when a site publishes no contact email and the owner clicks
+# "Find contacts". A finder without a key is skipped. Hunter's documented
+# "test-api-key" returns dummy data, which is useful locally.
+HUNTER_API_KEY = os.getenv("HUNTER_API_KEY", "")
+APOLLO_API_KEY = os.getenv("APOLLO_API_KEY", "")

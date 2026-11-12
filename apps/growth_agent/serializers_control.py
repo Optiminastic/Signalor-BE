@@ -49,10 +49,13 @@ class OwnerContactSerializer(serializers.Serializer):
 
     email = serializers.EmailField(required=False)
     skip = serializers.BooleanField(required=False, default=False)
+    # A person from the "Find contacts" list: {"provider": "hunter"|"apollo", "ref": "..."}.
+    candidate = serializers.DictField(child=serializers.CharField(max_length=200), required=False)
 
     def validate(self, attrs):
-        if bool(attrs.get("email")) == bool(attrs.get("skip")):
-            raise serializers.ValidationError("Give an email, or skip, but not both.")
+        given = [bool(attrs.get("email")), bool(attrs.get("skip")), bool(attrs.get("candidate"))]
+        if sum(given) != 1:
+            raise serializers.ValidationError("Give one of: an email, a person from the list, or skip.")
         return attrs
 
 

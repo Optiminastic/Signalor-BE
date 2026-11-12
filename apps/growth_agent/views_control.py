@@ -26,6 +26,8 @@ from .serializers_control import (
 from .services import programs
 from .services.control import approvals, editing, resolution
 from .services.execution import audit
+from .services.outreach.contact_finders import registry as finders
+from .services.outreach.contact_finders.base import FinderError
 from .views import GrowthBaseView
 
 PAGE_SIZE = 50
@@ -197,10 +199,10 @@ def _skip(task: GrowthTask, actor: str) -> Response:
     return Response({"task": {"id": task.id, "status": task.status}})
 
 
-def _use_contact(task: GrowthTask, email: str, actor: str) -> Response:
+def _use_contact(task: GrowthTask, email: str, actor: str, source: str = OWNER_SOURCE) -> Response:
     org = task.cycle.program.organization
     contact, _ = OutreachContact.objects.get_or_create(
-        organization=org, email=email, defaults={"domain": email.split("@")[-1], "source_url": OWNER_SOURCE}
+        organization=org, email=email, defaults={"domain": email.split("@")[-1], "source_url": source}
     )
     if contact.opted_out:
         return Response(OPTED_OUT, status=status.HTTP_409_CONFLICT)
@@ -215,6 +217,60 @@ def _use_contact(task: GrowthTask, email: str, actor: str) -> Response:
     )
     run_growth_task.delay(task.id)  # the agent writes the pitch for this contact
     return Response({"task": {"id": task.id, "status": task.status}}, status=status.HTTP_202_ACCEPTED)
+
+
+NOT_IN_LIST = {"detail": "Pick a person from the list the agent found.", "code": "unknown_candidate"}
+
+
+def _use_candidate(task: GrowthTask, picked: dict, actor: str) -> Response:
+    """Use a person from the stored "Find contacts" list, never one sent by the client."""
+    stored = task.result_payload.get("needs_contact", {}).get("candidates", [])
+    match = next(
+        (
+            c
+            for c in stored
+            if c.get("provider") == picked.get("provider") and c.get("ref") == picked.get("ref")
+        ),
+        None,
+    )
+    if match is None:
+        return Response(NOT_IN_LIST, status=status.HTTP_409_CONFLICT)
+    try:
+        email = finders.email_for(match)  # Apollo reveals the email here (1 credit)
+    except FinderError as exc:
+        return Response({"detail": str(exc), "code": "finder_failed"}, status=status.HTTP_502_BAD_GATEWAY)
+    label = finders.LABELS.get(match["provider"], match["provider"])
+    return _use_contact(task, email.lower(), actor, source=f"Found with {label}")
+
+
+class FindContactsView(GrowthBaseView):
+    """POST .../tasks/<id>/find-contacts/: ask the contact finders (Hunter, Apollo)
+    for people at the site, for the owner to pick from. Costs Hunter a search
+    credit; Apollo's search is free (an email is revealed only when picked)."""
+
+    def post(self, request, org_slug: str, task_id: int):
+        program, missing = _program_or_404(request, org_slug)
+        if missing:
+            return missing
+        task = _task_waiting_for_contact(program, task_id)
+        if task is None:
+            return Response(NOT_WAITING, status=status.HTTP_409_CONFLICT)
+        need = task.result_payload.get("needs_contact", {})
+        result = finders.find_all(need.get("domain", ""))
+        candidates = [c.as_dict() for c in result.candidates]
+        task.result_payload = {**task.result_payload, "needs_contact": {**need, "candidates": candidates}}
+        task.save(update_fields=["result_payload", "updated_at"])
+        detail = {"domain": need.get("domain", ""), "found": len(candidates), "providers": result.providers}
+        audit.record(
+            program,
+            task,
+            "contacts_found",
+            AgentActionLog.Outcome.SUCCEEDED,
+            detail,
+            actor_email=request.user.email,
+        )
+        body = {"candidates": candidates, "providers": result.providers, "errors": result.errors}
+        return Response(body)
 
 
 class TaskContactView(GrowthBaseView):
@@ -235,6 +291,8 @@ class TaskContactView(GrowthBaseView):
             return Response(NOT_WAITING, status=status.HTTP_409_CONFLICT)
         if payload.validated_data["skip"]:
             return _skip(task, request.user.email)
+        if payload.validated_data.get("candidate"):
+            return _use_candidate(task, payload.validated_data["candidate"], request.user.email)
         return _use_contact(task, payload.validated_data["email"].lower(), request.user.email)
 
 
