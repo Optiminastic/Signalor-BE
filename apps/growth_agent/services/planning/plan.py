@@ -7,11 +7,13 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
 from ...models import GrowthCycle, GrowthProgram, GrowthTask, PositioningReport
-from .candidates import build_candidates
+from .candidates import TaskSpec, build_candidates
+from .satellite import satellite_candidates
 from .schedule import DAYS_PER_WEEK, WEEKS_PER_CYCLE, schedule
 
 USER_EDITABLE_STATUSES = {GrowthTask.Status.PLANNED, GrowthTask.Status.SKIPPED}
@@ -45,6 +47,16 @@ def _report_payload(report: PositioningReport) -> dict:
     }
 
 
+def _candidates(payload: dict) -> list[TaskSpec]:
+    """The month's task candidates, plus satellite articles when those sites can be published to."""
+    from apps.analyzer import blog_store
+
+    specs = build_candidates(payload)
+    if blog_store.is_configured():
+        specs += satellite_candidates(payload, getattr(settings, "SATELLITE_SITES", {}))
+    return specs
+
+
 def _next_monday(today: date) -> date:
     return today + timedelta(days=(7 - today.weekday()) % 7)
 
@@ -68,7 +80,7 @@ def create_plan(program: GrowthProgram, *, rebuild: bool = False) -> tuple[Growt
         raise PlanError("Build the positioning report first.")
 
     start = _next_monday(timezone.now().date())
-    placed = schedule(build_candidates(_report_payload(report)), start)
+    placed = schedule(_candidates(_report_payload(report)), start)
     baseline = float((report.headline or {}).get("brand_share_of_voice", 0.0))
     with transaction.atomic():
         if existing:

@@ -25,6 +25,8 @@ CHANNELS = (
     "review_requests",
     "unlinked_mentions",
     "community",
+    # Articles on signalor.ai's own satellite sites that mention the client.
+    "satellite_content",
 )
 
 

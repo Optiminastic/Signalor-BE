@@ -84,6 +84,17 @@ TACTICS: dict[str, Tactic] = {
             rationale="Competitors win this question on {engines} and you are absent.",
         ),
         Tactic(
+            key="satellite_article",
+            channel="satellite_content",
+            weight=0.7,
+            effort=1,
+            confidence=0.7,
+            earliest_week=1,
+            title="Article on {target}",  # replaced with "Article on <site>: <topic>" by satellite.py
+            rationale="AI answers on this leave you out. An article on a signalor.ai site covers it "
+            "and mentions you, with a sponsored link.",
+        ),
+        Tactic(
             key="entity_schema",
             channel="entity",
             weight=0.7,

@@ -22,6 +22,8 @@ DAILY_CHANNEL_CAPS: dict[str, int] = {
     "outreach_email": 10,
     "entity": 2,
     "owned_social": 3,
+    # One satellite article per brand per day at most (planned every 3 days).
+    "satellite_content": 1,
 }
 DEFAULT_DAILY_CAP = 2
 MAX_ACTIONS_PER_CYCLE = 40

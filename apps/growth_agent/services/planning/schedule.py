@@ -4,6 +4,9 @@ Fit ranked candidates into a 4-week month. Pure: no DB.
 Highest score first; each task lands in the first week at or after its
 ``earliest_week`` that still has capacity, then gets a weekday inside that
 week so work is spread rather than bunched on Mondays.
+
+Satellite articles are different: one every ``SATELLITE_EVERY_DAYS`` days from
+the cycle start, outside the weekly slots, still within the cycle's task cap.
 """
 
 from __future__ import annotations
@@ -18,6 +21,8 @@ TASKS_PER_WEEK = 6
 MAX_TASKS_PER_CYCLE = WEEKS_PER_CYCLE * TASKS_PER_WEEK
 DAYS_PER_WEEK = 7
 WORKDAYS_PER_WEEK = 5
+SATELLITE_TACTIC = "satellite_article"
+SATELLITE_EVERY_DAYS = 3
 
 
 @dataclass(frozen=True)
@@ -39,10 +44,24 @@ def workday(week_start: date, index_in_week: int) -> date:
         day += timedelta(days=1)
 
 
+def _satellite_cadence(specs: list[TaskSpec], start: date) -> list[ScheduledTask]:
+    """One article every few days from ``start``, in plan order, within the cycle."""
+    cycle_days = WEEKS_PER_CYCLE * DAYS_PER_WEEK
+    placed = []
+    for index, spec in enumerate(specs):
+        offset = index * SATELLITE_EVERY_DAYS
+        if offset >= cycle_days:
+            break
+        placed.append(ScheduledTask(spec, offset // DAYS_PER_WEEK + 1, start + timedelta(days=offset)))
+    return placed
+
+
 def schedule(candidates: list[TaskSpec], start: date) -> list[ScheduledTask]:
+    satellites = [s for s in candidates if s.tactic == SATELLITE_TACTIC]
     load = {week: 0 for week in range(1, WEEKS_PER_CYCLE + 1)}
-    placed: list[ScheduledTask] = []
-    for spec in sorted(candidates, key=lambda s: s.score, reverse=True):
+    placed: list[ScheduledTask] = _satellite_cadence(satellites, start)
+    others = [s for s in candidates if s.tactic != SATELLITE_TACTIC]
+    for spec in sorted(others, key=lambda s: s.score, reverse=True):
         if len(placed) >= MAX_TASKS_PER_CYCLE:
             break
         week = next(
