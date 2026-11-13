@@ -13,7 +13,7 @@ IndexNow submission as an index.
 
 from unittest.mock import patch
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 
 from apps.analyzer import blog_store
 
@@ -101,6 +101,8 @@ class WritesRefuseTests(SimpleTestCase):
             self.assertIsNone(blog_store.update_post("research", "s", {"title": "x"}))
 
 
+# The daily batch is off by default now; these cover its behaviour when switched back on.
+@override_settings(SATELLITE_DAILY_BATCH_ENABLED=True)
 class AutoCanAddTodayTests(SimpleTestCase):
     """The exact production traceback, now a clean answer.
 
