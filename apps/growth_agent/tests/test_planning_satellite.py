@@ -11,7 +11,7 @@ from unittest import mock
 from django.test import SimpleTestCase, override_settings
 from django.utils import timezone
 
-from ..models import GrowthCycle, GrowthProgram, GrowthTask, PositioningReport
+from ..models import AgentActionLog, GrowthCycle, GrowthProgram, GrowthTask, PositioningReport
 from ..services.execution.executor import due_tasks
 from ..services.execution.satellite_channel import SatelliteContentChannel
 from ..services.planning import candidates, plan, satellite, schedule
@@ -155,3 +155,11 @@ class SatellitePlanTests(GrowthApiTestCase):
         self.signed("PATCH", path, PRO_EMAIL)
         task.refresh_from_db()
         self.assertEqual(task.status, GrowthTask.Status.PLANNED)
+
+
+@override_settings(SATELLITE_SITES=SITES)
+class SatellitePlanLogTests(SatellitePlanTests):
+    def test_planning_satellite_articles_shows_in_the_agent_log(self):
+        self.make_plan()
+        entry = AgentActionLog.objects.get(action=plan.SATELLITE_PLANNED)
+        self.assertEqual(entry.detail["count"], 3)

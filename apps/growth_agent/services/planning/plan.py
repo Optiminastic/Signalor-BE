@@ -11,11 +11,12 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from ...models import GrowthCycle, GrowthProgram, GrowthTask, PositioningReport
+from ...models import AgentActionLog, GrowthCycle, GrowthProgram, GrowthTask, PositioningReport
 from .candidates import TaskSpec, build_candidates
 from .satellite import satellite_candidates
 from .schedule import DAYS_PER_WEEK, SATELLITE_EVERY_DAYS, SATELLITE_TACTIC, WEEKS_PER_CYCLE, schedule
 
+SATELLITE_PLANNED = "satellite_topics_planned"
 USER_EDITABLE_STATUSES = {GrowthTask.Status.PLANNED, GrowthTask.Status.SKIPPED}
 MAX_SHARE_OF_VOICE = 100.0
 
@@ -74,7 +75,19 @@ def add_satellite_topics(program: GrowthProgram) -> int:
             break
         rows.append(_task_row(cycle, spec, week=(day - cycle.starts_on).days // DAYS_PER_WEEK + 1, day=day))
     GrowthTask.objects.bulk_create(rows)
+    _log_satellite_plan(program, rows)
     return len(rows)
+
+
+def _log_satellite_plan(program: GrowthProgram, tasks: list[GrowthTask]) -> None:
+    """An Agent log entry when satellite articles join the plan, so the owner sees it in Activity."""
+    satellites = [t for t in tasks if t.tactic == SATELLITE_TACTIC]
+    if not satellites:
+        return
+    from ..execution import audit
+
+    detail = {"count": len(satellites), "first_date": min(t.scheduled_for for t in satellites).isoformat()}
+    audit.record(program, None, SATELLITE_PLANNED, AgentActionLog.Outcome.SUCCEEDED, detail)
 
 
 def _task_row(cycle: GrowthCycle, spec: TaskSpec, *, week: int, day: date) -> GrowthTask:
@@ -130,9 +143,10 @@ def create_plan(program: GrowthProgram, *, rebuild: bool = False) -> tuple[Growt
             baseline_share_of_voice=baseline,
             target_share_of_voice=min(MAX_SHARE_OF_VOICE, baseline + program.uplift_target_points),
         )
-        GrowthTask.objects.bulk_create(
-            _task_row(cycle, item.spec, week=item.week, day=item.scheduled_for) for item in placed
+        created = GrowthTask.objects.bulk_create(
+            [_task_row(cycle, item.spec, week=item.week, day=item.scheduled_for) for item in placed]
         )
+        _log_satellite_plan(program, created)
         if program.status == GrowthProgram.Status.ONBOARDING:
             program.status = GrowthProgram.Status.ACTIVE
             program.save(update_fields=["status", "updated_at"])
