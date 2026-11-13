@@ -5,6 +5,7 @@ One round of Growth Agent work:
    the brand owner's approval.
 2. Send every action the owner has approved.
 3. Check outreach threads for replies.
+4. Weekly indexing: start a Search Console check per brand when the last is a week old.
 
 Run from cron, e.g. every 15 minutes:
     python manage.py run_growth_tasks [--limit N] [--dry-run]
@@ -24,6 +25,7 @@ from apps.growth_agent.services.control.dispatch import dispatch, dispatchable
 from apps.growth_agent.services.control.expiry import expire_due
 from apps.growth_agent.services.control.recovery import recover_stuck
 from apps.growth_agent.services.execution.executor import due_tasks, release_stale_executions, run_task
+from apps.growth_agent.services.indexing.weekly import weekly_round as weekly_indexing_round
 from apps.growth_agent.services.outreach.follow_up_actions import prepare_due_follow_ups
 from apps.growth_agent.services.outreach.followups import process_open_threads
 from config.celery_rabbit import analysis_app
@@ -80,3 +82,8 @@ class Command(BaseCommand):
         if not options["dry_run"]:
             threads = process_open_threads()
             self.stdout.write(f"Checked {threads} outreach thread(s) for replies.")
+            # Weekly Search Console check per brand (queued; logged in Activity when done).
+            for program in GrowthProgram.objects.filter(status=GrowthProgram.Status.ACTIVE).select_related(
+                "organization"
+            ):
+                weekly_indexing_round(program)

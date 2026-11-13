@@ -162,3 +162,23 @@ def _dispatch_action(action_id: int) -> None:
 def dispatch_action_task(action_id: int) -> None:
     """Send one approved action. Safe to deliver twice: the second finds nothing to claim."""
     _dispatch_action(action_id)
+
+
+def _check_indexing(integration_id: int) -> None:
+    # The integrations task opens and closes its own DB connections.
+    from apps.integrations.tasks import run_gsc_index_sync
+
+    run_gsc_index_sync(integration_id)
+
+
+@analysis_app.task(name="growth_agent.check_indexing")
+def check_indexing_task(integration_id: int) -> None:
+    _check_indexing(integration_id)
+
+
+def dispatch_indexing_check(integration_id: int) -> None:
+    """Inspect every sitemap page with Search Console (slow: ~8s a page), off the request path."""
+    if analysis_app.conf.task_always_eager:
+        threading.Thread(target=_check_indexing, args=(integration_id,), daemon=True).start()
+    else:
+        check_indexing_task.delay(integration_id)
