@@ -46,6 +46,12 @@ _TOOLS: dict[str, tuple[str, dict, Handler]] = {
         _NO_ARGS,
         read_tools.get_activity,
     ),
+    "get_indexing": (
+        "Google indexing (pages on Google, reasons, pages to request), weekly Bing sending, and the "
+        "brand's articles on signalor.ai's satellite sites (planned topics, published, on Google or not).",
+        _NO_ARGS,
+        read_tools.get_indexing,
+    ),
     "search_brand_knowledge": (
         "Search the brand's own site content for facts.",
         {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},

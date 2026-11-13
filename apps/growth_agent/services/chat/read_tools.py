@@ -9,6 +9,8 @@ from __future__ import annotations
 from apps.organizations.services.retrieval import build_knowledge_block
 
 from ...models import GrowthProgram
+from ..indexing import bing, satellite_rank
+from ..indexing import report as indexing_report
 from ..planning.plan import active_cycle
 from ..positioning.report import latest_report
 
@@ -55,7 +57,10 @@ def get_plan(program: GrowthProgram, _args: dict) -> dict:
                 "week": t.week,
                 "date": t.scheduled_for.isoformat(),
                 "channel": t.channel,
+                "tactic": t.tactic,
                 "title": t.title,
+                # For satellite articles: the signalor.ai site the article goes on.
+                "site": t.target_url if t.tactic == "satellite_article" else "",
                 "status": t.status,
                 "impact": t.impact_score,
                 "waiting_for": (t.result_payload or {}).get("waiting_for", ""),
@@ -110,3 +115,52 @@ def search_brand_knowledge(program: GrowthProgram, args: dict) -> dict:
         return {"error": "query is required"}
     text = build_knowledge_block(program.organization, query, max_chars=KNOWLEDGE_CHARS)
     return {"results": text or "Nothing relevant found in the brand's site content."}
+
+
+def _indexing_summary(program: GrowthProgram) -> dict:
+    built = indexing_report.build(program.organization)
+    return {
+        "search_console": built["status"],
+        "pages_checked": built["checked"],
+        "pages_on_google": built["indexed"],
+        "change_since_last_check": built["indexed_change"],
+        "last_checked": built["checked_at"].isoformat() if built["checked_at"] else None,
+        "top_reasons_not_indexed": [
+            {"reason": r["label"], "pages": r["count"]} for r in built["reasons"][:3]
+        ],
+        "pages_ready_to_request_in_search_console": len(built["to_request"]),
+    }
+
+
+def _satellite_summary(program: GrowthProgram) -> dict:
+    cycle = active_cycle(program)
+    planned = cycle.tasks.filter(tactic="satellite_article").order_by("scheduled_for") if cycle else []
+    ranks = satellite_rank.articles(program)
+    return {
+        "planned_topics": [
+            {"date": t.scheduled_for.isoformat(), "site": t.target_url, "topic": t.target, "status": t.status}
+            for t in planned
+        ],
+        "rankings_tracked": ranks["search_console"],
+        "published": [
+            {
+                "topic": r["topic"],
+                "url": r["url"],
+                "on_google": (r["check"] or {}).get("indexed"),
+                "position": (r["check"] or {}).get("position"),
+                "clicks": (r["check"] or {}).get("clicks"),
+                "needs_attention": r["flag"],
+            }
+            for r in ranks["articles"]
+        ],
+    }
+
+
+def get_indexing(program: GrowthProgram, _args: dict) -> dict:
+    """Google indexing, weekly Bing sending, and articles on signalor.ai's satellite sites."""
+    state = bing.state(program)
+    return {
+        "google": _indexing_summary(program),
+        "bing_weekly_sending": {"enabled": state["enabled"], "last_run": state["last"]},
+        "satellite_articles": _satellite_summary(program),
+    }
