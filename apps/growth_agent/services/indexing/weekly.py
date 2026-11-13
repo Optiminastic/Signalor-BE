@@ -2,6 +2,7 @@
 
 - Start a Search Console check when the newest one is a week old (or none).
 - When a check has finished, log it once in the Agent log with its numbers.
+- Send new and changed pages to Bing, if the owner turned that on (``bing.py``).
 Checks run on the worker queue; nothing here calls Google directly.
 """
 
@@ -14,7 +15,7 @@ from django.utils import timezone
 
 from ...models import AgentActionLog, GrowthProgram
 from ..execution import audit
-from . import report
+from . import bing, report
 
 CHECK_EVERY = timedelta(days=7)
 # A check inspects every sitemap page (about 8 seconds each); don't start another meanwhile.
@@ -72,6 +73,8 @@ def log_finished(program: GrowthProgram) -> bool:
 
 
 def weekly_round(program: GrowthProgram) -> None:
+    # Bing (IndexNow) needs no Search Console; it runs only if the owner turned it on.
+    bing.weekly(program)
     integration = report.search_console(program.organization)
     if integration is None:
         return

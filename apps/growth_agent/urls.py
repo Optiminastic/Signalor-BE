@@ -36,7 +36,14 @@ from .views_finders import (
     FinderOAuthCallbackView,
     FinderSignInView,
 )
-from .views_indexing import IndexingCheckView, IndexingRequestedView, IndexingView
+from .views_indexing import (
+    BingSendView,
+    BingSwitchView,
+    BingVerifyView,
+    IndexingCheckView,
+    IndexingRequestedView,
+    IndexingView,
+)
 
 app_name = "growth_agent"
 
@@ -118,6 +125,11 @@ urlpatterns = [
         IndexingRequestedView.as_view(),
         name="indexing-requested",
     ),
+    path("programs/<str:org_slug>/indexing/bing/", BingSwitchView.as_view(), name="indexing-bing"),
+    path(
+        "programs/<str:org_slug>/indexing/bing/verify/", BingVerifyView.as_view(), name="indexing-bing-verify"
+    ),
+    path("programs/<str:org_slug>/indexing/bing/send/", BingSendView.as_view(), name="indexing-bing-send"),
     path("programs/<str:org_slug>/finders/", FinderListView.as_view(), name="finders"),
     path("oauth/finders/callback/", FinderOAuthCallbackView.as_view(), name="finder-oauth-callback"),
     path(

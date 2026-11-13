@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from apps.integrations.models import GSCIndexStatusSnapshot, Integration
 
-from . import requests
+from . import bing, requests
 from .reasons import classify
 
 SAMPLE_URLS = 5
@@ -84,7 +84,9 @@ def build(organization) -> dict:
     integration = search_console(organization)
     snapshots = _complete(integration) if integration else []
     latest = snapshots[0] if snapshots else None
+    program = getattr(organization, "growth_program", None)
     report = {
+        "bing": bing.state(program) if program else None,
         "status": _status(integration, latest),
         "property": integration.metadata.get("site_url", "") if integration else "",
         "checked_at": None,
@@ -101,7 +103,6 @@ def build(organization) -> dict:
     if latest is None:
         return report
     previous = snapshots[1] if len(snapshots) > 1 else None
-    program = getattr(organization, "growth_program", None)
     return {
         **report,
         **requests.weekly_list(program, report["property"], latest.pages),

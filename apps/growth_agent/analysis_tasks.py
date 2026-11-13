@@ -182,3 +182,31 @@ def dispatch_indexing_check(integration_id: int) -> None:
         threading.Thread(target=_check_indexing, args=(integration_id,), daemon=True).start()
     else:
         check_indexing_task.delay(integration_id)
+
+
+def _send_to_bing(program_id: int) -> None:
+    from django.db import close_old_connections
+
+    from .models import GrowthProgram
+    from .services.indexing import bing
+
+    close_old_connections()
+    try:
+        program = GrowthProgram.objects.select_related("organization").filter(pk=program_id).first()
+        if program is not None:
+            bing.send(program)
+    finally:
+        close_old_connections()
+
+
+@analysis_app.task(name="growth_agent.send_to_bing")
+def send_to_bing_task(program_id: int) -> None:
+    _send_to_bing(program_id)
+
+
+def dispatch_bing_send(program_id: int) -> None:
+    """Read the sitemap and send new and changed pages to Bing (IndexNow), off the request path."""
+    if analysis_app.conf.task_always_eager:
+        threading.Thread(target=_send_to_bing, args=(program_id,), daemon=True).start()
+    else:
+        send_to_bing_task.delay(program_id)
