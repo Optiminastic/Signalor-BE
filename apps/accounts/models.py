@@ -1,3 +1,5 @@
+import uuid
+
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.db import models
 
@@ -47,6 +49,7 @@ AGENCY_UNPAID_MAX_PROJECTS = 1
 # An agency-typed account on any other plan gets that plan's own
 # ``max_projects``, i.e. exactly what it paid for.
 MULTI_BRAND_PLANS = ("agency", "pro", "business")
+
 
 def _plan_budget(plan: str, default: float) -> float:
     """Monthly LLM spend ceiling in USD for a plan, env-overridable.
@@ -424,3 +427,49 @@ class EnterpriseLead(models.Model):
 
     def __str__(self):
         return f"{self.brand_name} <{self.email}> ({self.status})"
+
+
+class GrowthLead(models.Model):
+    """A 'Let's get your website growing' enquiry from the public lead form.
+
+    Separate from EnterpriseLead: that one sizes an Enterprise plan (prompts,
+    brands, engines); this one captures interest in SEO / GEO / AEO services.
+    All fields are client-supplied claims; the server stamps lead_id,
+    created_at, status and the derived ``services`` list.
+    """
+
+    class Status(models.TextChoices):
+        NEW = "new", "New"
+        CONTACTED = "contacted", "Contacted"
+        QUALIFIED = "qualified", "Qualified"
+        WON = "won", "Won"
+        LOST = "lost", "Lost"
+
+    class Service(models.TextChoices):
+        SEO = "seo", "SEO – Google search visibility"
+        GEO = "geo", "GEO – AI search visibility"
+        AEO = "aeo", "AEO – Answer engine visibility"
+        ALL = "all", "All of the above"
+
+    # Public, non-guessable identifier returned to the client. The integer pk
+    # stays internal so lead volume isn't exposed.
+    lead_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    full_name = models.CharField(max_length=120)
+    email = models.EmailField(max_length=254, db_index=True)
+    company_name = models.CharField(max_length=200)
+    website = models.URLField(max_length=500)
+    service = models.CharField(max_length=10, choices=Service.choices)
+    # Expanded from ``service`` server-side ("all" -> ["seo", "geo", "aeo"]) so
+    # leads can be filtered per service without special-casing "all".
+    services = models.JSONField(default=list, blank=True)
+    goals = models.TextField(max_length=2000, blank=True, default="")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.NEW)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["status", "-created_at"])]
+
+    def __str__(self):
+        return f"{self.company_name} <{self.email}> ({self.status})"

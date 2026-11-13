@@ -6,6 +6,7 @@ from .agency_views import (
     AgencyRoleView,
 )
 from .enterprise import EnterpriseLeadCreateView
+from .growth_leads import GrowthLeadCreateView
 from .views import (
     AccountTypeView,
     CancelTerminationView,
@@ -43,6 +44,7 @@ urlpatterns = [
     path("account/profile/", ProfileView.as_view(), name="profile"),
     path("account/profile/photo/", ProfilePhotoView.as_view(), name="profile-photo"),
     path("enterprise/lead/", EnterpriseLeadCreateView.as_view(), name="enterprise-lead"),
+    path("growth-leads/", GrowthLeadCreateView.as_view(), name="growth-lead"),
     # Agency team management (role-based access)
     path("agency/role/", AgencyRoleView.as_view(), name="agency-role"),
     path("agency/members/", AgencyMemberListView.as_view(), name="agency-members"),
