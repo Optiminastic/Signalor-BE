@@ -29,6 +29,16 @@ _TACTIC_BRIEFS = {
         "Explain the evaluation criteria, where the brand fits and who it is best for. Mention other "
         "options only in neutral, verifiable terms; never disparage competitors."
     ),
+    # Published on a signalor.ai editorial site, not the brand's own site: it must be
+    # useful on its own and cover the question broadly, with the brand as one option.
+    "satellite_article": (
+        "Write an independent, genuinely useful editorial article that answers the question below for "
+        "readers who don't know the brand yet. Open with a direct 2 to 3 sentence answer, then 4 to 6 "
+        "sections covering how to evaluate the options and what matters, then 3 to 5 FAQs. Describe "
+        "approaches and types of solutions in neutral terms, without naming or judging specific "
+        "competitors. The brand appears as one option in its own section, described only with the facts "
+        "given. Do not write it as an advertisement."
+    ),
 }
 
 _RULES = (

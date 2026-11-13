@@ -113,11 +113,13 @@ class SatellitePlanTests(GrowthApiTestCase):
         self.make_plan(configured=False)
         self.assertFalse(GrowthTask.objects.filter(tactic="satellite_article").exists())
 
-    def test_satellite_tasks_are_never_picked_up_for_execution_yet(self):
+    def test_satellite_topics_become_due_on_their_dates(self):
         self.make_plan()
         cycle = GrowthCycle.objects.get()
-        later = cycle.ends_on + timedelta(days=1)
-        self.assertFalse(due_tasks(later).filter(tactic="satellite_article").exists())
+        self.assertFalse(
+            due_tasks(cycle.starts_on - timedelta(days=1)).filter(tactic="satellite_article").exists()
+        )
+        self.assertTrue(due_tasks(cycle.starts_on).filter(tactic="satellite_article").exists())
 
     def test_the_owner_can_skip_and_restore_a_topic_and_others_cannot(self):
         self.make_plan()

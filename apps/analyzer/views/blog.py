@@ -128,6 +128,7 @@ class BlogAutomationConfigView(APIView):
             }
         )
 
+
 class BlogAutomationCalendarView(APIView):
     """Calendar/list view for scheduled and published automated blogs."""
 
@@ -175,6 +176,7 @@ class BlogAutomationCalendarView(APIView):
         }
         return Response({"summary": summary, "jobs": serializer.data})
 
+
 class BlogAutomationProcessDueView(APIView):
     """Process due scheduled blogs: auto-publish or move to review queue."""
 
@@ -193,6 +195,7 @@ class BlogAutomationProcessDueView(APIView):
             processed_total += _process_due_blog_jobs(config, limit=15)
 
         return Response({"message": "Due jobs processed.", "processed": processed_total})
+
 
 class BlogAutomationGenerateView(APIView):
     """Generate AI blog draft for Actions submenu."""
@@ -292,6 +295,7 @@ class BlogAutomationGenerateView(APIView):
             }
         )
 
+
 class BlogAutomationPublishView(APIView):
     """Publish AI-generated draft to connected CMS."""
 
@@ -386,6 +390,7 @@ class BlogAutomationPublishView(APIView):
             }
         )
 
+
 class BlogComposerPostsView(APIView):
     """GET runs/s/<slug>/blog/posts/ — recent WordPress posts for the composer."""
 
@@ -451,6 +456,7 @@ class BlogComposerPostsView(APIView):
             )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+
 class BlogComposerGenerateView(APIView):
     """POST runs/s/<slug>/blog/generate/ — AI blog draft (HTML) for the composer."""
 
@@ -475,6 +481,7 @@ class BlogComposerGenerateView(APIView):
 
         draft = _generate_blog_html(run.url or "", topic, tone, word_count)
         return Response(draft)
+
 
 class BlogComposerTopicsView(APIView):
     """GET runs/s/<slug>/blog/topics/?refresh=1 — AI topic ideas grounded in
@@ -507,6 +514,7 @@ class BlogComposerTopicsView(APIView):
             except Exception:
                 logger.warning("blog topics cache.set failed", exc_info=True)
         return Response(data)
+
 
 class BlogComposerPublishView(APIView):
     """POST runs/s/<slug>/blog/publish/ — publish a draft to connected WordPress."""
@@ -569,6 +577,7 @@ class BlogComposerPublishView(APIView):
             }
         )
 
+
 class BlogComposerUploadImageView(APIView):
     """POST runs/s/<slug>/blog/upload-image/ — upload an image to WP media."""
 
@@ -620,6 +629,7 @@ class BlogComposerUploadImageView(APIView):
             )
         return Response({"url": result["url"], "id": result.get("id") or 0})
 
+
 class BlogSourcesView(APIView):
     """GET /runs/s/<slug>/blog/sources/ — candidate reference sources (3 competitors + Google + Reddit)."""
 
@@ -630,6 +640,7 @@ class BlogSourcesView(APIView):
 
         run = get_object_or_404(AnalysisRun, slug=slug)
         return Response({"sources": _blog_source_candidates(run)})
+
 
 class BlogTitleIdeasView(APIView):
     """POST /runs/s/<slug>/blog/title-ideas/ — ~5 blog title ideas from the run's
@@ -684,6 +695,7 @@ Return STRICT JSON only: {{"titles": ["...", "...", "...", "...", "..."]}}"""
         if not titles:
             titles = [f"{brand}: A Practical Guide to AI Search Visibility"]
         return Response({"titles": titles})
+
 
 class BlogGenerateView(APIView):
     """POST /runs/s/<slug>/blog/generate/ — AI-generate a blog draft for a run
@@ -750,6 +762,7 @@ class BlogGenerateView(APIView):
             }
         )
 
+
 class BlogPublishNetworkView(APIView):
     """POST /runs/s/<slug>/blog/publish-network/ — publish a generated blog to one
     satellite site. Writes a published BlogPost into the shared blog DB (the site
@@ -758,12 +771,10 @@ class BlogPublishNetworkView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request, slug):
-        from django.conf import settings as dj_settings
         from django.shortcuts import get_object_or_404
-        from django.utils import timezone
 
-        from .. import blog_store
         from ..models import BlogPost
+        from ..services import satellite_publish
 
         run = get_object_or_404(AnalysisRun, slug=slug)
         data = request.data or {}
@@ -782,36 +793,23 @@ class BlogPublishNetworkView(APIView):
         if not content_html and content_markdown:
             content_html = _to_html_from_markdownish(content_markdown)
 
-        base_slug = _slugify(data.get("slug") or title)
-        slug_val, n = base_slug, 2
-        while blog_store.slug_exists(site, slug_val):
-            slug_val = f"{base_slug}-{n}"
-            n += 1
-
         brand_url = (run.organization.url if run.organization else "") or run.url or ""
-        now = timezone.now().isoformat()
-        post = {
-            "id": blog_store.new_id(),
-            "site": site,
-            "slug": slug_val,
-            "title": title[:300],
-            "description": (data.get("description") or data.get("meta_description") or "")[:2000],
-            "content_html": content_html,
-            "image_url": (data.get("image_url") or "")[:2048],
-            "category": (data.get("category") or "")[:80],
-            "brand_url": brand_url,
-            "brand_ref": _brand_ref_for_run(run),
-            "source": "signalor",
-            "status": "published",
-            "published_at": now,
-            "created_at": now,
-        }
-        blog_store.put_post(post)
-        domain = (dj_settings.SATELLITE_SITES.get(site) or "").rstrip("/")
+        post = satellite_publish.publish_post(
+            site=site,
+            slug=satellite_publish.unique_slug(site, _slugify(data.get("slug") or title)),
+            title=title,
+            content_html=content_html,
+            brand_url=brand_url,
+            brand_ref=_brand_ref_for_run(run),
+            description=data.get("description") or data.get("meta_description") or "",
+            image_url=data.get("image_url") or "",
+            category=data.get("category") or "",
+        )
         return Response(
-            {**post, "url": f"{domain}/{slug_val}" if domain else ""},
+            post,
             status=status.HTTP_201_CREATED,
         )
+
 
 class BlogPostDetailView(APIView):
     """GET/PATCH/DELETE /runs/s/<slug>/blog/item/<site>/<post_slug>/ — read, edit,
@@ -877,6 +875,7 @@ class BlogPostDetailView(APIView):
         blog_store.delete_post(site, post_slug)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+
 class BlogAutoPublishAllView(APIView):
     """POST /runs/s/<slug>/blog/auto-publish-all/ — one click: AI-generate a themed
     blog for each of the 5 satellite sites and publish them all. Limited to once
@@ -916,6 +915,7 @@ class BlogAutoPublishAllView(APIView):
             status=status.HTTP_201_CREATED,
         )
 
+
 class PublicBlogListView(APIView):
     """GET /public/blog/<site>/ — public, read-only list of published posts for one
     satellite site. The 5 sites fetch this (no auth, no brand scope); the backend
@@ -933,6 +933,7 @@ class PublicBlogListView(APIView):
             logger.warning("public-blog-list: S3 read failed for %s: %s", site, exc)
             rows = []
         return Response(rows)
+
 
 class PublicBlogDetailView(APIView):
     """GET /public/blog/<site>/<post_slug>/ — public, read-only full post (incl.

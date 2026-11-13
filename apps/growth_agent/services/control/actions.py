@@ -135,6 +135,8 @@ def present(action: GrowthAction, version: ActionVersion) -> dict:
             "slug": version.payload["slug"],
             "markdown": render_markdown(article, {}),
             "platform": version.destination.get("platform", ""),
+            # Set for satellite articles: the signalor.ai site the article goes on.
+            "site_url": version.destination.get("site_url", ""),
             "answer": article.answer,
             "review_notes": version.review_notes,
         }
