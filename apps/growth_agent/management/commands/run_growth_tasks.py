@@ -6,6 +6,7 @@ One round of Growth Agent work:
 2. Send every action the owner has approved.
 3. Check outreach threads for replies.
 4. Weekly indexing: start a Search Console check per brand when the last is a week old.
+5. Post each brand's weekly summary in the Agent chat.
 
 Run from cron, e.g. every 15 minutes:
     python manage.py run_growth_tasks [--limit N] [--dry-run]
@@ -20,6 +21,7 @@ from django.utils import timezone
 
 from apps.growth_agent.analysis_tasks import dispatch_action_task, run_growth_task
 from apps.growth_agent.models import GrowthProgram
+from apps.growth_agent.services import weekly_summary
 from apps.growth_agent.services.autopilot import advance_onboarding
 from apps.growth_agent.services.control.dispatch import dispatch, dispatchable
 from apps.growth_agent.services.control.expiry import expire_due
@@ -87,3 +89,5 @@ class Command(BaseCommand):
                 "organization"
             ):
                 weekly_indexing_round(program)
+                if weekly_summary.post(program):
+                    self.stdout.write(f"Posted the weekly summary for program {program.id}.")
