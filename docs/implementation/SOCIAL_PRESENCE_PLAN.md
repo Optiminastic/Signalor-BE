@@ -40,7 +40,8 @@ Per platform, 0 to 100:
 | Engagement | 20 | Likes, comments and shares per post (Buffer insights) |
 
 - Reddit is scored on mentions instead: how often and in how many communities the brand comes up, in the last 90 days.
-- Overall score: the average of the platforms the brand is on, with "partial" shown when parts aren't measured.
+- Overall score: the average over all five platforms (a platform the brand isn't on counts as 0), with "partial" shown when parts aren't measured.
+- Parts that can't be measured score 0 and are listed as "not measured", so the score is never padded with guesses.
 - Recomputed weekly; the change since last week is shown.
 
 ## Connecting Buffer (checked 13 Nov 2026)
