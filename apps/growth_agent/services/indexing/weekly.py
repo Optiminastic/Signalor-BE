@@ -15,7 +15,7 @@ from django.utils import timezone
 
 from ...models import AgentActionLog, GrowthProgram
 from ..execution import audit
-from . import bing, report
+from . import bing, report, satellite_rank
 
 CHECK_EVERY = timedelta(days=7)
 # A check inspects every sitemap page (about 8 seconds each); don't start another meanwhile.
@@ -75,6 +75,8 @@ def log_finished(program: GrowthProgram) -> bool:
 def weekly_round(program: GrowthProgram) -> None:
     # Bing (IndexNow) needs no Search Console; it runs only if the owner turned it on.
     bing.weekly(program)
+    # Satellite articles are checked in signalor.ai's own Search Console, not the client's.
+    satellite_rank.weekly(program)
     integration = report.search_console(program.organization)
     if integration is None:
         return

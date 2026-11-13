@@ -43,6 +43,7 @@ from .views_indexing import (
     IndexingCheckView,
     IndexingRequestedView,
     IndexingView,
+    SatelliteRankView,
 )
 
 app_name = "growth_agent"
@@ -126,6 +127,9 @@ urlpatterns = [
         name="indexing-requested",
     ),
     path("programs/<str:org_slug>/indexing/bing/", BingSwitchView.as_view(), name="indexing-bing"),
+    path(
+        "programs/<str:org_slug>/indexing/satellite/", SatelliteRankView.as_view(), name="indexing-satellite"
+    ),
     path(
         "programs/<str:org_slug>/indexing/bing/verify/", BingVerifyView.as_view(), name="indexing-bing-verify"
     ),

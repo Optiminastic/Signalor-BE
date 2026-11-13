@@ -546,6 +546,10 @@ APOLLO_API_KEY = os.getenv("APOLLO_API_KEY", "")
 # site). When set, each satellite article the Growth Agent publishes is sent to
 # Bing the same day; when empty, publishing still works and Bing isn't told.
 SATELLITE_INDEXNOW_KEY = os.getenv("SATELLITE_INDEXNOW_KEY", "")
+# Slug of signalor.ai's own brand in Signalor. Its Search Console connection
+# (the Google account that owns the satellite domains as properties) is used to
+# check satellite articles' indexing, position and clicks every week.
+SATELLITE_GSC_ORG_SLUG = os.getenv("SATELLITE_GSC_ORG_SLUG", "")
 # The old daily batch (5 AI articles per brand per day on the satellite sites,
 # scheduled or via the "add" button). Replaced by the Growth Agent's satellite
 # articles (one every 3 days, owner-approved, sponsored links); off unless set.

@@ -7,6 +7,7 @@ POST programs/<slug>/indexing/requested/ {"url"} -> the owner opened that page's
 POST programs/<slug>/indexing/bing/ {"enabled"} -> turn weekly Bing sending on or off
 POST programs/<slug>/indexing/bing/verify/       -> check the IndexNow key file now
 POST programs/<slug>/indexing/bing/send/         -> send new and changed pages now
+GET  programs/<slug>/indexing/satellite/         -> satellite articles: indexed, position, clicks
 
 Owner-only (the program lookup is scoped to the signed-in owner).
 """
@@ -16,7 +17,7 @@ from __future__ import annotations
 from rest_framework import serializers, status
 from rest_framework.response import Response
 
-from .services.indexing import bing, report, requests, weekly
+from .services.indexing import bing, report, requests, satellite_rank, weekly
 from .views import GrowthBaseView
 from .views_control import _program_or_404
 
@@ -102,3 +103,9 @@ class BingSendView(GrowthBaseView):
             detail = "Pages were sent to Bing recently. Sending runs at most every 6 hours."
             return Response({"detail": detail, "code": "send_not_started"}, status=status.HTTP_409_CONFLICT)
         return Response(report.build(program.organization), status=status.HTTP_202_ACCEPTED)
+
+
+class SatelliteRankView(GrowthBaseView):
+    def get(self, request, org_slug: str):
+        program, missing = _program_or_404(request, org_slug)
+        return missing or Response(satellite_rank.articles(program))

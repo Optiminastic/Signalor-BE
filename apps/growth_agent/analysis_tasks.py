@@ -210,3 +210,31 @@ def dispatch_bing_send(program_id: int) -> None:
         threading.Thread(target=_send_to_bing, args=(program_id,), daemon=True).start()
     else:
         send_to_bing_task.delay(program_id)
+
+
+def _rank_satellite(program_id: int) -> None:
+    from django.db import close_old_connections
+
+    from .models import GrowthProgram
+    from .services.indexing import satellite_rank
+
+    close_old_connections()
+    try:
+        program = GrowthProgram.objects.filter(pk=program_id).first()
+        if program is not None:
+            satellite_rank.run_checks(program)
+    finally:
+        close_old_connections()
+
+
+@analysis_app.task(name="growth_agent.rank_satellite_articles")
+def rank_satellite_task(program_id: int) -> None:
+    _rank_satellite(program_id)
+
+
+def dispatch_satellite_rank(program_id: int) -> None:
+    """Check satellite articles in signalor.ai's Search Console (slow), off the request path."""
+    if analysis_app.conf.task_always_eager:
+        threading.Thread(target=_rank_satellite, args=(program_id,), daemon=True).start()
+    else:
+        rank_satellite_task.delay(program_id)
