@@ -56,5 +56,13 @@ def find(domain: str, api_key: str) -> list[Candidate]:
         raise FinderError(f"Hunter couldn't be reached: {type(exc).__name__}") from exc
     if not reply.ok:
         raise FinderError(f"Hunter answered HTTP {reply.status_code}")
-    emails = (reply.json().get("data") or {}).get("emails") or []
-    return [c for c in (_candidate(item) for item in emails) if c is not None]
+    return candidates_from(reply.json())
+
+
+def candidates_from(payload: object) -> list[Candidate]:
+    """People from a Domain Search answer, from the REST API or the MCP tool."""
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    emails = data.get("emails") or []
+    return [c for c in (_candidate(item) for item in emails if isinstance(item, dict)) if c is not None]

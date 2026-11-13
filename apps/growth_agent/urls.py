@@ -29,7 +29,13 @@ from .views_control import (
     FindContactsView,
     TaskContactView,
 )
-from .views_finders import FinderConnectView, FinderDisconnectView, FinderListView
+from .views_finders import (
+    FinderConnectView,
+    FinderDisconnectView,
+    FinderListView,
+    FinderOAuthCallbackView,
+    FinderSignInView,
+)
 
 app_name = "growth_agent"
 
@@ -105,6 +111,12 @@ urlpatterns = [
     ),
     path("programs/<str:org_slug>/tasks/<int:task_id>/", TaskUpdateView.as_view(), name="task"),
     path("programs/<str:org_slug>/finders/", FinderListView.as_view(), name="finders"),
+    path("oauth/finders/callback/", FinderOAuthCallbackView.as_view(), name="finder-oauth-callback"),
+    path(
+        "programs/<str:org_slug>/finders/<str:provider>/sign-in/",
+        FinderSignInView.as_view(),
+        name="finder-sign-in",
+    ),
     path(
         "programs/<str:org_slug>/finders/<str:provider>/connect/",
         FinderConnectView.as_view(),

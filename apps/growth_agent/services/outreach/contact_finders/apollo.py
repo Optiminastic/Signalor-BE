@@ -37,20 +37,39 @@ def _post(url: str, api_key: str, body: dict) -> dict:
 
 
 def find(domain: str, api_key: str) -> list[Candidate]:
-    body = {
+    return candidates_from(_post(SEARCH_URL, api_key, search_body(domain)))
+
+
+def search_body(domain: str) -> dict:
+    return {
         "q_organization_domains_list": [domain],
         "person_titles": list(PITCH_TITLES),
         "include_similar_titles": True,
         "per_page": PER_PAGE,
     }
-    people = _post(SEARCH_URL, api_key, body).get("people") or []
+
+
+def candidates_from(payload: object) -> list[Candidate]:
+    """People worth a reveal, from a people search (REST API or MCP tool)."""
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
     candidates = []
-    for person in people:
-        if not person.get("id") or not person.get("has_email"):
+    for person in data.get("people") or []:
+        if not isinstance(person, dict) or not person.get("id") or person.get("has_email") is False:
             continue  # no email to reveal: not worth a credit
-        name = " ".join(p for p in (person.get("first_name"), person.get("last_name_obfuscated")) if p)
-        candidates.append(Candidate(PROVIDER, person["id"], name, person.get("title") or "", "", ""))
+        last = person.get("last_name_obfuscated") or person.get("last_name")
+        name = " ".join(p for p in (person.get("first_name"), last) if p)
+        candidates.append(Candidate(PROVIDER, str(person["id"]), name, person.get("title") or "", "", ""))
     return candidates
+
+
+def email_from(payload: object) -> str:
+    """The work email in a people/match answer (REST API or MCP tool)."""
+    if not isinstance(payload, dict):
+        return ""
+    person = payload.get("person") if isinstance(payload.get("person"), dict) else payload
+    return person.get("email") or ""
 
 
 def check_key(api_key: str) -> None:
@@ -63,8 +82,7 @@ def check_key(api_key: str) -> None:
 
 def reveal(person_id: str, api_key: str) -> str:
     """The person's work email. Costs 1 Apollo credit when an email is found."""
-    person = _post(MATCH_URL, api_key, {"id": person_id}).get("person") or {}
-    email = person.get("email") or ""
+    email = email_from(_post(MATCH_URL, api_key, {"id": person_id}))
     if not email:
         raise FinderError("Apollo has no work email for this person.")
     return email

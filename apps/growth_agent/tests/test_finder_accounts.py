@@ -52,6 +52,7 @@ class FinderAccountTests(GrowthApiTestCase):
                 "provider": "hunter",
                 "label": "Hunter",
                 "connected": True,
+                "method": "api_key",
                 "key_hint": "abcd",
                 "source": "account",
             },

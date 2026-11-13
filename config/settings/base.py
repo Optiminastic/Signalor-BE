@@ -542,3 +542,10 @@ OUTREACH_ANSWER_CACHE_SECONDS = _env_number("OUTREACH_ANSWER_CACHE_SECONDS", 864
 # "test-api-key" returns dummy data, which is useful locally.
 HUNTER_API_KEY = os.getenv("HUNTER_API_KEY", "")
 APOLLO_API_KEY = os.getenv("APOLLO_API_KEY", "")
+# Frontend origins a "Sign in with Hunter/Apollo" may send the browser back to
+# (comma separated, e.g. "https://signalor.ai,http://localhost:3002").
+GROWTH_APP_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("GROWTH_APP_ORIGINS", FRONTEND_BASE_URL).split(",")
+    if origin.strip()
+]
