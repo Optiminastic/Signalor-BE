@@ -238,3 +238,31 @@ def dispatch_satellite_rank(program_id: int) -> None:
         threading.Thread(target=_rank_satellite, args=(program_id,), daemon=True).start()
     else:
         rank_satellite_task.delay(program_id)
+
+
+def _check_social(program_id: int) -> None:
+    from django.db import close_old_connections
+
+    from .models import GrowthProgram
+    from .services.social import check as social_check
+
+    close_old_connections()
+    try:
+        program = GrowthProgram.objects.select_related("organization").filter(pk=program_id).first()
+        if program is not None:
+            social_check.run_check(program)
+    finally:
+        close_old_connections()
+
+
+@analysis_app.task(name="growth_agent.check_social")
+def check_social_task(program_id: int) -> None:
+    _check_social(program_id)
+
+
+def dispatch_social_check(program_id: int) -> None:
+    """Score the brand's social presence (YouTube and Reddit calls), off the request path."""
+    if analysis_app.conf.task_always_eager:
+        threading.Thread(target=_check_social, args=(program_id,), daemon=True).start()
+    else:
+        check_social_task.delay(program_id)

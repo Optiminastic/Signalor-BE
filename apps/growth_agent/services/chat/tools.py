@@ -52,6 +52,12 @@ _TOOLS: dict[str, tuple[str, dict, Handler]] = {
         _NO_ARGS,
         read_tools.get_indexing,
     ),
+    "get_social": (
+        "The brand's social presence score: per platform (LinkedIn, X, YouTube, Instagram, Reddit) and "
+        "overall, what each is based on, what isn't measured, and the change since last week.",
+        _NO_ARGS,
+        read_tools.get_social,
+    ),
     "search_brand_knowledge": (
         "Search the brand's own site content for facts.",
         {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},

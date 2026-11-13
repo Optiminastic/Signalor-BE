@@ -16,6 +16,7 @@ from django.utils import timezone
 from ..models import AgentActionLog, AgentConversation, AgentMessage, GrowthAction, GrowthProgram, GrowthTask
 from .execution import audit
 from .indexing import bing, report, satellite_rank
+from .social import check as social_check
 
 POSTED = "weekly_summary_posted"
 WEEK = timedelta(days=7)
@@ -90,6 +91,16 @@ def _satellite_lines(program: GrowthProgram) -> list[str]:
     return lines
 
 
+def _social_lines(program: GrowthProgram) -> list[str]:
+    latest = social_check.report(program)
+    if not latest.get("checked_at"):
+        return []
+    change = latest["change"]
+    delta = f" ({change:+.1f} since last week)" if change else ""
+    partial = " (partial: some numbers aren't measured yet)" if latest["overall"]["partial"] else ""
+    return [f"- Social presence score: **{latest['overall']['score']}** of 100{delta}{partial}"]
+
+
 def _next_lines(program: GrowthProgram) -> list[str]:
     today = timezone.now().date()
     upcoming = GrowthTask.objects.filter(
@@ -112,6 +123,7 @@ def build(program: GrowthProgram) -> str:
         ("This week", _work_lines(program, since)),
         ("Google and Bing", _indexing_lines(program) + _bing_line(program)),
         ("Articles on signalor.ai sites", _satellite_lines(program)),
+        ("Social", _social_lines(program)),
         ("Coming up", _next_lines(program)),
     ]
     parts = [f"Here's your week for **{program.organization.name}**."]

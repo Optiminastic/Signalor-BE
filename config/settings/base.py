@@ -550,6 +550,11 @@ SATELLITE_INDEXNOW_KEY = os.getenv("SATELLITE_INDEXNOW_KEY", "")
 # (the Google account that owns the satellite domains as properties) is used to
 # check satellite articles' indexing, position and clicks every week.
 SATELLITE_GSC_ORG_SLUG = os.getenv("SATELLITE_GSC_ORG_SLUG", "")
+# Social presence score (Growth Agent): public YouTube channel numbers and
+# Reddit brand mentions. Each part is skipped (shown as "not measured") when unset.
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
+REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "")
+REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET", "")
 # The old daily batch (5 AI articles per brand per day on the satellite sites,
 # scheduled or via the "add" button). Replaced by the Growth Agent's satellite
 # articles (one every 3 days, owner-approved, sponsored links); off unless set.

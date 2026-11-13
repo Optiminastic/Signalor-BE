@@ -13,6 +13,7 @@ from ..indexing import bing, satellite_rank
 from ..indexing import report as indexing_report
 from ..planning.plan import active_cycle
 from ..positioning.report import latest_report
+from ..social import check as social_check
 
 MAX_GAPS = 8
 MAX_LOST = 5
@@ -181,4 +182,21 @@ def get_indexing(program: GrowthProgram, _args: dict) -> dict:
         "google": _indexing_summary(program),
         "bing_weekly_sending": {"enabled": state["enabled"], "last_run": state["last"]},
         "satellite_articles": _satellite_summary(program),
+    }
+
+
+def get_social(program: GrowthProgram, _args: dict) -> dict:
+    """The latest social presence check, without the raw profile details."""
+    latest = social_check.report(program)
+    if latest.get("status") in ("never_checked", "checking") and not latest.get("checked_at"):
+        return {"available": False, "note": "The first social check hasn't run yet."}
+    return {
+        "overall_score": latest["overall"]["score"],
+        "partial": latest["overall"]["partial"],
+        "change_since_last_week": latest["change"],
+        "platforms": {
+            name: {"score": data["score"], "found": data["found"], "not_measured": data["not_measured"]}
+            for name, data in latest["platforms"].items()
+        },
+        "notes": latest["notes"],
     }

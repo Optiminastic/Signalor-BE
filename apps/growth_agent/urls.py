@@ -45,6 +45,7 @@ from .views_indexing import (
     IndexingView,
     SatelliteRankView,
 )
+from .views_social import SocialCheckView, SocialView
 
 app_name = "growth_agent"
 
@@ -119,6 +120,8 @@ urlpatterns = [
         name="task-run",
     ),
     path("programs/<str:org_slug>/tasks/<int:task_id>/", TaskUpdateView.as_view(), name="task"),
+    path("programs/<str:org_slug>/social/", SocialView.as_view(), name="social"),
+    path("programs/<str:org_slug>/social/check/", SocialCheckView.as_view(), name="social-check"),
     path("programs/<str:org_slug>/indexing/", IndexingView.as_view(), name="indexing"),
     path("programs/<str:org_slug>/indexing/check/", IndexingCheckView.as_view(), name="indexing-check"),
     path(
