@@ -41,6 +41,23 @@ def get_positioning(program: GrowthProgram, _args: dict) -> dict:
     }
 
 
+def _weekly_routines(program: GrowthProgram) -> list[dict]:
+    """Work the agent repeats every week besides the dated tasks, with whether each is running."""
+    indexing = indexing_report.build(program.organization)["status"]
+    return [
+        {
+            "routine": "Google indexing check (Search Console)",
+            "running": indexing not in ("not_connected", "no_property"),
+        },
+        {"routine": "Send new and changed pages to Bing", "running": bing.enabled(program)},
+        {
+            "routine": "Google ranking check of articles on signalor.ai sites",
+            "running": satellite_rank.ops_search_console() is not None,
+        },
+        {"routine": "Weekly summary in this chat", "running": program.status == GrowthProgram.Status.ACTIVE},
+    ]
+
+
 def get_plan(program: GrowthProgram, _args: dict) -> dict:
     cycle = active_cycle(program)
     if cycle is None:
@@ -51,6 +68,7 @@ def get_plan(program: GrowthProgram, _args: dict) -> dict:
         "ends_on": cycle.ends_on.isoformat(),
         "baseline_visibility_pct": cycle.baseline_share_of_voice,
         "target_visibility_pct": cycle.target_share_of_voice,
+        "weekly_routines": _weekly_routines(program),
         "tasks": [
             {
                 "id": t.id,

@@ -38,3 +38,10 @@ class IndexingToolTests(ExecutionTestCase):
     def test_the_tool_is_registered_as_read_only(self):
         self.assertIn("get_indexing", [spec["function"]["name"] for spec in tools.specs()])
         self.assertNotIn("get_indexing", tools.WRITE_TOOLS)
+
+    def test_the_plan_lists_the_weekly_routines_and_whether_each_runs(self):
+        routines = read_tools.get_plan(self.program, {})["weekly_routines"]
+        by_name = {r["routine"]: r["running"] for r in routines}
+        self.assertFalse(by_name["Google indexing check (Search Console)"])
+        self.assertFalse(by_name["Send new and changed pages to Bing"])
+        self.assertTrue(by_name["Weekly summary in this chat"])

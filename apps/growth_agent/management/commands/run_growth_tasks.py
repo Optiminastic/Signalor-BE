@@ -30,6 +30,7 @@ from apps.growth_agent.services.execution.executor import due_tasks, release_sta
 from apps.growth_agent.services.indexing.weekly import weekly_round as weekly_indexing_round
 from apps.growth_agent.services.outreach.follow_up_actions import prepare_due_follow_ups
 from apps.growth_agent.services.outreach.followups import process_open_threads
+from apps.growth_agent.services.planning.plan import add_satellite_topics
 from config.celery_rabbit import analysis_app
 
 DEFAULT_LIMIT = 50
@@ -88,6 +89,9 @@ class Command(BaseCommand):
             for program in GrowthProgram.objects.filter(status=GrowthProgram.Status.ACTIVE).select_related(
                 "organization"
             ):
+                added = add_satellite_topics(program)
+                if added:
+                    self.stdout.write(f"Added {added} satellite article(s) to program {program.id}'s plan.")
                 weekly_indexing_round(program)
                 if weekly_summary.post(program):
                     self.stdout.write(f"Posted the weekly summary for program {program.id}.")

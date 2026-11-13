@@ -14,7 +14,7 @@ from django.utils import timezone
 from ...models import GrowthCycle, GrowthProgram, GrowthTask, PositioningReport
 from .candidates import TaskSpec, build_candidates
 from .satellite import satellite_candidates
-from .schedule import DAYS_PER_WEEK, WEEKS_PER_CYCLE, schedule
+from .schedule import DAYS_PER_WEEK, SATELLITE_EVERY_DAYS, SATELLITE_TACTIC, WEEKS_PER_CYCLE, schedule
 
 USER_EDITABLE_STATUSES = {GrowthTask.Status.PLANNED, GrowthTask.Status.SKIPPED}
 MAX_SHARE_OF_VOICE = 100.0
@@ -47,14 +47,51 @@ def _report_payload(report: PositioningReport) -> dict:
     }
 
 
-def _candidates(payload: dict) -> list[TaskSpec]:
-    """The month's task candidates, plus satellite articles when those sites can be published to."""
-    from apps.analyzer import blog_store
+def _sites() -> dict[str, str]:
+    return getattr(settings, "SATELLITE_SITES", {})
 
-    specs = build_candidates(payload)
-    if blog_store.is_configured():
-        specs += satellite_candidates(payload, getattr(settings, "SATELLITE_SITES", {}))
-    return specs
+
+def _candidates(payload: dict) -> list[TaskSpec]:
+    """The month's task candidates plus the satellite topic plan. Whether the satellite
+    sites can be published to is checked when a topic runs (``readiness``), not here."""
+    return build_candidates(payload) + satellite_candidates(payload, _sites())
+
+
+def add_satellite_topics(program: GrowthProgram) -> int:
+    """Give an active plan made before satellite topics existed its satellite articles:
+    one every 3 days from today to the end of the plan. Never twice for one plan."""
+    cycle = active_cycle(program)
+    if cycle is None or cycle.positioning_report is None:
+        return 0
+    if cycle.tasks.filter(tactic=SATELLITE_TACTIC).exists():
+        return 0
+    today = max(timezone.now().date(), cycle.starts_on)
+    specs = satellite_candidates(_report_payload(cycle.positioning_report), _sites())
+    rows = []
+    for index, spec in enumerate(specs):
+        day = today + timedelta(days=index * SATELLITE_EVERY_DAYS)
+        if day > cycle.ends_on:
+            break
+        rows.append(_task_row(cycle, spec, week=(day - cycle.starts_on).days // DAYS_PER_WEEK + 1, day=day))
+    GrowthTask.objects.bulk_create(rows)
+    return len(rows)
+
+
+def _task_row(cycle: GrowthCycle, spec: TaskSpec, *, week: int, day: date) -> GrowthTask:
+    return GrowthTask(
+        cycle=cycle,
+        week=min(max(week, 1), WEEKS_PER_CYCLE),
+        scheduled_for=day,
+        channel=spec.channel,
+        tactic=spec.tactic,
+        title=spec.title[:300],
+        rationale=spec.rationale,
+        target=spec.target[:500],
+        target_url=spec.target_url,
+        prompts=list(spec.prompts),
+        impact_score=spec.score,
+        effort=spec.effort,
+    )
 
 
 def _next_monday(today: date) -> date:
@@ -94,21 +131,7 @@ def create_plan(program: GrowthProgram, *, rebuild: bool = False) -> tuple[Growt
             target_share_of_voice=min(MAX_SHARE_OF_VOICE, baseline + program.uplift_target_points),
         )
         GrowthTask.objects.bulk_create(
-            GrowthTask(
-                cycle=cycle,
-                week=item.week,
-                scheduled_for=item.scheduled_for,
-                channel=item.spec.channel,
-                tactic=item.spec.tactic,
-                title=item.spec.title[:300],
-                rationale=item.spec.rationale,
-                target=item.spec.target[:500],
-                target_url=item.spec.target_url,
-                prompts=list(item.spec.prompts),
-                impact_score=item.spec.score,
-                effort=item.spec.effort,
-            )
-            for item in placed
+            _task_row(cycle, item.spec, week=item.week, day=item.scheduled_for) for item in placed
         )
         if program.status == GrowthProgram.Status.ONBOARDING:
             program.status = GrowthProgram.Status.ACTIVE

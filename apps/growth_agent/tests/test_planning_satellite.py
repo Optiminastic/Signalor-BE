@@ -9,10 +9,12 @@ from datetime import timedelta
 from unittest import mock
 
 from django.test import SimpleTestCase, override_settings
+from django.utils import timezone
 
 from ..models import GrowthCycle, GrowthProgram, GrowthTask, PositioningReport
 from ..services.execution.executor import due_tasks
-from ..services.planning import candidates, satellite, schedule
+from ..services.execution.satellite_channel import SatelliteContentChannel
+from ..services.planning import candidates, plan, satellite, schedule
 from .test_api import OTHER_EMAIL, PRO_EMAIL, GrowthApiTestCase
 from .test_planning import MONDAY, _report
 
@@ -81,11 +83,15 @@ class SatelliteScheduleTests(SimpleTestCase):
         self.assertEqual(dates, [MONDAY + timedelta(days=3 * i) for i in range(10)])
         self.assertEqual(placed[-1].week, 4)
 
-    def test_satellites_count_toward_the_monthly_cap_alongside_other_tasks(self):
-        placed = schedule.schedule(self.specs() + candidates.build_candidates(_report()), MONDAY)
-        self.assertLessEqual(len(placed), schedule.MAX_TASKS_PER_CYCLE)
+    def test_satellites_come_on_top_of_the_monthly_cap(self):
+        many = [
+            candidates._spec(candidates.TACTICS["answer_content"], target=f"topic {i}", reach=0.5)
+            for i in range(40)
+        ]
+        placed = schedule.schedule(self.specs() + many, MONDAY)
+        others = [t for t in placed if t.spec.tactic != "satellite_article"]
+        self.assertEqual(len(others), schedule.MAX_TASKS_PER_CYCLE)  # other work keeps its full month
         self.assertEqual(sum(1 for t in placed if t.spec.tactic == "satellite_article"), 10)
-        self.assertTrue(any(t.spec.tactic != "satellite_article" for t in placed))
 
 
 @override_settings(SATELLITE_SITES=SITES)
@@ -109,9 +115,24 @@ class SatellitePlanTests(GrowthApiTestCase):
         self.assertEqual(topics.count(), 3)  # 1 lost prompt + 2 missing topics in the sample report
         self.assertEqual(topics.first().target_url in SITES.values(), True)
 
-    def test_no_satellite_topics_when_the_sites_cant_be_published_to(self):
+    def test_plans_include_satellite_topics_even_before_publishing_is_set_up(self):
         self.make_plan(configured=False)
-        self.assertFalse(GrowthTask.objects.filter(tactic="satellite_article").exists())
+        self.assertEqual(GrowthTask.objects.filter(tactic="satellite_article").count(), 3)
+        # Running them waits until the sites can be published to.
+        with mock.patch(CONFIGURED, return_value=False):
+            self.assertTrue(SatelliteContentChannel().readiness(self.program))
+
+    def test_a_plan_made_without_satellite_topics_gets_them_added_once(self):
+        self.make_plan()
+        GrowthTask.objects.filter(tactic="satellite_article").delete()
+        self.assertEqual(plan.add_satellite_topics(self.program), 3)
+        dates = sorted(
+            GrowthTask.objects.filter(tactic="satellite_article").values_list("scheduled_for", flat=True)
+        )
+        cycle = GrowthCycle.objects.get()
+        start = max(timezone.now().date(), cycle.starts_on)
+        self.assertEqual(dates, [start + timedelta(days=3 * i) for i in range(3)])
+        self.assertEqual(plan.add_satellite_topics(self.program), 0)
 
     def test_satellite_topics_become_due_on_their_dates(self):
         self.make_plan()

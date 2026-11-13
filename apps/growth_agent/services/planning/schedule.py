@@ -6,7 +6,7 @@ Highest score first; each task lands in the first week at or after its
 week so work is spread rather than bunched on Mondays.
 
 Satellite articles are different: one every ``SATELLITE_EVERY_DAYS`` days from
-the cycle start, outside the weekly slots, still within the cycle's task cap.
+the cycle start, outside the weekly slots and on top of the cycle's task cap.
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ def _satellite_cadence(specs: list[TaskSpec], start: date) -> list[ScheduledTask
 def schedule(candidates: list[TaskSpec], start: date) -> list[ScheduledTask]:
     satellites = [s for s in candidates if s.tactic == SATELLITE_TACTIC]
     load = {week: 0 for week in range(1, WEEKS_PER_CYCLE + 1)}
-    placed: list[ScheduledTask] = _satellite_cadence(satellites, start)
+    placed: list[ScheduledTask] = []
     others = [s for s in candidates if s.tactic != SATELLITE_TACTIC]
     for spec in sorted(others, key=lambda s: s.score, reverse=True):
         if len(placed) >= MAX_TASKS_PER_CYCLE:
@@ -73,4 +73,6 @@ def schedule(candidates: list[TaskSpec], start: date) -> list[ScheduledTask]:
         week_start = start + timedelta(days=(week - 1) * DAYS_PER_WEEK)
         placed.append(ScheduledTask(spec, week, workday(week_start, load[week])))
         load[week] += 1
+    # Satellite articles come on top of the monthly cap: one every 3 days on signalor.ai's own sites.
+    placed += _satellite_cadence(satellites, start)
     return sorted(placed, key=lambda t: (t.week, t.scheduled_for, -t.spec.score))
