@@ -95,6 +95,16 @@ TACTICS: dict[str, Tactic] = {
             "and mentions you, with a sponsored link.",
         ),
         Tactic(
+            key="satellite_refresh",
+            channel="satellite_content",
+            weight=0.6,
+            effort=1,
+            confidence=0.6,
+            earliest_week=1,
+            title="Refresh article on {target}",  # created by the weekly ranking check, not the planner
+            rationale="This article is below page 1 on Google after two weeks; a fuller rewrite usually helps.",
+        ),
+        Tactic(
             key="entity_schema",
             channel="entity",
             weight=0.7,

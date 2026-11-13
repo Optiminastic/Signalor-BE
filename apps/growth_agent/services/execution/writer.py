@@ -39,6 +39,14 @@ _TACTIC_BRIEFS = {
         "competitors. The brand appears as one option in its own section, described only with the facts "
         "given. Do not write it as an advertisement."
     ),
+    # A published satellite article that isn't reaching page 1: rewrite it to answer better.
+    "satellite_refresh": (
+        "Rewrite the CURRENT ARTICLE in KNOWLEDGE so it answers the question below better than any page "
+        "on the topic: a sharper direct answer first, fuller coverage of what readers need to decide, "
+        "clearer section headings that match how people search, and 4 to 6 FAQs. Keep it independent and "
+        "useful on its own, with the brand as one option in its own section. Do not add facts that are "
+        "not in KNOWLEDGE."
+    ),
 }
 
 _RULES = (

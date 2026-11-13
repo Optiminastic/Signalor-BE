@@ -158,3 +158,71 @@ class SatelliteChannelTests(ExecutionTestCase):
         shown = actions.present(action, action.current_version)
         self.assertEqual(shown["site_url"], SITES["comparison"])
         self.assertEqual(shown["title"], ARTICLE.title)
+
+
+@override_settings(SATELLITE_SITES=SITES, SATELLITE_INDEXNOW_KEY="")
+class SatelliteRefreshTests(ExecutionTestCase):
+    URL = "https://betterversus.com/how-to-get-cited-by-chatgpt"
+
+    def setUp(self):
+        super().setUp()
+        self.pro_org.url = "https://brand-pro.com"
+        self.pro_org.save()
+        self.task = self.make_task(
+            channel="satellite_content",
+            tactic="satellite_refresh",
+            target="get cited by ChatGPT",
+            target_url=self.URL,
+        )
+        self.channel = satellite_channel.SatelliteContentChannel()
+        self.ours = {
+            "brand_ref": f"org:{self.pro_org.id}",
+            "content_html": "<p>Old text about citations.</p>",
+        }
+
+    def prepare(self, current):
+        with (
+            mock.patch(f"{STORE}.get_post", return_value=current),
+            mock.patch.object(satellite_channel, "write_article", return_value=ARTICLE) as write,
+            mock.patch.object(satellite_channel, "gather_knowledge", return_value="facts"),
+            mock.patch.object(
+                satellite_channel, "check_article", return_value=SafetyVerdict(True, ())
+            ) as check,
+        ):
+            return self.channel.prepare(self.task), write, check
+
+    def test_a_refresh_rewrites_the_live_article_at_the_same_address(self):
+        prepared, write, check = self.prepare(self.ours)
+        self.assertEqual(
+            (prepared.payload["mode"], prepared.payload["slug"]), ("refresh", "how-to-get-cited-by-chatgpt")
+        )
+        knowledge = write.call_args.args[1]
+        self.assertIn("CURRENT ARTICLE:", knowledge)
+        self.assertIn("Old text about citations.", knowledge)
+        self.assertNotIn("<p>", knowledge)
+        self.assertEqual(check.call_args.args[2], knowledge)  # the safety check sees the same text
+
+    def test_a_refresh_of_an_article_that_isnt_ours_is_refused(self):
+        prepared, _, _ = self.prepare({"brand_ref": "org:999"})
+        self.assertFalse(prepared.succeeded)
+        prepared, _, _ = self.prepare(None)
+        self.assertFalse(prepared.succeeded)
+
+    def test_executing_a_refresh_updates_the_post_in_place_with_a_sponsored_link(self):
+        prepared, _, _ = self.prepare(self.ours)
+        version = SimpleNamespace(payload=prepared.payload, destination=prepared.destination)
+        with (
+            mock.patch(f"{STORE}.is_configured", return_value=True),
+            mock.patch(f"{STORE}.get_post", return_value=self.ours),
+            mock.patch(
+                f"{STORE}.update_post", return_value={"slug": "how-to-get-cited-by-chatgpt"}
+            ) as update,
+            mock.patch(f"{STORE}.put_post") as put,
+        ):
+            outcome = self.channel.execute(self.task, version)
+        self.assertTrue(outcome.succeeded)
+        self.assertEqual(outcome.evidence_url, self.URL)
+        put.assert_not_called()  # never a second post
+        site, slug, fields = update.call_args.args
+        self.assertEqual((site, slug), ("comparison", "how-to-get-cited-by-chatgpt"))
+        self.assertIn('rel="sponsored noopener"', fields["content_html"])

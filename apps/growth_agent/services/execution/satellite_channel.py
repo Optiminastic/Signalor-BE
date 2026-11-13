@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 from urllib.parse import urlparse
 
 from django.conf import settings
@@ -75,36 +76,89 @@ def _notify_bing(url: str, site: str) -> dict:
     return {"bing": "sent" if result.ok else "failed", "bing_message": result.message}
 
 
+REFRESH_TACTIC = "satellite_refresh"
+NOT_OURS = "That article isn't this brand's article on the site any more."
+CURRENT_TEXT_CHARS = 4000
+
+
+def _post_ref(url: str) -> tuple[str, str]:
+    """(site key, slug) of a published satellite article URL."""
+    return site_key(url), urlparse(url or "").path.strip("/")
+
+
+def _plain(content_html: str) -> str:
+    return re.sub(r"<[^>]+>", " ", content_html or "")
+
+
 class SatelliteContentChannel:
+    """New articles (tactic ``satellite_article``) and refreshes of published ones
+    (``satellite_refresh``, created by the weekly ranking check for lagging articles)."""
+
     def readiness(self, program: GrowthProgram) -> str:
         return "" if blog_store.is_configured() else NOT_SET_UP
 
-    def prepare(self, task: GrowthTask) -> Prepared | ChannelOutcome:
-        site = site_key(task.target_url)
-        if not site:
-            return ChannelOutcome(False, UNKNOWN_SITE, retryable=False, external_call_made=False)
-        org = task.cycle.program.organization
-        knowledge = gather_knowledge(task)
+    def _write(self, task: GrowthTask, knowledge: str) -> ArticleDraft | ChannelOutcome:
         article = write_article(task, knowledge)
         if article is None:
             return ChannelOutcome(
                 False, "The writer model did not return an article.", external_call_made=False
             )
-        verdict = check_article(article, display_name(org), knowledge)
+        verdict = check_article(article, display_name(task.cycle.program.organization), knowledge)
         if not verdict.passed:
             payload = {"issues": list(verdict.issues)}
             return ChannelOutcome(
                 False, "Blocked by brand-safety check.", payload=payload, external_call_made=False
             )
-        slug = satellite_publish.unique_slug(site, slugify(article.title))
-        domain = satellite_publish.site_domain(site)
+        return article
+
+    def _prepared(self, task: GrowthTask, article: ArticleDraft, site: str, slug: str, mode: str) -> Prepared:
+        payload = {
+            "article": article.model_dump(),
+            "slug": slug,
+            "site": site,
+            "brand_url": task.cycle.program.organization.url or "",
+            "mode": mode,
+        }
         return Prepared(
             kind=GrowthAction.Kind.PUBLISH_ARTICLE,
             connector=CONNECTOR,
-            payload={"article": article.model_dump(), "slug": slug, "site": site, "brand_url": org.url or ""},
-            destination={"platform": CONNECTOR, "site": site, "site_url": domain},
+            payload=payload,
+            destination={
+                "platform": CONNECTOR,
+                "site": site,
+                "site_url": satellite_publish.site_domain(site),
+            },
             preview={"title": article.title, "slug": slug, "markdown": render_markdown(article, {})},
         )
+
+    def prepare(self, task: GrowthTask) -> Prepared | ChannelOutcome:
+        if task.tactic == REFRESH_TACTIC:
+            return self._prepare_refresh(task)
+        site = site_key(task.target_url)
+        if not site:
+            return ChannelOutcome(False, UNKNOWN_SITE, retryable=False, external_call_made=False)
+        article = self._write(task, gather_knowledge(task))
+        if isinstance(article, ChannelOutcome):
+            return article
+        return self._prepared(
+            task, article, site, satellite_publish.unique_slug(site, slugify(article.title)), "new"
+        )
+
+    def _prepare_refresh(self, task: GrowthTask) -> Prepared | ChannelOutcome:
+        site, slug = _post_ref(task.target_url)
+        current = blog_store.get_post(site, slug) if site and slug else None
+        if not current or current.get("brand_ref") != brand_ref(task):
+            return ChannelOutcome(False, NOT_OURS, retryable=False, external_call_made=False)
+        # The rewrite sees the live text; the safety check sees the same knowledge.
+        knowledge = (
+            gather_knowledge(task)
+            + "\n\nCURRENT ARTICLE:\n"
+            + _plain(current.get("content_html", ""))[:CURRENT_TEXT_CHARS]
+        )
+        article = self._write(task, knowledge)
+        if isinstance(article, ChannelOutcome):
+            return article
+        return self._prepared(task, article, site, slug, "refresh")
 
     def execute(self, task: GrowthTask, version: ActionVersion) -> ChannelOutcome:
         if not blog_store.is_configured():
@@ -116,10 +170,29 @@ class SatelliteContentChannel:
         existing = blog_store.get_post(site, slug)
         if existing and existing.get("brand_ref") != brand_ref(task):
             return ChannelOutcome(False, SLUG_TAKEN, retryable=False, external_call_made=False)
+        if payload.get("mode") == "refresh":
+            if not existing:
+                return ChannelOutcome(False, NOT_OURS, retryable=False, external_call_made=False)
+            return self._refresh(task, payload, site, slug)
         url = satellite_publish.live_url(site, slug)
         if existing:  # published by an earlier attempt of this same action
             return ChannelOutcome(True, "Already published.", evidence_url=url, payload={"site": site})
         return self._publish(task, payload, site, slug)
+
+    def _refresh(self, task: GrowthTask, payload: dict, site: str, slug: str) -> ChannelOutcome:
+        """Same address, new text. Re-running it writes the same approved text again."""
+        article = ArticleDraft.model_validate(payload["article"])
+        brand = display_name(task.cycle.program.organization)
+        post = satellite_publish.refresh_post(
+            site=site,
+            slug=slug,
+            title=article.title,
+            content_html=article_html(article, brand, payload.get("brand_url", "")),
+            brand_url=payload.get("brand_url", ""),
+            description=article.meta_description,
+        )
+        evidence = {"site": site, "refreshed": True, **_notify_bing(post["url"], site)}
+        return ChannelOutcome(True, "Refreshed.", evidence_url=post["url"], payload=evidence)
 
     def _publish(self, task: GrowthTask, payload: dict, site: str, slug: str) -> ChannelOutcome:
         article = ArticleDraft.model_validate(payload["article"])

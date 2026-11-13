@@ -41,6 +41,8 @@ START_GUARD = timedelta(hours=6)
 LINKS_AFTER = timedelta(days=7)
 REFRESH_AFTER = timedelta(days=14)
 PAGE_ONE = 10.0
+REFRESH_EVERY = timedelta(days=30)
+REFRESH_TACTIC = "satellite_refresh"
 
 
 def ops_search_console() -> Integration | None:
@@ -117,7 +119,50 @@ def run_checks(program: GrowthProgram) -> int:
             detail = {"url": task.evidence_url, "error": str(exc)[:300]}
         audit.record(program, task, CHECKED, AgentActionLog.Outcome.SUCCEEDED, detail)
         done += 1
+    queue_refreshes(program)
     return done
+
+
+def _refreshed_recently(task: GrowthTask) -> bool:
+    since = timezone.now() - REFRESH_EVERY
+    return GrowthTask.objects.filter(
+        cycle__program=task.cycle.program,
+        tactic=REFRESH_TACTIC,
+        target_url=task.evidence_url,
+        created_at__gte=since,
+    ).exists()
+
+
+def queue_refreshes(program: GrowthProgram) -> int:
+    """A refresh task (drafted, then approved by the owner) for each article still below page 1
+    two weeks after publishing. At most one per article per ``REFRESH_EVERY``."""
+    from ..planning.plan import active_cycle
+
+    cycle = active_cycle(program)
+    if cycle is None:
+        return 0
+    latest, now, queued = _latest_checks(program), timezone.now(), 0
+    for task, live_at in published(program):
+        entry = latest.get(task.id)
+        if flag(entry.detail if entry else None, now - live_at) != "needs_refresh" or _refreshed_recently(
+            task
+        ):
+            continue
+        today = now.date()
+        GrowthTask.objects.create(
+            cycle=cycle,
+            week=min(4, max(1, (today - cycle.starts_on).days // 7 + 1)),
+            scheduled_for=today,
+            channel="satellite_content",
+            tactic=REFRESH_TACTIC,
+            title=f"Refresh article on {_host(task.evidence_url)}: {task.target}"[:300],
+            rationale="Below page 1 on Google two weeks after publishing; a fuller rewrite usually helps.",
+            target=task.target,
+            target_url=task.evidence_url,
+            prompts=[task.target],
+        )
+        queued += 1
+    return queued
 
 
 def _due(program: GrowthProgram) -> bool:
@@ -167,6 +212,7 @@ def articles(program: GrowthProgram) -> dict:
                 "checked_at": entry.created_at if entry else None,
                 "check": check,
                 "flag": flag(check, now - live_at),
+                "refresh_queued": _refreshed_recently(task),
             }
         )
     rows.sort(key=lambda r: r["published_at"], reverse=True)

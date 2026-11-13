@@ -97,3 +97,22 @@ def publish_post(
     }
     blog_store.put_post(post)
     return {**post, "url": live_url(site, slug)}
+
+
+def refresh_post(
+    *, site: str, slug: str, title: str, content_html: str, brand_url: str, description: str = ""
+) -> dict:
+    """Replace an existing post's title, description and body in place (same address).
+
+    Client links get ``rel="sponsored"`` as on publish. Returns the stored post with its ``url``.
+    """
+    if site not in SITES:
+        raise ValueError(f"Unknown satellite site: {site}")
+    fields = {
+        "title": title[:300],
+        "description": description[:2000],
+        "content_html": sponsor_client_links(content_html, brand_url),
+        "updated_at": timezone.now().isoformat(),
+    }
+    post = blog_store.update_post(site, slug, fields) or {}
+    return {**post, "url": live_url(site, slug)}

@@ -110,3 +110,29 @@ class SatelliteRankTests(ExecutionTestCase):
         body = self.signed("GET", path, PRO_EMAIL).json()
         self.assertEqual((body["search_console"], len(body["articles"])), (True, 1))
         self.assertIn(self.signed("GET", path, OTHER_EMAIL).status_code, (403, 404))
+
+
+class RefreshQueueTests(SatelliteRankTests):
+    def flag_below_page_one(self):
+        detail = {"url": URL, "property_found": True, "indexed": True, "position": 23.0, "clicks": 1}
+        audit.record(
+            self.program, self.article, satellite_rank.CHECKED, AgentActionLog.Outcome.SUCCEEDED, detail
+        )
+        AgentActionLog.objects.filter(action="publish").update(created_at=timezone.now() - timedelta(days=15))
+
+    def test_an_article_below_page_one_after_two_weeks_gets_one_refresh_task(self):
+        self.flag_below_page_one()
+        self.assertEqual(satellite_rank.queue_refreshes(self.program), 1)
+        self.assertEqual(satellite_rank.queue_refreshes(self.program), 0)  # not twice within 30 days
+        refresh = GrowthTask.objects.get(tactic="satellite_refresh")
+        self.assertEqual((refresh.target_url, refresh.channel), (URL, "satellite_content"))
+        row = satellite_rank.articles(self.program)["articles"][0]
+        self.assertEqual((row["flag"], row["refresh_queued"]), ("needs_refresh", True))
+
+    def test_articles_doing_fine_get_no_refresh(self):
+        detail = {"url": URL, "property_found": True, "indexed": True, "position": 3.0}
+        audit.record(
+            self.program, self.article, satellite_rank.CHECKED, AgentActionLog.Outcome.SUCCEEDED, detail
+        )
+        AgentActionLog.objects.filter(action="publish").update(created_at=timezone.now() - timedelta(days=15))
+        self.assertEqual(satellite_rank.queue_refreshes(self.program), 0)
