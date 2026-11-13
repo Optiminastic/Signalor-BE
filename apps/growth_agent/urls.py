@@ -36,7 +36,7 @@ from .views_finders import (
     FinderOAuthCallbackView,
     FinderSignInView,
 )
-from .views_indexing import IndexingCheckView, IndexingView
+from .views_indexing import IndexingCheckView, IndexingRequestedView, IndexingView
 
 app_name = "growth_agent"
 
@@ -113,6 +113,11 @@ urlpatterns = [
     path("programs/<str:org_slug>/tasks/<int:task_id>/", TaskUpdateView.as_view(), name="task"),
     path("programs/<str:org_slug>/indexing/", IndexingView.as_view(), name="indexing"),
     path("programs/<str:org_slug>/indexing/check/", IndexingCheckView.as_view(), name="indexing-check"),
+    path(
+        "programs/<str:org_slug>/indexing/requested/",
+        IndexingRequestedView.as_view(),
+        name="indexing-requested",
+    ),
     path("programs/<str:org_slug>/finders/", FinderListView.as_view(), name="finders"),
     path("oauth/finders/callback/", FinderOAuthCallbackView.as_view(), name="finder-oauth-callback"),
     path(

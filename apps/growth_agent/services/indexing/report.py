@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from apps.integrations.models import GSCIndexStatusSnapshot, Integration
 
+from . import requests
 from .reasons import classify
 
 SAMPLE_URLS = 5
@@ -94,12 +95,16 @@ def build(organization) -> dict:
         "indexed_change": None,
         "newly_indexed": [],
         "dropped": [],
+        "to_request": [],
+        "requested": [],
     }
     if latest is None:
         return report
     previous = snapshots[1] if len(snapshots) > 1 else None
+    program = getattr(organization, "growth_program", None)
     return {
         **report,
+        **requests.weekly_list(program, report["property"], latest.pages),
         "checked_at": latest.created_at,
         "checked": latest.checked_count,
         "indexed": latest.indexed_count,

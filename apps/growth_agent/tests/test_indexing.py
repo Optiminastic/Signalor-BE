@@ -15,7 +15,7 @@ from django.utils import timezone
 from apps.integrations.models import GSCIndexStatusSnapshot, Integration
 
 from ..models import AgentActionLog, GrowthProgram
-from ..services.indexing import reasons, report, weekly
+from ..services.indexing import reasons, report, requests, weekly
 from .test_api import OTHER_EMAIL, PRO_EMAIL, GrowthApiTestCase
 
 DISPATCH = "apps.growth_agent.analysis_tasks.dispatch_indexing_check"
@@ -170,3 +170,64 @@ class IndexingApiTests(IndexingTestCase):
         self._body = {}
         self.assertIn(self.signed("GET", self.url(), OTHER_EMAIL).status_code, (403, 404))
         self.assertIn(self.signed("POST", self.url("check/"), OTHER_EMAIL).status_code, (403, 404))
+
+
+class RequestIndexingTests(IndexingTestCase):
+    PAGES = [
+        page("https://brand-pro.com/ok", True, "Submitted and indexed"),
+        page("https://brand-pro.com/found", False, "Discovered - currently not indexed"),
+        page("https://brand-pro.com/crawled", False, "Crawled - currently not indexed"),
+        page("https://brand-pro.com/blocked", False, "Excluded by 'noindex' tag"),
+    ]
+
+    def url(self, suffix=""):
+        return f"/api/growth/programs/{self.pro_org.slug}/indexing/{suffix}"
+
+    def test_the_weekly_list_offers_only_pages_a_request_can_help_with_deep_links(self):
+        self.snapshot(self.connect_gsc(), self.PAGES)
+        built = report.build(self.pro_org)
+        urls = [item["url"] for item in built["to_request"]]
+        self.assertEqual(
+            urls, ["https://brand-pro.com/found", "https://brand-pro.com/crawled"]
+        )  # not noindex
+        link = built["to_request"][0]["inspect_url"]
+        self.assertTrue(
+            link.startswith(
+                "https://search.google.com/search-console/inspect?resource_id=sc-domain%3Abrand-pro.com"
+            )
+        )
+        self.assertIn("id=https%3A%2F%2Fbrand-pro.com%2Ffound", link)
+
+    def test_the_list_is_capped_each_week(self):
+        many = [
+            page(f"https://brand-pro.com/p{i}", False, "Discovered - currently not indexed")
+            for i in range(25)
+        ]
+        self.snapshot(self.connect_gsc(), many)
+        self.assertEqual(len(report.build(self.pro_org)["to_request"]), requests.WEEKLY_LIMIT)
+
+    def test_a_requested_page_moves_to_requested_and_isnt_offered_again_for_a_week(self):
+        self.snapshot(self.connect_gsc(), self.PAGES)
+        self._body = {"url": "https://brand-pro.com/found"}
+        body = self.signed("POST", self.url("requested/"), PRO_EMAIL).json()
+        self.assertNotIn("https://brand-pro.com/found", [i["url"] for i in body["to_request"]])
+        self.assertEqual([i["url"] for i in body["requested"]], ["https://brand-pro.com/found"])
+        AgentActionLog.objects.filter(action=requests.REQUESTED).update(
+            created_at=timezone.now() - timedelta(days=8)
+        )
+        self.assertIn(
+            "https://brand-pro.com/found", [i["url"] for i in report.build(self.pro_org)["to_request"]]
+        )
+
+    def test_only_pages_on_this_weeks_list_can_be_marked(self):
+        self.snapshot(self.connect_gsc(), self.PAGES)
+        self._body = {"url": "https://evil.example/page"}
+        self.assertEqual(self.signed("POST", self.url("requested/"), PRO_EMAIL).status_code, 409)
+        self._body = {"url": "https://brand-pro.com/found"}
+        self.assertIn(self.signed("POST", self.url("requested/"), OTHER_EMAIL).status_code, (403, 404))
+        self.assertFalse(AgentActionLog.objects.filter(action=requests.REQUESTED).exists())
+
+    def test_the_weekly_log_says_how_many_pages_are_ready_to_request(self):
+        self.snapshot(self.connect_gsc(), self.PAGES)
+        weekly.log_finished(self.program)
+        self.assertEqual(AgentActionLog.objects.get(action=weekly.CHECKED).detail["to_request"], 2)

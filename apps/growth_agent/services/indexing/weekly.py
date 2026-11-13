@@ -65,6 +65,7 @@ def log_finished(program: GrowthProgram) -> bool:
         "not_indexed": built["not_indexed"],
         "indexed_change": built["indexed_change"],
         "top_reason": built["reasons"][0]["label"] if built["reasons"] else "",
+        "to_request": len(built["to_request"]),
     }
     audit.record(program, None, CHECKED, AgentActionLog.Outcome.SUCCEEDED, detail)
     return True
