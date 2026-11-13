@@ -28,8 +28,21 @@ AUTO_SITE_ANGLE = {
 }
 
 
+REPLACED_BY_AGENT = (
+    "Daily auto-backlinks are replaced by the Agent's articles on signalor.ai sites: one every "
+    "3 days per brand, each approved by you in Agent mode, with a sponsored link."
+)
+
+
+def daily_batch_enabled() -> bool:
+    """The old 5-a-day batch runs only when explicitly switched back on."""
+    from django.conf import settings
+
+    return bool(getattr(settings, "SATELLITE_DAILY_BATCH_ENABLED", False))
+
+
 def auto_can_add_today(run) -> bool:
-    """Return False if an auto batch already published today for this brand.
+    """Return False if the batch is switched off, or one already published today for this brand.
 
     Keeps the manual "Add" button and the daily scheduler idempotent — at most
     one auto batch per brand per calendar day (server TZ).
@@ -39,6 +52,8 @@ def auto_can_add_today(run) -> bool:
     from apps.analyzer import blog_store
     from apps.analyzer.views import _brand_ref_for_run
 
+    if not daily_batch_enabled():
+        return False
     try:
         brand_ref = _brand_ref_for_run(run)
         today = timezone.now().date().isoformat()
@@ -73,6 +88,8 @@ def run_auto_backlinks(run) -> dict:
         _to_html_from_markdownish,
     )
 
+    if not daily_batch_enabled():
+        return {"created": [], "errors": [], "skipped": True, "disabled": True}
     if not auto_can_add_today(run):
         return {"created": [], "errors": [], "skipped": True}
 
@@ -113,9 +130,7 @@ def run_auto_backlinks(run) -> dict:
             title = _short_title(draft.get("title") or f"{brand}: {subject}")[:300]
             content_html = _to_html_from_markdownish(draft.get("content_markdown") or "")
             if brand_host and ref_url and brand_host not in content_html:
-                content_html += (
-                    f'\n<p>Learn more about {brand} at <a href="{ref_url}">{ref_url}</a>.</p>'
-                )
+                content_html += f'\n<p>Learn more about {brand} at <a href="{ref_url}">{ref_url}</a>.</p>'
             meta = (draft.get("meta_description") or draft.get("excerpt") or "").strip()
 
             base_slug = _slugify(draft.get("slug") or title)
@@ -157,9 +172,7 @@ def run_auto_backlinks(run) -> dict:
                 }
             )
         except Exception as exc:
-            logger.warning(
-                "auto-backlinks: site %s failed for %s: %s", site, getattr(run, "slug", "?"), exc
-            )
+            logger.warning("auto-backlinks: site %s failed for %s: %s", site, getattr(run, "slug", "?"), exc)
             errors.append(site)
 
     return {"created": created, "errors": errors, "skipped": False}

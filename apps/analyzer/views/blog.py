@@ -886,9 +886,16 @@ class BlogAutoPublishAllView(APIView):
     def post(self, request, slug):
         from django.shortcuts import get_object_or_404
 
-        from ..services.backlink_engine import auto_can_add_today, run_auto_backlinks
+        from ..services.backlink_engine import (
+            REPLACED_BY_AGENT,
+            auto_can_add_today,
+            daily_batch_enabled,
+            run_auto_backlinks,
+        )
 
         run = get_object_or_404(AnalysisRun, slug=slug)
+        if not daily_batch_enabled():
+            return Response({"error": REPLACED_BY_AGENT}, status=status.HTTP_409_CONFLICT)
         if not auto_can_add_today(run):
             return Response(
                 {"error": "You can add backlinks once per day. Try again tomorrow."},

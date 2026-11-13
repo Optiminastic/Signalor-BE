@@ -8,12 +8,40 @@ live URLs are built in one place.
 
 from __future__ import annotations
 
+import re
+from urllib.parse import urlparse
+
 from django.conf import settings
 from django.utils import timezone
 
 from apps.analyzer import blog_store
 
 SITES = ("research", "listicals", "market_trends", "comparison", "step_guide")
+SPONSORED_REL = "sponsored noopener"
+_ANCHOR = re.compile(r"<a\b([^>]*)>", re.IGNORECASE)
+_HREF = re.compile(r"""\bhref\s*=\s*(["'])(.*?)\1""", re.IGNORECASE | re.DOTALL)
+_REL = re.compile(r"""\s*\brel\s*=\s*(["']).*?\1""", re.IGNORECASE | re.DOTALL)
+
+
+def _host(url: str) -> str:
+    return (urlparse(url).netloc or "").lower().removeprefix("www.")
+
+
+def sponsor_client_links(content_html: str, brand_url: str) -> str:
+    """Every link to the client's site carries ``rel="sponsored noopener"`` (Google's
+    rule for placed links). Links to other sites are left as they are."""
+    brand_host = _host(brand_url or "")
+    if not brand_host or not content_html:
+        return content_html
+
+    def mark(match: re.Match) -> str:
+        attrs = match.group(1)
+        href = _HREF.search(attrs)
+        if not href or _host(href.group(2)) != brand_host:
+            return match.group(0)
+        return f'<a{_REL.sub("", attrs)} rel="{SPONSORED_REL}">'
+
+    return _ANCHOR.sub(mark, content_html)
 
 
 def site_domain(site: str) -> str:
@@ -57,7 +85,7 @@ def publish_post(
         "slug": slug,
         "title": title[:300],
         "description": description[:2000],
-        "content_html": content_html,
+        "content_html": sponsor_client_links(content_html, brand_url),
         "image_url": image_url[:2048],
         "category": category[:80],
         "brand_url": brand_url,

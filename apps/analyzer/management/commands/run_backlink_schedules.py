@@ -11,6 +11,7 @@ Cron:    0 * * * * cd /path/to/project && python manage.py run_backlink_schedule
          (hourly; each brand's next_run_at is spread across the day, so every
           brand gets its batch ~24h after its last one.)
 """
+
 import logging
 from datetime import timedelta
 
@@ -18,7 +19,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from apps.analyzer.models import AnalysisRun, BacklinkSchedule
-from apps.analyzer.services.backlink_engine import run_auto_backlinks
+from apps.analyzer.services.backlink_engine import daily_batch_enabled, run_auto_backlinks
 
 logger = logging.getLogger("apps")
 
@@ -40,14 +41,19 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        if not daily_batch_enabled():
+            # Replaced by the Growth Agent's satellite articles; schedules are left
+            # untouched so the batch could be switched back on without data loss.
+            self.stdout.write("Daily auto-backlinks are switched off (SATELLITE_DAILY_BATCH_ENABLED).")
+            return
         now = timezone.now()
         limit = options["limit"]
         dry_run = options["dry_run"]
 
         due = list(
-            BacklinkSchedule.objects.filter(is_active=True, next_run_at__lte=now).order_by(
-                "next_run_at"
-            )[:limit]
+            BacklinkSchedule.objects.filter(is_active=True, next_run_at__lte=now).order_by("next_run_at")[
+                :limit
+            ]
         )
 
         if not due:
@@ -68,9 +74,7 @@ class Command(BaseCommand):
 
         if not dry_run:
             self.stdout.write(
-                self.style.SUCCESS(
-                    f"Processed {len(due)} schedule(s); published {published} blog(s)."
-                )
+                self.style.SUCCESS(f"Processed {len(due)} schedule(s); published {published} blog(s).")
             )
 
     def _run_one(self, sched: BacklinkSchedule) -> int:
@@ -94,9 +98,7 @@ class Command(BaseCommand):
         # Reschedule for tomorrow regardless (missing run / skip both wait a day).
         sched.last_run_at = timezone.now()
         sched.next_run_at = timezone.now() + timedelta(days=1)
-        sched.save(
-            update_fields=["run_slug", "last_batch_count", "last_run_at", "next_run_at", "updated_at"]
-        )
+        sched.save(update_fields=["run_slug", "last_batch_count", "last_run_at", "next_run_at", "updated_at"])
         return created
 
     @staticmethod

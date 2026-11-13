@@ -546,6 +546,14 @@ APOLLO_API_KEY = os.getenv("APOLLO_API_KEY", "")
 # site). When set, each satellite article the Growth Agent publishes is sent to
 # Bing the same day; when empty, publishing still works and Bing isn't told.
 SATELLITE_INDEXNOW_KEY = os.getenv("SATELLITE_INDEXNOW_KEY", "")
+# The old daily batch (5 AI articles per brand per day on the satellite sites,
+# scheduled or via the "add" button). Replaced by the Growth Agent's satellite
+# articles (one every 3 days, owner-approved, sponsored links); off unless set.
+SATELLITE_DAILY_BATCH_ENABLED = os.getenv("SATELLITE_DAILY_BATCH_ENABLED", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 # Frontend origins a "Sign in with Hunter/Apollo" may send the browser back to
 # (comma separated, e.g. "https://signalor.ai,http://localhost:3002").
 GROWTH_APP_ORIGINS = [

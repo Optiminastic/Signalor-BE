@@ -46,3 +46,18 @@ class SatellitePublishTests(SimpleTestCase):
                     site="evil", slug="x", title="x", content_html="", brand_url="", brand_ref=""
                 )
         put.assert_not_called()
+
+
+@override_settings(SATELLITE_SITES=SITES)
+class PublishSponsorsClientLinksTests(SimpleTestCase):
+    def test_a_published_post_never_has_a_plain_client_link(self):
+        with mock.patch(f"{STORE}.put_post") as put, mock.patch(f"{STORE}.new_id", return_value=1):
+            satellite_publish.publish_post(
+                site="comparison",
+                slug="x",
+                title="x",
+                content_html='<a href="https://brand.com/">Brand</a>',
+                brand_url="https://brand.com",
+                brand_ref="org:1",
+            )
+        self.assertIn('rel="sponsored noopener"', put.call_args.args[0]["content_html"])
