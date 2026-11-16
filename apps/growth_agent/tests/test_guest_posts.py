@@ -100,9 +100,9 @@ class GuestFinderTests(ExecutionTestCase):
             self.make_task(channel="guest_outreach", tactic="guest_post", target=f"s{i}.com")
         self.assertEqual(self.find({"https://cited-blog.com/write-for-us": INVITE}, {}), 0)
 
-    def test_guest_sites_are_shown_but_never_executed_until_pitching_exists(self):
+    def test_guest_sites_are_picked_up_for_pitching_when_due(self):
         self.find({"https://cited-blog.com/write-for-us": INVITE}, {})
-        self.assertFalse(due_tasks(self.cycle.starts_on).filter(tactic="guest_post").exists())
+        self.assertTrue(due_tasks(self.cycle.starts_on).filter(tactic="guest_post").exists())
 
     def test_the_tab_lists_sites_and_only_the_owner_sees_them(self):
         self.find({"https://cited-blog.com/write-for-us": INVITE}, {})

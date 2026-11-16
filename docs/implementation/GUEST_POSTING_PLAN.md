@@ -1,6 +1,6 @@
 # Guest posting on the brand's behalf
 
-Status: approved, building step 1 (16 Nov 2026).
+Status: approved. Steps 1 (find sites) and 2 (pitching) built, 16 Nov 2026.
 
 ## Goal
 
@@ -74,7 +74,7 @@ The guidelines page is saved with the candidate, so the pitch and the article fo
 ## The plan
 
 - Monthly plans include guest-post tasks (new tactic `guest_post`, its own channel `guest_outreach`), one per candidate site, one every 3 days.
-- The channel has its own executor entry from step 2; until then guest-post tasks are listed but never run.
+- The `guest_outreach` channel is in the executor from step 2: a due guest-post task is drafted as a pitch, waits for the owner's approval, and is sent from Gmail. It shares the daily outreach email cap (10 a day across both email channels).
 - The weekly run (and "Find sites now", at most every 6 hours) searches and checks new sites, up to 8 per plan.
 - Plans created before this feature get them added, the same way satellite topics were added.
 

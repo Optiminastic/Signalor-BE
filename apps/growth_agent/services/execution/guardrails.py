@@ -26,6 +26,11 @@ DAILY_CHANNEL_CAPS: dict[str, int] = {
     "satellite_content": 1,
 }
 DEFAULT_DAILY_CAP = 2
+# Channels that send from the brand's mailbox share one daily email cap.
+SHARED_CAPS: dict[str, tuple[str, ...]] = {
+    "outreach_email": ("outreach_email", "guest_outreach"),
+    "guest_outreach": ("outreach_email", "guest_outreach"),
+}
 MAX_ACTIONS_PER_CYCLE = 40
 COUNTED_OUTCOMES = (AgentActionLog.Outcome.SUCCEEDED, AgentActionLog.Outcome.DRY_RUN)
 
@@ -53,8 +58,9 @@ def check(task: GrowthTask) -> Decision:
     if task.channel not in CHANNELS or task.tactic not in TACTICS:
         return Decision(False, f"'{task.tactic}' is not an autonomous tactic.")
     day_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    cap = DAILY_CHANNEL_CAPS.get(task.channel, DEFAULT_DAILY_CAP)
-    if _published(program, channel=task.channel, created_at__gte=day_start) >= cap:
+    shared = SHARED_CAPS.get(task.channel, (task.channel,))
+    cap = DAILY_CHANNEL_CAPS.get(shared[0], DEFAULT_DAILY_CAP)
+    if _published(program, channel__in=shared, created_at__gte=day_start) >= cap:
         return Decision(False, f"Daily cap of {cap} reached for {task.channel}.", retry_later=True)
     if _published(program, task__cycle=cycle) >= MAX_ACTIONS_PER_CYCLE:
         return Decision(False, f"Monthly budget of {MAX_ACTIONS_PER_CYCLE} actions used up.")

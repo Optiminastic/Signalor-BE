@@ -34,7 +34,7 @@ from .contacts import discover_contact
 from .follow_up_actions import FOLLOW_UP_GAPS, execute_follow_up
 from .gmail import GmailClient, GmailError
 from .mailbox import gmail_integration, mailbox_address
-from .pitch import check_pitch, with_footer, write_pitch
+from .pitch import PitchDraft, check_pitch, with_footer, write_pitch
 
 NOT_CONNECTED = "Connect Gmail so the agent can send outreach emails."
 MAILBOX_CHANGED = "The connected mailbox changed after this draft was approved."
@@ -83,6 +83,10 @@ class OutreachEmailChannel:
         )
         return contact
 
+    def write(self, task: GrowthTask, knowledge: str) -> PitchDraft | None:
+        """The pitch itself. Kinds of outreach (e.g. guest posts) override only this."""
+        return write_pitch(task, task.target_url, knowledge)
+
     def prepare(self, task: GrowthTask) -> Prepared | ChannelOutcome:
         org = task.cycle.program.organization
         domain = bare_domain(task.target_url) or bare_domain(task.target)
@@ -102,7 +106,7 @@ class OutreachEmailChannel:
             return _not_sent(blocked, domain=domain)
 
         knowledge = brand_facts(org, task.title, KNOWLEDGE_CHARS)
-        pitch = write_pitch(task, task.target_url, knowledge)
+        pitch = self.write(task, knowledge)
         if pitch is None:
             return ChannelOutcome(False, "The writer model did not return a pitch.", external_call_made=False)
         verdict = check_pitch(pitch, display_name(org), knowledge)

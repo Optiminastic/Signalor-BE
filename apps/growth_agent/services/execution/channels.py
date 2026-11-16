@@ -10,6 +10,7 @@ simply wait until their channel ships.
 from __future__ import annotations
 
 from ...models import ActionVersion, GrowthAction, GrowthProgram, GrowthTask
+from ..guest_posts.pitch import GuestPitchChannel
 from ..outreach.channel import OutreachEmailChannel
 from .article import ArticleDraft, render_markdown, slugify
 from .brand import display_name
@@ -84,6 +85,7 @@ class OwnedContentChannel:
 REGISTRY: dict[str, Channel] = {
     "owned_content": OwnedContentChannel(),
     "outreach_email": OutreachEmailChannel(),
+    "guest_outreach": GuestPitchChannel(),
     "satellite_content": SatelliteContentChannel(),
     "owned_social": OwnedSocialChannel(),
 }
