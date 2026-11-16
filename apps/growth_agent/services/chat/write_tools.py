@@ -137,3 +137,38 @@ def set_uplift_target(program: GrowthProgram, args: dict) -> dict:
         "uplift_target_points": points,
         "target_visibility_pct": cycle.target_share_of_voice if cycle else None,
     }
+
+
+# ── Start a check now (same rate limits as the buttons on the board) ────────
+
+
+def find_guest_sites(program: GrowthProgram, _args: dict) -> dict:
+    from ..guest_posts import finder
+
+    if active_cycle(program) is None:
+        return {"started": False, "reason": "There is no active plan to add sites to yet."}
+    if not finder.start(program, guard=finder.START_GUARD):
+        return {
+            "started": False,
+            "reason": "A search ran in the last 6 hours. It runs at most every 6 hours.",
+        }
+    return {"started": True, "note": "Takes a minute or two. Results appear in the Guest posts tab."}
+
+
+def check_social_now(program: GrowthProgram, _args: dict) -> dict:
+    from ..social import check as social_check
+
+    if not social_check.start(program, guard=social_check.START_GUARD):
+        return {"started": False, "reason": "A social check ran in the last 6 hours."}
+    return {"started": True, "note": "Results appear in the Social tab in a minute or two."}
+
+
+def check_indexing_now(program: GrowthProgram, _args: dict) -> dict:
+    from ..indexing import weekly
+
+    if not weekly.start_check(program):
+        return {
+            "started": False,
+            "reason": "Search Console isn't connected (connect it on the Visibility page), or a check ran recently.",
+        }
+    return {"started": True, "note": "Results appear in the Indexing tab when Google answers."}

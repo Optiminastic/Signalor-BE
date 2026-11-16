@@ -12,7 +12,7 @@ import logging
 from collections.abc import Callable
 
 from ...models import CHANNELS, GrowthProgram
-from . import read_tools, write_tools
+from . import read_tools, status_tools, write_tools
 
 logger = logging.getLogger("apps")
 Handler = Callable[[GrowthProgram, dict], dict]
@@ -29,6 +29,35 @@ _CHANNEL = {
 }
 
 _TOOLS: dict[str, tuple[str, dict, Handler]] = {
+    "get_overview": (
+        "Start here for any status or 'how is it going' question: plan task counts by tactic and status, "
+        "drafts waiting for the owner, sends with unknown outcome, outreach replies, guest-post sites, "
+        "social score, and which tools are connected.",
+        _NO_ARGS,
+        status_tools.get_overview,
+    ),
+    "get_approvals": (
+        "Drafts waiting for the owner's approval (emails, articles, social posts) with a preview, and what "
+        "happened to recent ones (sent, failed, rejected, outcome unknown).",
+        _NO_ARGS,
+        status_tools.get_approvals,
+    ),
+    "get_outreach": (
+        "Outreach email threads: which sites replied, opted out, are waiting, and upcoming follow-ups.",
+        _NO_ARGS,
+        status_tools.get_outreach,
+    ),
+    "get_guest_posts": (
+        "Sites that invite guest articles, found by the agent: why each was picked and its stage.",
+        _NO_ARGS,
+        status_tools.get_guest_posts,
+    ),
+    "get_connections": (
+        "Which outside tools are connected (Gmail, Hunter, Apollo, Buffer, Search Console, Bing, "
+        "WordPress/GitHub publishing), what each enables, and where to connect it.",
+        _NO_ARGS,
+        status_tools.get_connections,
+    ),
     "get_positioning": (
         "Where the brand stands in AI answers: visibility per engine, cited gap sites, lost prompts, "
         "brands AI recommends instead, missing topics.",
@@ -78,6 +107,21 @@ _TOOLS: dict[str, tuple[str, dict, Handler]] = {
             "required": ["task_id", "week"],
         },
         write_tools.move_task,
+    ),
+    "find_guest_sites": (
+        "Search for more sites that invite guest articles now (max every 6 hours).",
+        _NO_ARGS,
+        write_tools.find_guest_sites,
+    ),
+    "check_social_now": (
+        "Re-measure the social presence score now (max every 6 hours).",
+        _NO_ARGS,
+        write_tools.check_social_now,
+    ),
+    "check_indexing_now": (
+        "Run a Google Search Console indexing check now.",
+        _NO_ARGS,
+        write_tools.check_indexing_now,
     ),
     "pause_program": ("Pause all autonomous work for this brand.", _NO_ARGS, write_tools.pause_program),
     "resume_program": ("Resume autonomous work after a pause.", _NO_ARGS, write_tools.resume_program),
