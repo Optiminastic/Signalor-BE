@@ -56,6 +56,11 @@ def _brand_keywords(run, domain: str) -> tuple[list[dict], str]:
     return fetch_ranked_keywords(domain, limit=KEYWORD_LIMIT), "dataforseo"
 
 
+def _is_billing(exc: DataForSEOError) -> bool:
+    """DataForSEO answers 402 when signalor.ai's account is out of credits."""
+    return "402" in str(exc)
+
+
 def _rival_keywords(rivals: list[rules.Rival]) -> dict[rules.Rival, list[dict]]:
     """One call per competitor. A competitor that fails is left out, not the whole read."""
     out = {}
@@ -63,6 +68,8 @@ def _rival_keywords(rivals: list[rules.Rival]) -> dict[rules.Rival, list[dict]]:
         try:
             out[rival] = fetch_ranked_keywords(rival.domain, limit=KEYWORD_LIMIT)
         except DataForSEOError as exc:
+            if _is_billing(exc):
+                raise  # every other call would fail too; don't store an empty "no gaps" read
             logger.warning("keywords: competitor %s skipped: %s", rival.domain, exc)
     return out
 
@@ -94,7 +101,11 @@ def run_refresh(program: GrowthProgram) -> bool:
         _fail(program, "not_configured")
         return False
     except DataForSEOError as exc:
-        logger.warning("keywords: brand read failed for program %s: %s", program.pk, exc)
+        if _is_billing(exc):
+            # signalor.ai's own DataForSEO account needs topping up: an ops problem, not the brand's.
+            logger.error("keywords: DataForSEO account has no credits (program %s)", program.pk)
+        else:
+            logger.warning("keywords: brand read failed for program %s: %s", program.pk, exc)
         _fail(program, "provider_error")
         return False
     gap_rows = rules.gaps(brand_rows, rival_rows, brand=brand, previous=_previous_gaps(program))

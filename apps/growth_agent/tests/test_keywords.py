@@ -107,6 +107,17 @@ class KeywordRefreshTests(ExecutionTestCase):
             self.assertTrue(refresh.run_refresh(self.program))
         self.assertEqual([g["keyword"] for g in report(self.program)["gaps"]], ["llm seo guide"])
 
+    def test_no_credits_stops_the_read_instead_of_storing_no_gaps(self):
+        def broke(domain, limit):
+            if domain == "pro.example":
+                return [kw("ai visibility tool")]
+            raise DataForSEOError("ranked_keywords: 402 Payment Required")
+
+        with mock.patch.object(refresh, "fetch_ranked_keywords", side_effect=broke):
+            self.assertFalse(refresh.run_refresh(self.program))
+        self.assertFalse(KeywordSnapshot.objects.exists())
+        self.assertIn("temporarily unavailable", report(self.program)["notes"][0])
+
     def test_missing_credentials_is_reported_not_raised(self):
         with mock.patch.object(refresh, "fetch_ranked_keywords", side_effect=DataForSEONotConfigured("x")):
             self.assertFalse(refresh.run_refresh(self.program))

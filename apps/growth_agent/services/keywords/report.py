@@ -10,7 +10,7 @@ from .refresh import DONE, STARTED
 NOTES = {
     "no_analysis": "Keywords need a finished site analysis with competitors. Run one from the dashboard first.",
     "not_configured": "Keyword data isn't set up on the server yet.",
-    "provider_error": "The keyword provider didn't answer last time. The agent will try again next week.",
+    "provider_error": "Keyword data is temporarily unavailable. The agent will try again next week.",
 }
 
 
