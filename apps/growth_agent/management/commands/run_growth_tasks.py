@@ -7,7 +7,8 @@ One round of Growth Agent work:
 3. Check outreach threads for replies.
 4. Weekly indexing: start a Search Console check per brand when the last is a week old.
 5. Post each brand's weekly summary in the Agent chat.
-6. Score each brand's social presence weekly (LinkedIn, X, YouTube, Instagram, Reddit).
+6. Score each brand's social presence weekly (LinkedIn, X, YouTube, Instagram, Reddit)
+   and plan next week's post drafts (one per platform it's on).
 
 Run from cron, e.g. every 15 minutes:
     python manage.py run_growth_tasks [--limit N] [--dry-run]
@@ -33,6 +34,7 @@ from apps.growth_agent.services.outreach.follow_up_actions import prepare_due_fo
 from apps.growth_agent.services.outreach.followups import process_open_threads
 from apps.growth_agent.services.planning.plan import add_satellite_topics
 from apps.growth_agent.services.social import check as social_check
+from apps.growth_agent.services.social import posts as social_posts
 from config.celery_rabbit import analysis_app
 
 DEFAULT_LIMIT = 50
@@ -96,5 +98,6 @@ class Command(BaseCommand):
                     self.stdout.write(f"Added {added} satellite article(s) to program {program.id}'s plan.")
                 weekly_indexing_round(program)
                 social_check.weekly(program)
+                social_posts.queue_weekly(program)
                 if weekly_summary.post(program):
                     self.stdout.write(f"Posted the weekly summary for program {program.id}.")

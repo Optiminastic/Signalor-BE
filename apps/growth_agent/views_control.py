@@ -24,7 +24,7 @@ from .serializers_control import (
     ResolutionRequestSerializer,
 )
 from .services import programs
-from .services.control import approvals, editing, resolution
+from .services.control import approvals, editing, manual_post, resolution
 from .services.execution import audit
 from .services.outreach.contact_finders import registry as finders
 from .services.outreach.contact_finders.base import FinderError
@@ -133,6 +133,26 @@ class ActionResolveView(GrowthBaseView):
         )
         try:
             action = resolution.resolve(program, public_id, resolution_request)
+        except approvals.ActionNotFound:
+            return Response(NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        except approvals.DecisionRefused as exc:
+            return Response({"detail": str(exc), "code": exc.code}, status=status.HTTP_409_CONFLICT)
+        action = _detail_queryset(program).get(pk=action.pk)
+        return Response({"action": ActionDetailSerializer(action).data})
+
+
+class ActionPostedView(GrowthBaseView):
+    """POST .../actions/<id>/posted/: the owner posted this approved social post by hand.
+
+    Closes it as done so it's never scheduled again once Buffer is connected.
+    """
+
+    def post(self, request, org_slug: str, public_id: str):
+        program, missing = _program_or_404(request, org_slug)
+        if missing:
+            return missing
+        try:
+            action = manual_post.mark_posted(program, public_id, request.user.email)
         except approvals.ActionNotFound:
             return Response(NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
         except approvals.DecisionRefused as exc:

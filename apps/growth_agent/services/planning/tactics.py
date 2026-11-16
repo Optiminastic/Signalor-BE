@@ -105,6 +105,16 @@ TACTICS: dict[str, Tactic] = {
             rationale="This article is below page 1 on Google after two weeks; a fuller rewrite usually helps.",
         ),
         Tactic(
+            key="social_post",
+            channel="owned_social",
+            weight=0.5,
+            effort=1,
+            confidence=0.6,
+            earliest_week=1,
+            title="Post on {target}",  # created weekly by services/social/posts.py, not the planner
+            rationale="Regular posts keep the brand active where its audience is.",
+        ),
+        Tactic(
             key="entity_schema",
             channel="entity",
             weight=0.7,

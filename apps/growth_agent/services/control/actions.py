@@ -140,6 +140,13 @@ def present(action: GrowthAction, version: ActionVersion) -> dict:
             "answer": article.answer,
             "review_notes": version.review_notes,
         }
+    if action.kind == GrowthAction.Kind.PUBLISH_SOCIAL_POST:
+        return {
+            "platform": version.payload["platform"],
+            "text": version.payload["text"],
+            "profile_url": version.destination.get("profile_url", ""),
+            "review_notes": version.review_notes,
+        }
     message, footer = split_footer(version.payload["body"])
     return {
         "subject": version.payload["subject"],

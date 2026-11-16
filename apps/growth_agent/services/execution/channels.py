@@ -18,6 +18,7 @@ from .publishers.base import PublishError
 from .publishers.resolver import NOT_CONNECTED, connected_platform, resolve_publisher
 from .safety import check_article
 from .satellite_channel import SatelliteContentChannel
+from .social_channel import OwnedSocialChannel
 from .writer import gather_knowledge, write_article
 
 PLATFORM_CHANGED = "The publishing platform changed after this draft was approved."
@@ -84,4 +85,5 @@ REGISTRY: dict[str, Channel] = {
     "owned_content": OwnedContentChannel(),
     "outreach_email": OutreachEmailChannel(),
     "satellite_content": SatelliteContentChannel(),
+    "owned_social": OwnedSocialChannel(),
 }

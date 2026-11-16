@@ -418,6 +418,7 @@ class GrowthAction(models.Model):
         PUBLISH_ARTICLE = "publish_article", "Publish article"
         # A follow-up email in an existing outreach thread, approved on its own.
         SEND_FOLLOW_UP = "send_follow_up", "Send follow-up email"
+        PUBLISH_SOCIAL_POST = "publish_social_post", "Publish social post"
 
     class State(models.TextChoices):
         AWAITING_APPROVAL = "awaiting_approval", "Awaiting approval"

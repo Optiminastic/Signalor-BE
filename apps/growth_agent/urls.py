@@ -24,6 +24,7 @@ from .views_control import (
     ActionDecisionView,
     ActionDetailView,
     ActionEditView,
+    ActionPostedView,
     ActionResolveView,
     ApprovalListView,
     FindContactsView,
@@ -90,6 +91,11 @@ urlpatterns = [
         "programs/<str:org_slug>/actions/<str:public_id>/resolve/",
         ActionResolveView.as_view(),
         name="action-resolve",
+    ),
+    path(
+        "programs/<str:org_slug>/actions/<str:public_id>/posted/",
+        ActionPostedView.as_view(),
+        name="action-posted",
     ),
     path(
         "programs/<str:org_slug>/actions/<str:public_id>/",

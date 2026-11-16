@@ -103,8 +103,19 @@ def _article_payload(current: dict, fields: dict) -> dict:
     return {**current, "article": article.model_dump(), "slug": slug}
 
 
+SOCIAL_FIELDS = frozenset({"text"})
+SOCIAL_TEXT_MAX = 2200  # the longest platform limit (Instagram); shorter ones are flagged, not cut
+
+
+def _social_payload(current: dict, fields: dict) -> dict:
+    _require_fields(fields, SOCIAL_FIELDS)
+    return {**current, "text": _text(fields, "text", SOCIAL_TEXT_MAX)}
+
+
 def edited_payload(action: GrowthAction, fields: dict) -> dict:
     current = action.current_version.payload
+    if action.kind == GrowthAction.Kind.PUBLISH_SOCIAL_POST:
+        return _social_payload(current, fields)
     if action.kind in actions.EMAIL_KINDS:
         return _email_payload(current, fields)
     if action.kind == GrowthAction.Kind.PUBLISH_ARTICLE:
