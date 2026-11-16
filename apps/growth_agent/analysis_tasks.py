@@ -266,3 +266,31 @@ def dispatch_social_check(program_id: int) -> None:
         threading.Thread(target=_check_social, args=(program_id,), daemon=True).start()
     else:
         check_social_task.delay(program_id)
+
+
+def _find_guest_sites(program_id: int) -> None:
+    from django.db import close_old_connections
+
+    from .models import GrowthProgram
+    from .services.guest_posts import finder
+
+    close_old_connections()
+    try:
+        program = GrowthProgram.objects.select_related("organization").filter(pk=program_id).first()
+        if program is not None:
+            finder.run_find(program)
+    finally:
+        close_old_connections()
+
+
+@analysis_app.task(name="growth_agent.find_guest_sites")
+def find_guest_sites_task(program_id: int) -> None:
+    _find_guest_sites(program_id)
+
+
+def dispatch_guest_site_find(program_id: int) -> None:
+    """Search for sites that accept guest articles (Serper and page fetches), off the request path."""
+    if analysis_app.conf.task_always_eager:
+        threading.Thread(target=_find_guest_sites, args=(program_id,), daemon=True).start()
+    else:
+        find_guest_sites_task.delay(program_id)

@@ -29,6 +29,7 @@ from apps.growth_agent.services.control.dispatch import dispatch, dispatchable
 from apps.growth_agent.services.control.expiry import expire_due
 from apps.growth_agent.services.control.recovery import recover_stuck
 from apps.growth_agent.services.execution.executor import due_tasks, release_stale_executions, run_task
+from apps.growth_agent.services.guest_posts import finder as guest_finder
 from apps.growth_agent.services.indexing.weekly import weekly_round as weekly_indexing_round
 from apps.growth_agent.services.outreach.follow_up_actions import prepare_due_follow_ups
 from apps.growth_agent.services.outreach.followups import process_open_threads
@@ -98,6 +99,7 @@ class Command(BaseCommand):
                     self.stdout.write(f"Added {added} satellite article(s) to program {program.id}'s plan.")
                 weekly_indexing_round(program)
                 social_check.weekly(program)
+                guest_finder.weekly(program)
                 social_posts.queue_weekly(program)
                 if weekly_summary.post(program):
                     self.stdout.write(f"Posted the weekly summary for program {program.id}.")

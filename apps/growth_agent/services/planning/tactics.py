@@ -84,6 +84,16 @@ TACTICS: dict[str, Tactic] = {
             rationale="Competitors win this question on {engines} and you are absent.",
         ),
         Tactic(
+            key="guest_post",
+            channel="guest_outreach",
+            weight=0.9,
+            effort=3,
+            confidence=0.3,
+            earliest_week=1,
+            title="Guest post on {target}",
+            rationale="{target} invites guest articles on your topic. A byline there earns an editorial link.",
+        ),
+        Tactic(
             key="satellite_article",
             channel="satellite_content",
             weight=0.7,

@@ -27,6 +27,8 @@ CHANNELS = (
     "community",
     # Articles on signalor.ai's own satellite sites that mention the client.
     "satellite_content",
+    # Guest articles pitched to, written for and delivered to independent sites.
+    "guest_outreach",
 )
 
 

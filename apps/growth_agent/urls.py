@@ -37,6 +37,7 @@ from .views_finders import (
     FinderOAuthCallbackView,
     FinderSignInView,
 )
+from .views_guest_posts import GuestPostsFindView, GuestPostsView
 from .views_indexing import (
     BingSendView,
     BingSwitchView,
@@ -126,6 +127,8 @@ urlpatterns = [
         name="task-run",
     ),
     path("programs/<str:org_slug>/tasks/<int:task_id>/", TaskUpdateView.as_view(), name="task"),
+    path("programs/<str:org_slug>/guest-posts/", GuestPostsView.as_view(), name="guest-posts"),
+    path("programs/<str:org_slug>/guest-posts/find/", GuestPostsFindView.as_view(), name="guest-posts-find"),
     path("programs/<str:org_slug>/social/", SocialView.as_view(), name="social"),
     path("programs/<str:org_slug>/social/check/", SocialCheckView.as_view(), name="social-check"),
     path(
