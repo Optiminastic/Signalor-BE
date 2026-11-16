@@ -24,7 +24,7 @@ from apps.analyzer.models import AnalysisRun
 from ...models import AgentActionLog, GrowthProgram
 from ..execution import audit
 from ..execution.brand import display_name
-from . import reddit, score, youtube
+from . import buffer, reddit, score, youtube
 
 logger = logging.getLogger("apps")
 CHECKED, STARTED = "social_checked", "social_check_started"
@@ -72,6 +72,18 @@ def _with_youtube(profile: dict, notes: list[str]) -> dict:
     return {**profile, "followers": stats["subscribers"], "posts_30d": stats["posts_30d"], "youtube": stats}
 
 
+def _with_buffer(program: GrowthProgram, profiles: dict) -> dict:
+    """Follower counts from the brand's Buffer channels, where Buffer reports them."""
+    if buffer.connection(program.organization) is None:
+        return profiles
+    saved = buffer.save_channels(program.organization)
+    for name in ("linkedin", "x", "instagram"):
+        channel = buffer.channel_for(saved, name)
+        if channel and channel.get("followers") is not None:
+            profiles[name] = {**profiles[name], "followers": channel["followers"], "via_buffer": True}
+    return profiles
+
+
 def _reddit(program: GrowthProgram, notes: list[str]) -> dict | None:
     client_id, secret = (
         getattr(settings, "REDDIT_CLIENT_ID", ""),
@@ -92,6 +104,7 @@ def measure(program: GrowthProgram) -> dict:
     stored, notes = _stored_profiles(program), []
     profiles = {name: _profile(stored.get(key) or {}) for name, key in STORED_NAMES.items()}
     profiles["youtube"] = _with_youtube(profiles["youtube"], notes)
+    profiles = _with_buffer(program, profiles)
     mentions = _reddit(program, notes)
     scores = {name: score.profile_score(profile) for name, profile in profiles.items()}
     scores["reddit"] = score.reddit_score(mentions)
@@ -125,13 +138,22 @@ def weekly(program: GrowthProgram) -> bool:
     return start(program, guard=CHECK_EVERY)
 
 
+def buffer_status(program: GrowthProgram) -> dict:
+    channels = buffer.saved_channels(program.organization)
+    return {
+        "connected": buffer.connection(program.organization) is not None,
+        "channels": [{"service": c["service"], "name": c["name"]} for c in channels],
+    }
+
+
 def report(program: GrowthProgram) -> dict:
     """The latest check and the change since the one before. No network."""
     checks = list(AgentActionLog.objects.filter(program=program, action=CHECKED).order_by("-created_at")[:2])
     started = AgentActionLog.objects.filter(program=program, action=STARTED).order_by("-created_at").first()
     checking = started is not None and (not checks or started.created_at > checks[0].created_at)
     if not checks:
-        return {"status": "checking" if checking else "never_checked", "checked_at": None}
+        status = "checking" if checking else "never_checked"
+        return {"status": status, "checked_at": None, "buffer": buffer_status(program)}
     latest = checks[0].detail
     previous = checks[1].detail if len(checks) > 1 else None
     change = None if previous is None else round(latest["overall"]["score"] - previous["overall"]["score"], 1)
@@ -141,4 +163,5 @@ def report(program: GrowthProgram) -> dict:
         "change": change,
         "labels": score.LABELS,
         **latest,
+        "buffer": buffer_status(program),
     }

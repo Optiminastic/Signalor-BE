@@ -27,6 +27,7 @@ from .models import AgentActionLog
 from .services.execution import audit
 from .services.outreach.contact_finders import accounts, oauth
 from .services.outreach.contact_finders.base import FinderError
+from .services.social import buffer as social_buffer
 from .views import GrowthBaseView
 from .views_control import _program_or_404
 
@@ -133,8 +134,13 @@ def _back_to_app(return_url: str, **params: str) -> HttpResponseRedirect:
     return HttpResponseRedirect(f"{base}?{urlencode(params)}")
 
 
+def _param_prefix(provider: str) -> str:
+    """Contact finders and Buffer report back with their own query params (``finder_*`` / ``buffer_*``)."""
+    return "buffer" if provider == oauth.BUFFER else "finder"
+
+
 class FinderOAuthCallbackView(APIView):
-    """Hunter or Apollo redirects the browser here after login. Trust comes from
+    """Hunter, Apollo or Buffer redirects the browser here after login. Trust comes from
     the encrypted, expiring state (not the service signature), and the brand's
     ownership is re-checked before any token is stored."""
 
@@ -147,17 +153,23 @@ class FinderOAuthCallbackView(APIView):
         try:
             if request.query_params.get("error"):
                 data = oauth.read_state(state)
-                return _back_to_app(data["return_url"], finder_error="denied", finder=data["provider"])
+                prefix = _param_prefix(data["provider"])
+                return _back_to_app(
+                    data["return_url"], **{f"{prefix}_error": "denied", prefix: data["provider"]}
+                )
             program, data = oauth.finish(request.query_params.get("code", ""), state)
         except oauth.ConnectError as exc:
             return _back_to_app(exc.return_url, finder_error=exc.code)
+        prefix = _param_prefix(data["provider"])
+        if data["provider"] == oauth.BUFFER:
+            social_buffer.save_channels(program.organization)
         detail = {"provider": data["provider"], "method": accounts.METHOD_OAUTH}
         audit.record(
             program,
             None,
-            "finder_connected",
+            f"{prefix}_connected",
             AgentActionLog.Outcome.SUCCEEDED,
             detail,
             actor_email=data["email"],
         )
-        return _back_to_app(data["return_url"], finder_connected=data["provider"])
+        return _back_to_app(data["return_url"], **{f"{prefix}_connected": data["provider"]})

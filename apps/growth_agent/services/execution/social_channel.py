@@ -6,7 +6,8 @@ Social posts (LinkedIn, X, Instagram): the agent drafts, the owner approves.
 - After approval the post waits (``send_blocker``) until the brand connects
   Buffer; meanwhile the owner can copy it and post it by hand, then mark it
   posted (``control/manual_post.py``) so it's never sent again.
-- ``execute`` refuses until Buffer scheduling exists, without any outside call.
+- Once Buffer is connected, ``execute`` adds the approved post to the matching
+  channel's Buffer queue (Buffer publishes it at the channel's next slot).
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field
 from core.llm.structured import ask_structured
 
 from ...models import ActionVersion, GrowthAction, GrowthProgram, GrowthTask
+from ..social import buffer
 from ..social.posts import POSTED_PLATFORMS, platform_of
 from .brand import brand_card, display_name
 from .channel_base import ChannelOutcome, Prepared
@@ -77,7 +79,7 @@ class OwnedSocialChannel:
         return ""
 
     def send_blocker(self, program: GrowthProgram) -> str:
-        return BUFFER_NEEDED
+        return "" if buffer.connection(program.organization) else BUFFER_NEEDED
 
     def prepare(self, task: GrowthTask) -> Prepared | ChannelOutcome:
         platform = platform_of(task.target_url)
@@ -109,5 +111,18 @@ class OwnedSocialChannel:
         )
 
     def execute(self, task: GrowthTask, version: ActionVersion) -> ChannelOutcome:
-        # Scheduling through Buffer is the next step; until then nothing is ever sent from here.
-        return ChannelOutcome(False, BUFFER_NEEDED, external_call_made=False)
+        """Add the approved post to the matching channel's Buffer queue."""
+        org = task.cycle.program.organization
+        integration = buffer.connection(org)
+        if integration is None:
+            return ChannelOutcome(False, BUFFER_NEEDED, external_call_made=False)
+        platform = version.payload["platform"]
+        channel = buffer.channel_for(buffer.saved_channels(org), platform) or buffer.channel_for(
+            buffer.save_channels(org), platform
+        )
+        if channel is None:
+            reason = f"Your Buffer has no {POSTED_PLATFORMS[platform]} channel. Add it in Buffer, or post it yourself."
+            return ChannelOutcome(False, reason, retryable=False, external_call_made=False)
+        answer = buffer.add_to_queue(integration, channel["id"], version.payload["text"])
+        evidence = {"platform": platform, "buffer_channel": channel["name"], "buffer_answer": answer}
+        return ChannelOutcome(True, "Added to your Buffer queue.", payload=evidence)

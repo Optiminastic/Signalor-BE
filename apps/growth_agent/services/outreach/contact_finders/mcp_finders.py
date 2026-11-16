@@ -78,7 +78,7 @@ def _apollo_search_args(tool: dict, domain: str) -> dict:
     return args
 
 
-def _with_session(integration: Integration, work: Callable[[McpSession, list[dict]], object]) -> object:
+def with_session(integration: Integration, work: Callable[[McpSession, list[dict]], object]) -> object:
     """Open a session with a fresh token; on a refused token, refresh once and retry."""
     url = oauth.SERVERS[integration.provider].mcp_url
     for force_refresh in (False, True):
@@ -99,13 +99,13 @@ def find(integration: Integration, domain: str) -> list[Candidate]:
             tool = _pick(tools, lambda n: "domain" in n and "search" in n, "domain search", "Hunter")
             return hunter.candidates_from(session.call_tool(tool["name"], _hunter_args(tool, domain)))
 
-        return _with_session(integration, hunter_search)
+        return with_session(integration, hunter_search)
 
     def apollo_search(session: McpSession, tools: list[dict]) -> list[Candidate]:
         tool = _pick(tools, _is_people_search, "people search", "Apollo")
         return apollo.candidates_from(session.call_tool(tool["name"], _apollo_search_args(tool, domain)))
 
-    return _with_session(integration, apollo_search)
+    return with_session(integration, apollo_search)
 
 
 def reveal(integration: Integration, person_id: str) -> str:
@@ -117,7 +117,7 @@ def reveal(integration: Integration, person_id: str) -> str:
         param = next((p for p in PERSON_ID_PARAMS if p in props), "id")
         return apollo.email_from(session.call_tool(tool["name"], {param: person_id}))
 
-    email = _with_session(integration, match)
+    email = with_session(integration, match)
     if not email:
         raise FinderError("Apollo has no work email for this person.")
     return email

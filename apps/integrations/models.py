@@ -43,6 +43,8 @@ class Integration(models.Model):
         # lives in access_token_encrypted, its last 4 characters in metadata.
         HUNTER = "hunter", "Hunter"
         APOLLO = "apollo", "Apollo"
+        # Social scheduling for the Growth Agent (OAuth tokens, like Hunter and Apollo).
+        BUFFER = "buffer", "Buffer"
 
     organization = models.ForeignKey(
         "organizations.Organization",

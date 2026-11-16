@@ -59,6 +59,7 @@ class OAuthServer:
     scopes: tuple[str, ...]
 
 
+BUFFER = "buffer"
 SERVERS = {
     hunter.PROVIDER: OAuthServer(
         provider=hunter.PROVIDER,
@@ -78,6 +79,18 @@ SERVERS = {
         register_url="https://mcp.apollo.io/api/v1/oauth/applications/register_oauth_client",
         # Only what contact finding needs: search people, reveal one email.
         scopes=("mcp_scope", "read_user_profile", "mixed_people_api_search", "people_match"),
+    ),
+    # Social scheduling (services/social/buffer.py), not a contact finder. Same sign-in
+    # pattern; endpoints from Buffer's published OAuth metadata (checked 13 Nov 2026).
+    BUFFER: OAuthServer(
+        provider=BUFFER,
+        mcp_url="https://mcp.buffer.com/mcp",
+        resource="https://mcp.buffer.com/mcp",
+        authorize_url="https://auth.buffer.com/auth",
+        token_url="https://auth.buffer.com/token",
+        register_url="https://auth.buffer.com/reg",
+        # Read and schedule posts, read the account and its channel insights, stay signed in.
+        scopes=("posts:read", "posts:write", "account:read", "insights:read", "offline_access"),
     ),
 }
 
