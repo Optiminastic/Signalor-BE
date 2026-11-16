@@ -9,6 +9,7 @@ One round of Growth Agent work:
 5. Post each brand's weekly summary in the Agent chat.
 6. Score each brand's social presence weekly (LinkedIn, X, YouTube, Instagram, Reddit)
    and plan next week's post drafts (one per platform it's on).
+7. Read each brand's keywords and competitor keyword gaps weekly (DataForSEO).
 
 Run from cron, e.g. every 15 minutes:
     python manage.py run_growth_tasks [--limit N] [--dry-run]
@@ -31,6 +32,7 @@ from apps.growth_agent.services.control.recovery import recover_stuck
 from apps.growth_agent.services.execution.executor import due_tasks, release_stale_executions, run_task
 from apps.growth_agent.services.guest_posts import finder as guest_finder
 from apps.growth_agent.services.indexing.weekly import weekly_round as weekly_indexing_round
+from apps.growth_agent.services.keywords import refresh as keyword_refresh
 from apps.growth_agent.services.outreach.follow_up_actions import prepare_due_follow_ups
 from apps.growth_agent.services.outreach.followups import process_open_threads
 from apps.growth_agent.services.planning.plan import add_satellite_topics
@@ -100,6 +102,7 @@ class Command(BaseCommand):
                 weekly_indexing_round(program)
                 social_check.weekly(program)
                 guest_finder.weekly(program)
+                keyword_refresh.weekly(program)
                 social_posts.queue_weekly(program)
                 if weekly_summary.post(program):
                     self.stdout.write(f"Posted the weekly summary for program {program.id}.")

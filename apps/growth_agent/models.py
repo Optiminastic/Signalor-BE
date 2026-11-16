@@ -363,6 +363,32 @@ class OutreachThread(models.Model):
         return f"OutreachThread<{self.task_id}:{self.status}>"
 
 
+class KeywordSnapshot(models.Model):
+    """One weekly read of keyword data for a brand, from DataForSEO (no customer connection).
+
+    ``brand`` rows: keywords the brand ranks for. ``gaps`` rows: keywords the top
+    competitors rank for in the top 10 where the brand doesn't. Kept per week so
+    the Keywords tab never calls DataForSEO on page load and can mark new gaps.
+    """
+
+    class Kind(models.TextChoices):
+        BRAND = "brand", "Brand keywords"
+        GAPS = "gaps", "Keyword gaps"
+
+    program = models.ForeignKey(GrowthProgram, on_delete=models.CASCADE, related_name="keyword_snapshots")
+    kind = models.CharField(max_length=8, choices=Kind.choices)
+    rows = models.JSONField(default=list)
+    meta = models.JSONField(default=dict)
+    fetched_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-fetched_at", "-id"]
+        indexes = [models.Index(fields=["program", "kind", "-fetched_at"], name="growth_kw_program_kind_idx")]
+
+    def __str__(self) -> str:
+        return f"KeywordSnapshot<{self.program_id}:{self.kind}>"
+
+
 # ── External actions and their approval (Phase 1 control foundation) ───────
 # A task that needs something done outside Signalor (send an email, publish a
 # page) first becomes a GrowthAction holding an exact, immutable draft. The

@@ -294,3 +294,31 @@ def dispatch_guest_site_find(program_id: int) -> None:
         threading.Thread(target=_find_guest_sites, args=(program_id,), daemon=True).start()
     else:
         find_guest_sites_task.delay(program_id)
+
+
+def _refresh_keywords(program_id: int) -> None:
+    from django.db import close_old_connections
+
+    from .models import GrowthProgram
+    from .services.keywords import refresh
+
+    close_old_connections()
+    try:
+        program = GrowthProgram.objects.select_related("organization").filter(pk=program_id).first()
+        if program is not None:
+            refresh.run_refresh(program)
+    finally:
+        close_old_connections()
+
+
+@analysis_app.task(name="growth_agent.refresh_keywords")
+def refresh_keywords_task(program_id: int) -> None:
+    _refresh_keywords(program_id)
+
+
+def dispatch_keyword_refresh(program_id: int) -> None:
+    """Read the brand's keywords and competitor gaps (paid DataForSEO calls), off the request path."""
+    if analysis_app.conf.task_always_eager:
+        threading.Thread(target=_refresh_keywords, args=(program_id,), daemon=True).start()
+    else:
+        refresh_keywords_task.delay(program_id)

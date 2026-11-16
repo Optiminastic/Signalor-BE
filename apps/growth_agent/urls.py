@@ -48,6 +48,7 @@ from .views_indexing import (
     IndexingView,
     SatelliteRankView,
 )
+from .views_keywords import KeywordsRefreshView, KeywordsView
 from .views_social import BufferDisconnectView, BufferSignInView, SocialCheckView, SocialView
 
 app_name = "growth_agent"
@@ -137,6 +138,8 @@ urlpatterns = [
     path("programs/<str:org_slug>/tasks/<int:task_id>/", TaskUpdateView.as_view(), name="task"),
     path("programs/<str:org_slug>/guest-posts/", GuestPostsView.as_view(), name="guest-posts"),
     path("programs/<str:org_slug>/guest-posts/find/", GuestPostsFindView.as_view(), name="guest-posts-find"),
+    path("programs/<str:org_slug>/keywords/", KeywordsView.as_view(), name="keywords"),
+    path("programs/<str:org_slug>/keywords/refresh/", KeywordsRefreshView.as_view(), name="keywords-refresh"),
     path("programs/<str:org_slug>/social/", SocialView.as_view(), name="social"),
     path("programs/<str:org_slug>/social/check/", SocialCheckView.as_view(), name="social-check"),
     path(
