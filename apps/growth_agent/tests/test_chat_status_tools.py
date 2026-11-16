@@ -51,13 +51,16 @@ class ChatStatusToolTests(OutreachTestCase):
         overview = status_tools.get_overview(self.program, {})
         for key in (
             "plan",
-            "drafts_waiting_for_owner",
+            "drafts",
             "outreach_threads",
             "guest_post_sites",
             "social_score",
         ):
             self.assertIn(key, overview)
-        self.assertEqual(sum(overview["drafts_waiting_for_owner"].values()), 1)
+        self.assertEqual(sum(overview["drafts"]["need_owner_approval"].values()), 1)
+        self.assertEqual(overview["drafts"]["approved_not_sent_yet"]["count_by_kind"], {})
+        names = " ".join(overview["plan"]["tasks"])
+        self.assertNotIn("_", names)  # plain names, never internal tactic keys
         self.assertTrue(overview["connections"]["gmail"]["connected"])
         self.assertFalse(overview["connections"]["buffer"]["connected"])
 

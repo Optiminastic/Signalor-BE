@@ -46,6 +46,7 @@ from .services.chat import conversation
 from .services.execution import on_demand
 from .services.onboarding import Outcome
 from .services.outreach import connect as gmail_connect
+from .services.outreach.contact_finders.oauth import valid_return_url
 from .services.outreach.gmail import GmailError
 from .services.planning import plan as planning
 from .services.positioning import report as positioning
@@ -327,13 +328,25 @@ class ConversationChatView(GrowthBaseView):
 
 
 class GmailConnectionView(GrowthBaseView):
-    """POST returns the Google consent URL; DELETE disconnects Gmail for this brand."""
+    """GET whether Gmail is connected (and which mailbox); POST {"return_url"?} returns the
+    Google consent URL; DELETE disconnects Gmail for this brand."""
+
+    def get(self, request, org_slug: str):
+        program = programs.get_program(request.user.email, org_slug)
+        if program is None:
+            return Response({"detail": "Program not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(gmail_connect.status(program))
 
     def post(self, request, org_slug: str):
         program = programs.get_program(request.user.email, org_slug)
         if program is None:
             return Response({"detail": "Program not found."}, status=status.HTTP_404_NOT_FOUND)
-        return Response({"auth_url": gmail_connect.start(program, request.user.email)})
+        return_url = str(request.data.get("return_url") or "")
+        if return_url and not valid_return_url(return_url):
+            return Response(
+                {"detail": "That return address isn't allowed."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        return Response({"auth_url": gmail_connect.start(program, request.user.email, return_url)})
 
     def delete(self, request, org_slug: str):
         program = programs.get_program(request.user.email, org_slug)
@@ -341,6 +354,17 @@ class GmailConnectionView(GrowthBaseView):
             return Response({"detail": "Program not found."}, status=status.HTTP_404_NOT_FOUND)
         gmail_connect.disconnect(program)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class GmailDisconnectView(GrowthBaseView):
+    """POST: disconnect Gmail (same as DELETE above; the app's proxy forwards POST only)."""
+
+    def post(self, request, org_slug: str):
+        program = programs.get_program(request.user.email, org_slug)
+        if program is None:
+            return Response({"detail": "Program not found."}, status=status.HTTP_404_NOT_FOUND)
+        gmail_connect.disconnect(program)
+        return Response(gmail_connect.status(program))
 
 
 def _app_redirect(**params: str) -> HttpResponseRedirect:
@@ -356,15 +380,26 @@ class GmailCallbackView(APIView):
     throttle_classes = [AnonRateThrottle]
 
     def get(self, request):
+        state = request.query_params.get("state", "")
+        back = gmail_connect.return_url_of(state)
         if request.query_params.get("error"):
-            return _app_redirect(connect_error="gmail_denied")
+            return _gmail_back(back, error="denied")
         try:
-            gmail_connect.finish(request.query_params.get("code", ""), request.query_params.get("state", ""))
+            gmail_connect.finish(request.query_params.get("code", ""), state)
         except gmail_connect.ConnectError as exc:
-            return _app_redirect(connect_error=f"gmail_{exc}")
+            return _gmail_back(back, error=str(exc))
         except GmailError:
-            return _app_redirect(connect_error="gmail_token_exchange")
-        return _app_redirect(connected="gmail")
+            return _gmail_back(back, error="token_exchange")
+        return _gmail_back(back)
+
+
+def _gmail_back(back: str, error: str = "") -> HttpResponseRedirect:
+    """Back to the Agent mode page the owner started from (re-validated), else the old app URL."""
+    if back and valid_return_url(back):
+        params = {"gmail_error": error} if error else {"gmail_connected": "gmail"}
+        joiner = "&" if "?" in back else "?"
+        return HttpResponseRedirect(f"{back}{joiner}{urlencode(params)}")
+    return _app_redirect(connect_error=f"gmail_{error}") if error else _app_redirect(connected="gmail")
 
 
 class TaskActionView(GrowthBaseView):

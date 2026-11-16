@@ -8,6 +8,7 @@ from .views import (
     ConversationListView,
     GmailCallbackView,
     GmailConnectionView,
+    GmailDisconnectView,
     MeView,
     PlanView,
     PositioningReportView,
@@ -59,7 +60,14 @@ urlpatterns = [
     path("programs/<str:org_slug>/positioning/", PositioningReportView.as_view(), name="positioning"),
     path("oauth/gmail/callback/", GmailCallbackView.as_view(), name="gmail-callback"),
     path(
-        "programs/<str:org_slug>/connections/gmail/", GmailConnectionView.as_view(), name="gmail-connection"
+        "programs/<str:org_slug>/connections/gmail/",
+        GmailConnectionView.as_view(),
+        name="gmail-connection",
+    ),
+    path(
+        "programs/<str:org_slug>/connections/gmail/disconnect/",
+        GmailDisconnectView.as_view(),
+        name="gmail-disconnect",
     ),
     path("programs/<str:org_slug>/chats/", ConversationListView.as_view(), name="chats"),
     path(

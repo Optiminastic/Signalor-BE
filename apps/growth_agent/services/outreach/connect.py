@@ -14,6 +14,7 @@ from apps.integrations.models import Integration
 
 from ...models import GrowthProgram
 from .gmail import GmailClient, authorization_url, exchange_code
+from .mailbox import gmail_integration, mailbox_address
 
 STATE_SALT = "growth-agent-gmail-oauth"
 STATE_MAX_AGE_SECONDS = 600
@@ -23,9 +24,27 @@ class ConnectError(Exception):
     """OAuth could not complete; the code is safe to put in a redirect URL."""
 
 
-def start(program: GrowthProgram, email: str) -> str:
-    state = signing.dumps({"program": program.id, "email": email}, salt=STATE_SALT)
-    return authorization_url(state)
+def start(program: GrowthProgram, email: str, return_url: str = "") -> str:
+    """Google's consent page. ``return_url`` (an Agent mode page, already validated by
+    the caller) is carried in the signed state so the callback can send the owner back."""
+    data = {"program": program.id, "email": email}
+    if return_url:
+        data["return"] = return_url
+    return authorization_url(signing.dumps(data, salt=STATE_SALT))
+
+
+def return_url_of(state: str) -> str:
+    """Where to send the browser after Google, or "" when the state carries none or is bad."""
+    try:
+        data = signing.loads(state, salt=STATE_SALT, max_age=STATE_MAX_AGE_SECONDS)
+    except signing.BadSignature:
+        return ""
+    return data.get("return", "") if isinstance(data, dict) else ""
+
+
+def status(program: GrowthProgram) -> dict:
+    integration = gmail_integration(program.organization)
+    return {"connected": integration is not None, "mailbox": mailbox_address(integration)}
 
 
 def _program_from_state(state: str) -> GrowthProgram:

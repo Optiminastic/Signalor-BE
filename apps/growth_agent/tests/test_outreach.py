@@ -285,6 +285,30 @@ class GmailConnectTests(OutreachTestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response["Location"], "https://agent.example/?connect_error=gmail_invalid_state")
 
+    @override_settings(GROWTH_APP_ORIGINS=["http://localhost:3002"])
+    def test_callback_returns_to_the_agent_mode_page_it_started_from(self):
+        back = f"http://localhost:3002/dashboard/{self.pro_org.slug}/agent-mode"
+        url = connect.start(self.program, PRO_EMAIL, back)
+        from urllib.parse import parse_qs, urlparse
+
+        state = parse_qs(urlparse(url).query)["state"][0]
+        with mock.patch.object(connect, "finish"):
+            ok = self.client.get("/api/growth/oauth/gmail/callback/", {"code": "c", "state": state})
+        self.assertEqual(ok["Location"], f"{back}?gmail_connected=gmail")
+        denied = self.client.get(
+            "/api/growth/oauth/gmail/callback/", {"error": "access_denied", "state": state}
+        )
+        self.assertEqual(denied["Location"], f"{back}?gmail_error=denied")
+
+    @override_settings(GROWTH_APP_ORIGINS=["http://localhost:3002"])
+    def test_status_and_a_foreign_return_address_is_refused(self):
+        self._body = {"return_url": "https://evil.example/dashboard/x/agent-mode"}
+        path = f"/api/growth/programs/{self.pro_org.slug}/connections/gmail/"
+        self.assertEqual(self.signed("POST", path, PRO_EMAIL).status_code, 400)
+        self._body = {}
+        self.assertEqual(self.signed("GET", path, PRO_EMAIL).json()["connected"], True)
+        self.assertFalse(self.signed("POST", f"{path}disconnect/", PRO_EMAIL).json()["connected"])
+
     def test_connect_endpoint_scoped_to_owner(self):
         self._body = {}
         ok = self.signed("POST", f"/api/growth/programs/{self.pro_org.slug}/connections/gmail/", PRO_EMAIL)

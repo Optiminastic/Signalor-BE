@@ -68,6 +68,9 @@ def get_approvals(program: GrowthProgram, _args: dict) -> dict:
         f"last_{RESULT_DAYS}_days": dict(counts),
         "recent": [_summary(a) for a in recent[:MAX_RESULTS]],
         "where": "Approvals tab on the board (articles: Articles tab, social posts: Social tab).",
+        "gmail_connected": gmail_integration(program.organization) is not None,
+        "chat_can_approve": False,
+        "why_not_from_chat": "Only the owner can approve, by clicking the exact draft in its tab.",
     }
 
 
@@ -123,7 +126,8 @@ def get_connections(program: GrowthProgram, _args: dict) -> dict:
         "gmail": {
             "connected": gmail is not None,
             "mailbox": mailbox_address(gmail),
-            "enables": "sending outreach and guest-post pitches",
+            "enables": "sending outreach emails and guest-post pitches",
+            "where": "the + next to the chat box",
         },
         "contact_finders": {
             "connected": finders,
@@ -147,30 +151,70 @@ def get_connections(program: GrowthProgram, _args: dict) -> dict:
     }
 
 
+# Plain names, so the model never has to guess what an internal tactic key means.
+TACTIC_LABELS = {
+    "listicle_inclusion": "Outreach email: ask to be added to a cited list",
+    "publisher_pitch": "Outreach email: pitch a cited publisher for a mention",
+    "video_outreach": "Outreach email: pitch a video creator",
+    "answer_content": "Answer page for the brand's own site",
+    "comparison_page": "Comparison page for the brand's own site",
+    "guest_post": "Guest post site (found; pitching comes in the next release)",
+    "satellite_article": "Article on a signalor.ai site",
+    "satellite_refresh": "Refresh of an article on a signalor.ai site",
+    "social_post": "Social post draft",
+    "entity_schema": "Entity schema for the brand's site",
+}
+STATUS_LABELS = {
+    "planned": "scheduled",
+    "ready": "ready",
+    "awaiting_approval": "drafted (see drafts below for whether it needs the owner)",
+    "executing": "in progress",
+    "done": "done",
+    "failed": "failed",
+    "skipped": "skipped",
+}
+
+
 def _plan_counts(program: GrowthProgram) -> dict:
     cycle = active_cycle(program)
     if cycle is None:
         return {"available": False}
-    by_tactic = Counter((t.tactic, t.status) for t in cycle.tasks.only("tactic", "status"))
-    tactics: dict[str, dict] = {}
-    for (tactic, status), n in by_tactic.items():
-        tactics.setdefault(tactic, {})[status] = n
-    return {"from": cycle.starts_on.isoformat(), "to": cycle.ends_on.isoformat(), "tasks_by_tactic": tactics}
+    counts = Counter((t.tactic, t.status) for t in cycle.tasks.only("tactic", "status"))
+    tasks: dict[str, dict] = {}
+    for (tactic, status), n in counts.items():
+        label = TACTIC_LABELS.get(tactic, tactic)
+        tasks.setdefault(label, {})[STATUS_LABELS.get(status, status)] = n
+    return {"from": cycle.starts_on.isoformat(), "to": cycle.ends_on.isoformat(), "tasks": tasks}
+
+
+def _drafts(program: GrowthProgram) -> dict:
+    """Drafts that need the owner, kept apart from approved ones still waiting to go out."""
+    waiting = _actions(program).filter(state=GrowthAction.State.AWAITING_APPROVAL)
+    approved = _actions(program).filter(state=GrowthAction.State.APPROVED)
+    unsent = {
+        "count_by_kind": dict(Counter(a.get_kind_display() for a in approved)),
+        "why": ""
+        if gmail_integration(program.organization)
+        else "Emails can't go out until Gmail is connected.",
+    }
+    return {
+        "need_owner_approval": dict(Counter(a.get_kind_display() for a in waiting)),
+        "approved_not_sent_yet": unsent,
+        "sends_with_unknown_outcome": _actions(program)
+        .filter(state=GrowthAction.State.NEEDS_RECONCILIATION)
+        .count(),
+    }
 
 
 def get_overview(program: GrowthProgram, _args: dict) -> dict:
     """Everything at a glance, for "how is it going" or "what's running" questions."""
-    approvals = _actions(program).filter(state=GrowthAction.State.AWAITING_APPROVAL)
     guest = guest_report.report(program)
     social = social_check.report(program)
     threads = OutreachThread.objects.filter(task__cycle__program=program)
     return {
         "program_status": program.status,
         "plan": _plan_counts(program),
-        "drafts_waiting_for_owner": dict(Counter(a.get_kind_display() for a in approvals)),
-        "sends_with_unknown_outcome": _actions(program)
-        .filter(state=GrowthAction.State.NEEDS_RECONCILIATION)
-        .count(),
+        "drafts": _drafts(program),
         "outreach_threads": dict(Counter(t.get_status_display() for t in threads)),
         "guest_post_sites": dict(Counter(s["stage"] for s in guest["sites"])),
         "social_score": (social.get("overall") or {}).get("score"),
