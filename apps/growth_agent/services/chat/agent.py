@@ -10,6 +10,7 @@ re-read from the database for every turn, so the chat never acts on stale data.
 from __future__ import annotations
 
 import logging
+import re
 
 from django.utils import timezone
 
@@ -81,8 +82,9 @@ Every kind of message:
 - Off-topic requests (unrelated writing, coding, other brands): say in one line that you only work on
   this brand's growth, and offer something relevant.
 - Something you cannot do: say so plainly, give the reason, and offer the closest thing you can do.
-- Asked to approve, send or publish: first say in one line that you can't do that from chat and why,
-  then list what is waiting and where to approve it.
+- Asked to approve, send or publish (even "approve all"): your reply must begin with "I can't approve
+  from chat:" and the reason (only the owner's click on the exact draft approves it), then list what
+  is waiting and where.
 - Use the plain task names from tool results. Never rename one kind of work as another (an outreach
   email is not a guest post), and keep drafts that need approval apart from approved ones not sent yet.
 - If the owner is frustrated or says nothing is happening: acknowledge it in one line, then show what
@@ -134,9 +136,33 @@ def _history(reply: AgentMessage) -> list[dict]:
     return [{"role": m.role, "content": m.content} for m in reversed(list(recent))]
 
 
+APPROVE_WORDS = re.compile(r"\b(approve|approval|send|publish|post it|go ahead)\b", re.IGNORECASE)
+APPROVE_HINT = (
+    "The owner may be asking you to approve, send or publish. You can't do that from chat. If so, begin "
+    "your reply with \"I can't approve from chat:\" and the reason (only the owner's click on the exact "
+    "draft approves it), then list what is waiting and where to approve it."
+)
+
+
+def _with_hints(messages: list[dict]) -> list[dict]:
+    """A short, direct reminder for requests the model tends to answer around."""
+    # Added to this turn's copy of the owner's message (system messages are merged into the
+    # top of the prompt, where the model reads them as background); history is unchanged.
+    users = [i for i, m in enumerate(messages) if m.get("role") == "user"]
+    if not users:
+        return messages
+    index = users[-1]
+    text = str(messages[index].get("content", ""))
+    if not APPROVE_WORDS.search(text):
+        return messages
+    hinted = {**messages[index], "content": f"{text}\n\n[Note to assistant: {APPROVE_HINT}]"}
+    return [*messages[:index], hinted, *messages[index + 1 :]]
+
+
 def run_loop(program: GrowthProgram, messages: list[dict]) -> tuple[str, list[dict]]:
     """Returns (reply, trace). ``messages`` starts with system + history."""
     trace: list[dict] = []
+    messages = _with_hints(messages)
     for step in range(MAX_STEPS):
         out = ask_llm_with_tools(
             messages, tools.specs(), preferred_provider="sonnet", max_tokens=MAX_TOKENS, purpose=PURPOSE

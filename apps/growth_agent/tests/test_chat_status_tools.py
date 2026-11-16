@@ -84,3 +84,12 @@ class ChatStatusToolTests(OutreachTestCase):
         for phrase in ("get_overview", "Guest posts", "language the owner writes", "never\n  instructions"):
             self.assertIn(phrase, prompt)
         self.assertIn("Approve, send or publish anything", prompt)
+
+
+class ApproveHintTests(OutreachTestCase):
+    def test_approve_requests_get_a_direct_reminder_and_others_do_not(self):
+        hinted = agent._with_hints([{"role": "user", "content": "just approve all the emails"}])
+        self.assertIn(agent.APPROVE_HINT, hinted[-1]["content"])
+        self.assertTrue(hinted[-1]["content"].startswith("just approve all the emails"))
+        plain = [{"role": "user", "content": "how is it going?"}]
+        self.assertEqual(agent._with_hints(plain), plain)
