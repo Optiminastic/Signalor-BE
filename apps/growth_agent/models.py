@@ -389,6 +389,67 @@ class KeywordSnapshot(models.Model):
         return f"KeywordSnapshot<{self.program_id}:{self.kind}>"
 
 
+class TrackedKeyword(models.Model):
+    """A keyword whose Google position and AI Overview citations are checked weekly.
+
+    The agent fills the list (``source=auto``); the owner can add (``owner``) or
+    remove one. A removed keyword stays as ``active=False`` so the agent never
+    adds it back.
+    """
+
+    class Source(models.TextChoices):
+        AUTO = "auto", "Picked by the agent"
+        OWNER = "owner", "Added by the owner"
+
+    program = models.ForeignKey(GrowthProgram, on_delete=models.CASCADE, related_name="tracked_keywords")
+    keyword = models.CharField(max_length=120)
+    source = models.CharField(max_length=8, choices=Source.choices, default=Source.AUTO)
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["program", "keyword"], name="growth_tracked_keyword_unique")
+        ]
+
+    def __str__(self) -> str:
+        return f"TrackedKeyword<{self.program_id}:{self.keyword}>"
+
+
+class RankObservation(models.Model):
+    """One week's observation for one keyword and one domain (the brand or a competitor).
+
+    ``seo``: Google position 1-100, or null when not in the top 100.
+    ``aio``: whether Google's AI Overview for that keyword cited the domain.
+    """
+
+    class Kind(models.TextChoices):
+        SEO = "seo", "Google position"
+        AIO = "aio", "AI Overview citation"
+
+    program = models.ForeignKey(GrowthProgram, on_delete=models.CASCADE, related_name="rank_observations")
+    week = models.DateField(help_text="Monday of the week observed.")
+    kind = models.CharField(max_length=4, choices=Kind.choices)
+    keyword = models.CharField(max_length=120)
+    domain = models.CharField(max_length=255)
+    position = models.PositiveSmallIntegerField(null=True, blank=True)
+    cited = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-week", "keyword"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["program", "week", "kind", "keyword", "domain"], name="growth_rank_observation_unique"
+            )
+        ]
+        indexes = [models.Index(fields=["program", "kind", "-week"], name="growth_rank_program_kind_idx")]
+
+    def __str__(self) -> str:
+        return f"RankObservation<{self.program_id}:{self.kind}:{self.keyword}:{self.domain}>"
+
+
 # ── External actions and their approval (Phase 1 control foundation) ───────
 # A task that needs something done outside Signalor (send an email, publish a
 # page) first becomes a GrowthAction holding an exact, immutable draft. The

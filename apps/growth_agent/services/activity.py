@@ -20,7 +20,7 @@ OTHER = "other"
 RULES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "articles": (("satellite_content", "owned_content"), ("satellite_",)),
     "guest": (("guest_outreach",), ("guest_",)),
-    "keywords": ((), ("keyword", "golden_keyword")),
+    "keywords": ((), ("keyword", "golden_keyword", "rank_")),
     "social": (("owned_social",), ("social_", "buffer_")),
     "site": ((), ("site_", "indexing_", "bing_")),
     "outreach": (("outreach_email",), ("contact", "finder_", "reply_", "opt_out")),

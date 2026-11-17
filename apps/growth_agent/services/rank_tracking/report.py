@@ -1,0 +1,106 @@
+"""
+The tracking panel (SEO / GEO / AIO): the brand and its competitors, week by
+week, for the last 8 weeks. No network.
+
+GEO comes from the weekly AI-visibility snapshots the agent already takes;
+SEO and AIO from the weekly rank check.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+
+from ...models import AgentActionLog, GrowthProgram, RankObservation, WeeklySnapshot
+from . import rules
+from .check import AIO_NO_CREDITS, AIO_NOT_CONFIGURED, DONE, STARTED, competitors
+
+AIO_NOTES = {
+    AIO_NOT_CONFIGURED: "AI Overview tracking needs DataForSEO, which isn't set up on the server yet.",
+    AIO_NO_CREDITS: "AI Overview tracking is waiting for DataForSEO credits. It starts with the next weekly check once topped up.",
+    "error": "Google's AI Overview data didn't load last time. The agent will try again next week.",
+}
+
+
+def _geo(program: GrowthProgram) -> list[dict]:
+    snapshots = WeeklySnapshot.objects.filter(
+        cycle__program=program, status=WeeklySnapshot.Status.COMPLETE
+    ).order_by("-completed_at")[: rules.WEEKS_SHOWN]
+    return [
+        {
+            "week": rules.week_of(s.completed_at.date()).isoformat(),
+            "brand": s.share_of_voice,
+            "rivals": s.rivals or {},
+            "engines": s.engines or {},
+        }
+        for s in reversed(list(snapshots))
+    ]
+
+
+def _weeks(program: GrowthProgram, kind: str) -> dict:
+    rows = list(
+        RankObservation.objects.filter(program=program, kind=kind)
+        .order_by("-week")
+        .values("week", "keyword", "domain", "position", "cited")
+    )
+    by_week: dict = defaultdict(list)
+    for row in rows:
+        by_week[row["week"]].append(row)
+    return dict(sorted(by_week.items())[-rules.WEEKS_SHOWN :])
+
+
+def _table(latest: list[dict], previous: list[dict], field: str) -> list[dict]:
+    """Latest value per keyword and domain, with last week's for comparison."""
+    before = {(r["keyword"], r["domain"]): r[field] for r in previous}
+    by_keyword: dict = defaultdict(dict)
+    for row in latest:
+        by_keyword[row["keyword"]][row["domain"]] = {
+            "now": row[field],
+            "before": before.get((row["keyword"], row["domain"])),
+        }
+    return [{"keyword": k, "domains": v} for k, v in sorted(by_keyword.items())]
+
+
+def _section(program: GrowthProgram, kind: str, domains: list[str]) -> dict:
+    weeks = _weeks(program, kind)
+    dates = list(weeks)
+    summarize = rules.seo_week_summary if kind == RankObservation.Kind.SEO else rules.aio_week_summary
+    field = "position" if kind == RankObservation.Kind.SEO else "cited"
+    latest = weeks[dates[-1]] if dates else []
+    previous = weeks[dates[-2]] if len(dates) > 1 else []
+    return {
+        "weeks": [
+            {
+                "week": d.isoformat(),
+                "keywords": len({r["keyword"] for r in weeks[d]}),
+                "domains": summarize(weeks[d], domains),
+            }
+            for d in dates
+        ],
+        "latest": _table(latest, previous, field),
+    }
+
+
+def _state(program: GrowthProgram) -> dict:
+    done = AgentActionLog.objects.filter(program=program, action=DONE).order_by("-created_at").first()
+    started = AgentActionLog.objects.filter(program=program, action=STARTED).order_by("-created_at").first()
+    checking = started is not None and (done is None or started.created_at > done.created_at)
+    problem = (done.detail or {}).get("aio_problem", "") if done else ""
+    return {
+        "checking": checking,
+        "last_check_at": done.created_at.isoformat() if done else None,
+        "aio_note": AIO_NOTES.get(problem, ""),
+    }
+
+
+def report(program: GrowthProgram) -> dict:
+    players = competitors(program)
+    domains = [p.domain for p in players if p.domain]
+    keywords = program.tracked_keywords.filter(active=True)
+    return {
+        "players": [{"name": p.name, "domain": p.domain, "is_brand": i == 0} for i, p in enumerate(players)],
+        "keywords": [{"id": k.id, "keyword": k.keyword, "source": k.source} for k in keywords],
+        "geo": _geo(program),
+        "seo": _section(program, RankObservation.Kind.SEO, domains),
+        "aio": _section(program, RankObservation.Kind.AIO, domains),
+        **_state(program),
+    }

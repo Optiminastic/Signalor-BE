@@ -51,6 +51,12 @@ from .views_indexing import (
 from .views_keyword_tools import KeywordToolConnectView, KeywordToolDisconnectView, KeywordToolListView
 from .views_keywords import KeywordsRefreshView, KeywordsView
 from .views_social import BufferDisconnectView, BufferSignInView, SocialCheckView, SocialView
+from .views_tracking import (
+    RankTrackingCheckView,
+    RankTrackingView,
+    TrackedKeywordAddView,
+    TrackedKeywordRemoveView,
+)
 
 app_name = "growth_agent"
 
@@ -150,6 +156,22 @@ urlpatterns = [
     path("programs/<str:org_slug>/keywords/", KeywordsView.as_view(), name="keywords"),
     path("programs/<str:org_slug>/keywords/refresh/", KeywordsRefreshView.as_view(), name="keywords-refresh"),
     path("programs/<str:org_slug>/keyword-tools/", KeywordToolListView.as_view(), name="keyword-tools"),
+    path("programs/<str:org_slug>/rank-tracking/", RankTrackingView.as_view(), name="rank-tracking"),
+    path(
+        "programs/<str:org_slug>/rank-tracking/check/",
+        RankTrackingCheckView.as_view(),
+        name="rank-tracking-check",
+    ),
+    path(
+        "programs/<str:org_slug>/rank-tracking/keywords/",
+        TrackedKeywordAddView.as_view(),
+        name="rank-tracking-keyword-add",
+    ),
+    path(
+        "programs/<str:org_slug>/rank-tracking/keywords/<int:keyword_id>/remove/",
+        TrackedKeywordRemoveView.as_view(),
+        name="rank-tracking-keyword-remove",
+    ),
     path(
         "programs/<str:org_slug>/keyword-tools/<str:provider>/connect/",
         KeywordToolConnectView.as_view(),
