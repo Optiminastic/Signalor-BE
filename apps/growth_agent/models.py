@@ -418,15 +418,13 @@ class TrackedKeyword(models.Model):
 
 
 class RankObservation(models.Model):
-    """One week's observation for one keyword and one domain (the brand or a competitor).
+    """One week's Google position for one keyword and one domain (the brand or a competitor).
 
-    ``seo``: Google position 1-100, or null when not in the top 100.
-    ``aio``: whether Google's AI Overview for that keyword cited the domain.
+    ``position`` is 1-100, or null when not in the top 100.
     """
 
     class Kind(models.TextChoices):
         SEO = "seo", "Google position"
-        AIO = "aio", "AI Overview citation"
 
     program = models.ForeignKey(GrowthProgram, on_delete=models.CASCADE, related_name="rank_observations")
     week = models.DateField(help_text="Monday of the week observed.")
@@ -434,7 +432,6 @@ class RankObservation(models.Model):
     keyword = models.CharField(max_length=120)
     domain = models.CharField(max_length=255)
     position = models.PositiveSmallIntegerField(null=True, blank=True)
-    cited = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -448,6 +445,47 @@ class RankObservation(models.Model):
 
     def __str__(self) -> str:
         return f"RankObservation<{self.program_id}:{self.kind}:{self.keyword}:{self.domain}>"
+
+
+class BrandMention(models.Model):
+    """One page elsewhere on the internet that talks about the brand or a competitor.
+
+    Found weekly by searching Google (web, news, Reddit) for the player's name, outside
+    the player's own site; a model call drops pages not really about the player and marks
+    the sentiment. ``domain`` is the player's own domain (who the mention is about).
+    """
+
+    class Channel(models.TextChoices):
+        WEB = "web", "Web"
+        NEWS = "news", "News"
+        REDDIT = "reddit", "Reddit"
+
+    class Sentiment(models.TextChoices):
+        POSITIVE = "positive", "Positive"
+        NEUTRAL = "neutral", "Neutral"
+        NEGATIVE = "negative", "Negative"
+
+    program = models.ForeignKey(GrowthProgram, on_delete=models.CASCADE, related_name="brand_mentions")
+    week = models.DateField(help_text="Monday of the week it was found.")
+    domain = models.CharField(max_length=255)
+    url = models.URLField(max_length=1000)
+    title = models.CharField(max_length=300)
+    snippet = models.TextField(blank=True, default="")
+    source = models.CharField(max_length=255, help_text="The site the mention is on.")
+    channel = models.CharField(max_length=8, choices=Channel.choices)
+    published = models.CharField(max_length=40, blank=True, default="", help_text="As Google shows it.")
+    sentiment = models.CharField(max_length=8, choices=Sentiment.choices, default=Sentiment.NEUTRAL)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-week", "-id"]
+        constraints = [
+            models.UniqueConstraint(fields=["program", "domain", "url"], name="growth_brand_mention_unique")
+        ]
+        indexes = [models.Index(fields=["program", "-week"], name="growth_mention_week_idx")]
+
+    def __str__(self) -> str:
+        return f"BrandMention<{self.program_id}:{self.domain}:{self.source}>"
 
 
 # ── External actions and their approval (Phase 1 control foundation) ───────

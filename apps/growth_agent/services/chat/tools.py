@@ -54,8 +54,9 @@ _TOOLS: dict[str, tuple[str, dict, Handler]] = {
     ),
     "get_competitor_tracking": (
         "The brand vs its top competitors, this week vs last: share of AI answers mentioning each (GEO), "
-        "keywords in Google's top 10 and each tracked keyword's position (SEO), and Google AI Overview "
-        "citations (AIO). Use for 'how are my competitors doing', 'who ranks for X', 'are we improving'.",
+        "keywords in Google's top 10 and each tracked keyword's position (SEO), and what the internet "
+        "said about each this week (news, blogs, Reddit) with sentiment. Use for 'how are my competitors "
+        "doing', 'who ranks for X', 'what are people saying about us', 'are we improving'.",
         _NO_ARGS,
         insight_tools.get_competitor_tracking,
     ),

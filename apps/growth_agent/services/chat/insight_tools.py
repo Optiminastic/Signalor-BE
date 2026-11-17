@@ -1,6 +1,6 @@
 """
 Chat tools for what the agent measures beyond the plan: the brand vs its
-competitors week by week (SEO / GEO / AIO), keyword data, and site health.
+competitors week by week (SEO / GEO / Brand mentions), keyword data, and site health.
 
 Read tools return compact, plain-named data from stored results (no network).
 The two "now" tools only queue a check, with the same once-a-day limit as the buttons.
@@ -60,6 +60,19 @@ def _seo(built: dict) -> list[dict]:
     return out
 
 
+def _mentions(built: dict, names: dict) -> dict:
+    """What the internet said about each player this week: counts, sentiment, and a few headlines."""
+    weeks = built["brand"]["weeks"]
+    latest = weeks[-1]["domains"] if weeks else {}
+    return {
+        "this_week": {names.get(d, d): counts for d, counts in latest.items()},
+        "recent": {
+            names.get(d, d): [{k: m[k] for k in ("title", "source", "sentiment", "url")} for m in rows[:3]]
+            for d, rows in built["brand"]["latest"].items()
+        },
+    }
+
+
 def get_competitor_tracking(program: GrowthProgram, _args: dict) -> dict:
     """The brand vs its top competitors, this week vs last: Google, AI answers, AI Overviews."""
     built = tracking_report(program)
@@ -71,16 +84,12 @@ def get_competitor_tracking(program: GrowthProgram, _args: dict) -> dict:
         }
         for row in built["seo"]["latest"]
     ]
-    aio_weeks = built["aio"]["weeks"]
     return {
         "players": [p["name"] for p in built["players"]],
         "geo_ai_answers": _geo(built),
         "seo_google": _seo(built),
         "google_positions_by_keyword": positions,
-        "ai_overview_citations_latest": (
-            {names.get(d, d): n for d, n in aio_weeks[-1]["domains"].items()} if aio_weeks else None
-        ),
-        "ai_overview_note": built["aio_note"],
+        "brand_mentions": _mentions(built, names),
         "last_check_at": built["last_check_at"],
         "where": "the You vs competitors column on the right (Tracking tab on small screens)",
         "note": "Positions: null means not in Google's top 100.",

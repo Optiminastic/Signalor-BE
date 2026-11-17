@@ -67,10 +67,6 @@ def positions(organic: list[dict], domains: list[str]) -> dict[str, int | None]:
     return found
 
 
-def cited(reference_domains: list[str], domains: list[str]) -> dict[str, bool]:
-    return {d: any(belongs(ref, d) for ref in reference_domains) for d in domains}
-
-
 def seo_week_summary(rows: list[dict], domains: list[str]) -> dict[str, dict]:
     """Per domain for one week: keywords in the top 10, and average position over keywords it ranks for."""
     out = {}
@@ -82,8 +78,3 @@ def seo_week_summary(rows: list[dict], domains: list[str]) -> dict[str, dict]:
             "average": round(sum(ranked) / len(ranked), 1) if ranked else None,
         }
     return out
-
-
-def aio_week_summary(rows: list[dict], domains: list[str]) -> dict[str, int]:
-    """Per domain for one week: how many tracked keywords' AI Overviews cited it."""
-    return {d: sum(1 for r in rows if r["domain"] == d and r["cited"]) for d in domains}

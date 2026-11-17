@@ -1,9 +1,9 @@
 """
-The tracking panel (SEO / GEO / AIO): the brand and its competitors, week by
+The tracking panel (SEO / GEO / Brand): the brand and its competitors, week by
 week, for the last 8 weeks. No network.
 
-GEO comes from the weekly AI-visibility snapshots the agent already takes;
-SEO and AIO from the weekly rank check.
+GEO comes from the weekly AI-visibility snapshots the agent already takes; SEO
+from the weekly rank check; Brand from the weekly brand-mention search.
 """
 
 from __future__ import annotations
@@ -11,14 +11,9 @@ from __future__ import annotations
 from collections import defaultdict
 
 from ...models import AgentActionLog, GrowthProgram, PositioningReport, RankObservation, WeeklySnapshot
+from ..brand_mentions import report as mentions_report
 from . import rules
-from .check import AIO_NO_CREDITS, AIO_NOT_CONFIGURED, DONE, STARTED, competitors
-
-AIO_NOTES = {
-    AIO_NOT_CONFIGURED: "AI Overview tracking needs DataForSEO, which isn't set up on the server yet.",
-    AIO_NO_CREDITS: "AI Overview tracking is waiting for DataForSEO credits. It starts with the next weekly check once topped up.",
-    "error": "Google's AI Overview data didn't load last time. The agent will try again next week.",
-}
+from .check import DONE, STARTED, competitors
 
 
 def _baseline(program: GrowthProgram) -> dict | None:
@@ -59,11 +54,11 @@ def _geo(program: GrowthProgram) -> list[dict]:
     return weeks
 
 
-def _weeks(program: GrowthProgram, kind: str) -> dict:
+def _weeks(program: GrowthProgram) -> dict:
     rows = list(
-        RankObservation.objects.filter(program=program, kind=kind)
+        RankObservation.objects.filter(program=program, kind=RankObservation.Kind.SEO)
         .order_by("-week")
-        .values("week", "keyword", "domain", "position", "cited")
+        .values("week", "keyword", "domain", "position")
     )
     by_week: dict = defaultdict(list)
     for row in rows:
@@ -71,23 +66,21 @@ def _weeks(program: GrowthProgram, kind: str) -> dict:
     return dict(sorted(by_week.items())[-rules.WEEKS_SHOWN :])
 
 
-def _table(latest: list[dict], previous: list[dict], field: str) -> list[dict]:
-    """Latest value per keyword and domain, with last week's for comparison."""
-    before = {(r["keyword"], r["domain"]): r[field] for r in previous}
+def _table(latest: list[dict], previous: list[dict]) -> list[dict]:
+    """Latest position per keyword and domain, with last week's for comparison."""
+    before = {(r["keyword"], r["domain"]): r["position"] for r in previous}
     by_keyword: dict = defaultdict(dict)
     for row in latest:
         by_keyword[row["keyword"]][row["domain"]] = {
-            "now": row[field],
+            "now": row["position"],
             "before": before.get((row["keyword"], row["domain"])),
         }
     return [{"keyword": k, "domains": v} for k, v in sorted(by_keyword.items())]
 
 
-def _section(program: GrowthProgram, kind: str, domains: list[str]) -> dict:
-    weeks = _weeks(program, kind)
+def _seo(program: GrowthProgram, domains: list[str]) -> dict:
+    weeks = _weeks(program)
     dates = list(weeks)
-    summarize = rules.seo_week_summary if kind == RankObservation.Kind.SEO else rules.aio_week_summary
-    field = "position" if kind == RankObservation.Kind.SEO else "cited"
     latest = weeks[dates[-1]] if dates else []
     previous = weeks[dates[-2]] if len(dates) > 1 else []
     return {
@@ -95,11 +88,11 @@ def _section(program: GrowthProgram, kind: str, domains: list[str]) -> dict:
             {
                 "week": d.isoformat(),
                 "keywords": len({r["keyword"] for r in weeks[d]}),
-                "domains": summarize(weeks[d], domains),
+                "domains": rules.seo_week_summary(weeks[d], domains),
             }
             for d in dates
         ],
-        "latest": _table(latest, previous, field),
+        "latest": _table(latest, previous),
     }
 
 
@@ -107,12 +100,7 @@ def _state(program: GrowthProgram) -> dict:
     done = AgentActionLog.objects.filter(program=program, action=DONE).order_by("-created_at").first()
     started = AgentActionLog.objects.filter(program=program, action=STARTED).order_by("-created_at").first()
     checking = started is not None and (done is None or started.created_at > done.created_at)
-    problem = (done.detail or {}).get("aio_problem", "") if done else ""
-    return {
-        "checking": checking,
-        "last_check_at": done.created_at.isoformat() if done else None,
-        "aio_note": AIO_NOTES.get(problem, ""),
-    }
+    return {"checking": checking, "last_check_at": done.created_at.isoformat() if done else None}
 
 
 def report(program: GrowthProgram) -> dict:
@@ -123,7 +111,7 @@ def report(program: GrowthProgram) -> dict:
         "players": [{"name": p.name, "domain": p.domain, "is_brand": i == 0} for i, p in enumerate(players)],
         "keywords": [{"id": k.id, "keyword": k.keyword, "source": k.source} for k in keywords],
         "geo": _geo(program),
-        "seo": _section(program, RankObservation.Kind.SEO, domains),
-        "aio": _section(program, RankObservation.Kind.AIO, domains),
+        "seo": _seo(program, domains),
+        "brand": mentions_report.section(program, domains),
         **_state(program),
     }

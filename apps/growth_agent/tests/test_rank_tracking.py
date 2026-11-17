@@ -12,7 +12,6 @@ from django.test import SimpleTestCase
 from django.utils import timezone
 
 from apps.analyzer.models import AnalysisRun, Competitor
-from apps.integrations.services.dataforseo import DataForSEOError
 
 from ..models import KeywordSnapshot, PositioningReport, RankObservation, TrackedKeyword, WeeklySnapshot
 from ..services.rank_tracking import check, rules
@@ -38,7 +37,7 @@ class RuleTests(SimpleTestCase):
         )
         self.assertEqual(picked, ["ai visibility", "big gap", "small", "best geo tool for agencies"])
 
-    def test_positions_and_citations_match_subdomains(self):
+    def test_positions_match_subdomains(self):
         organic = [
             {"link": "https://blog.acme.io/x", "position": 1},
             {"link": "https://www.pro.example/y", "position": 2},
@@ -47,21 +46,17 @@ class RuleTests(SimpleTestCase):
             rules.positions(organic, ["pro.example", "acme.io", "beta.com"]),
             {"pro.example": 2, "acme.io": 1, "beta.com": None},
         )
-        self.assertEqual(
-            rules.cited(["acme.io"], ["pro.example", "acme.io"]), {"pro.example": False, "acme.io": True}
-        )
 
     def test_week_summaries(self):
         rows = [
-            {"domain": "a.com", "position": 3, "cited": True},
-            {"domain": "a.com", "position": 40, "cited": False},
-            {"domain": "b.com", "position": None, "cited": False},
+            {"domain": "a.com", "position": 3},
+            {"domain": "a.com", "position": 40},
+            {"domain": "b.com", "position": None},
         ]
         self.assertEqual(
             rules.seo_week_summary(rows, ["a.com", "b.com"])["a.com"],
             {"top10": 1, "ranked": 2, "average": 21.5},
         )
-        self.assertEqual(rules.aio_week_summary(rows, ["a.com", "b.com"]), {"a.com": 1, "b.com": 0})
 
 
 class RankBase(ExecutionTestCase):
@@ -93,36 +88,30 @@ class RankBase(ExecutionTestCase):
             ]
         }
 
-    def run_check(self, aio=None):
-        aio = aio if aio is not None else mock.Mock(return_value=["acme.io"])
+    def run_check(self, mentions=0):
         with (
             mock.patch.object(check.serper, "search", side_effect=self.serp),
-            mock.patch.object(check, "fetch_ai_overview_domains", aio),
+            mock.patch.object(check.mentions, "run", return_value=mentions) as found,
             mock.patch.object(check.suggest, "suggest", return_value=[]),
         ):
+            self.mentions_call = found
             return check.run_check(self.program)
 
 
 class RankCheckTests(RankBase):
-    def test_a_check_tracks_keywords_and_stores_positions_and_citations(self):
-        self.run_check()
+    def test_a_check_tracks_keywords_stores_positions_and_reads_mentions(self):
+        self.assertEqual(self.run_check(mentions=3)["mentions"], 3)
+        players = self.mentions_call.call_args.args[1]
+        self.assertEqual([p.domain for p in players], ["pro.example", "acme.io"])
         keywords = set(TrackedKeyword.objects.values_list("keyword", flat=True))
         self.assertEqual(keywords, {"ai visibility", "best geo tool"})
         seo = RankObservation.objects.filter(kind="seo", keyword="ai visibility")
         self.assertEqual({o.domain: o.position for o in seo}, {"pro.example": 4, "acme.io": 1})
-        aio = RankObservation.objects.filter(kind="aio", keyword="ai visibility")
-        self.assertEqual({o.domain: o.cited for o in aio}, {"pro.example": False, "acme.io": True})
 
     def test_rerunning_the_same_week_replaces_rows(self):
         self.run_check()
         self.run_check()
         self.assertEqual(RankObservation.objects.filter(kind="seo").count(), 4)
-
-    def test_no_dataforseo_credits_keeps_seo_and_explains_aio(self):
-        self.run_check(aio=mock.Mock(side_effect=DataForSEOError("serp: 402 Payment Required")))
-        self.assertFalse(RankObservation.objects.filter(kind="aio").exists())
-        self.assertTrue(RankObservation.objects.filter(kind="seo").exists())
-        self.assertIn("waiting for DataForSEO credits", report(self.program)["aio_note"])
 
     def test_report_compares_with_last_week_and_reads_geo_snapshots(self):
         last_week = rules.week_of(timezone.localdate()) - timedelta(days=7)

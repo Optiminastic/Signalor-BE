@@ -2,8 +2,8 @@
 Weekly rank check for a brand and its top competitors.
 
 - SEO: one Serper Google search (top 100) per tracked keyword; each domain's position.
-- AIO: one DataForSEO SERP call per tracked keyword; which domains Google's AI
-  Overview cites. Stops (and says so) when DataForSEO isn't set up or is out of credits.
+- Brand: what the internet said about each player this past week (Google web,
+  news and Reddit), see ``brand_mentions``.
 
 The week's rows replace any earlier rows for the same week, so a re-run never
 double counts. Runs on the worker, at most once a day on request, weekly on schedule.
@@ -17,14 +17,10 @@ from datetime import timedelta
 from django.db import transaction
 from django.utils import timezone
 
-from apps.integrations.services.dataforseo import (
-    DataForSEOError,
-    DataForSEONotConfigured,
-    fetch_ai_overview_domains,
-)
 from core.llm import serper
 
 from ...models import AgentActionLog, GrowthProgram, KeywordSnapshot, RankObservation, TrackedKeyword
+from ..brand_mentions import check as mentions
 from ..execution import audit
 from ..execution.brand import display_name
 from ..keywords import gaps as gap_rules
@@ -40,9 +36,6 @@ DONE = "rank_check_done"
 START_GUARD = timedelta(hours=24)
 CHECK_EVERY = timedelta(days=6)
 SERP_DEPTH = 100
-AIO_NOT_CONFIGURED = "not_configured"
-AIO_NO_CREDITS = "no_credits"
-AIO_ERROR = "error"
 
 
 def competitors(program: GrowthProgram) -> list[gap_rules.Rival]:
@@ -91,23 +84,8 @@ def _seo_rows(keywords: list[str], domains: list[str]) -> list[dict]:
         if data is None:
             continue  # unknown, not "not ranked": no rows rather than wrong ones
         for domain, position in rules.positions(data.get("organic") or [], domains).items():
-            rows.append({"keyword": keyword, "domain": domain, "position": position, "cited": False})
+            rows.append({"keyword": keyword, "domain": domain, "position": position})
     return rows
-
-
-def _aio_rows(keywords: list[str], domains: list[str]) -> tuple[list[dict], str]:
-    """(rows, problem). The problem is "" when every keyword was read."""
-    rows = []
-    for keyword in keywords:
-        try:
-            refs = fetch_ai_overview_domains(keyword)
-        except DataForSEONotConfigured:
-            return rows, AIO_NOT_CONFIGURED
-        except DataForSEOError as exc:
-            return rows, AIO_NO_CREDITS if "402" in str(exc) else AIO_ERROR
-        for domain, is_cited in rules.cited(refs or [], domains).items():
-            rows.append({"keyword": keyword, "domain": domain, "position": None, "cited": is_cited})
-    return rows, ""
 
 
 def _store(program: GrowthProgram, week, kind: str, rows: list[dict]) -> None:
@@ -118,19 +96,18 @@ def _store(program: GrowthProgram, week, kind: str, rows: list[dict]) -> None:
 
 
 def run_check(program: GrowthProgram) -> dict:
-    """Check this week's positions and AI Overview citations. Worker only."""
+    """Check this week's Google positions and brand mentions. Worker only."""
     fill_keywords(program)
-    domains = [r.domain for r in competitors(program) if r.domain]
+    players = [p for p in competitors(program) if p.domain]
+    domains = [p.domain for p in players]
     keywords = list(program.tracked_keywords.filter(active=True).values_list("keyword", flat=True))
     week = rules.week_of(timezone.localdate())
     seo = _seo_rows(keywords, domains) if domains else []
-    aio, problem = _aio_rows(keywords, domains) if domains else ([], "")
+    found = mentions.run(program, players, week)
     with transaction.atomic():
         if seo:
             _store(program, week, RankObservation.Kind.SEO, seo)
-        if aio and not problem:
-            _store(program, week, RankObservation.Kind.AIO, aio)
-        detail = {"keywords": len(keywords), "domains": domains, "seo_rows": len(seo), "aio_problem": problem}
+        detail = {"keywords": len(keywords), "domains": domains, "seo_rows": len(seo), "mentions": found}
         audit.record(program, None, DONE, AgentActionLog.Outcome.SUCCEEDED, detail)
     return detail
 

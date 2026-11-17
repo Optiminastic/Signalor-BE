@@ -1,6 +1,6 @@
-"""Weekly SEO / GEO / AIO tracking for the brand and its top competitors.
+"""Weekly SEO / GEO / Brand tracking for the brand and its top competitors.
 
-GET  programs/<slug>/rank-tracking/                          -> players, tracked keywords, GEO/SEO/AIO by week
+GET  programs/<slug>/rank-tracking/                          -> players, tracked keywords, SEO/GEO/Brand by week
 POST programs/<slug>/rank-tracking/check/                    -> check positions now (at most once a day)
 POST programs/<slug>/rank-tracking/keywords/                 {"keyword": "..."} -> track a keyword
 POST programs/<slug>/rank-tracking/keywords/<id>/remove/     -> stop tracking it (never re-added automatically)
