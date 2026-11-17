@@ -28,9 +28,10 @@ from ...models import AgentActionLog, GrowthProgram, KeywordSnapshot, RankObserv
 from ..execution import audit
 from ..execution.brand import display_name
 from ..keywords import gaps as gap_rules
+from ..keywords.accounts import search_console_queries
 from ..keywords.refresh import latest_run
 from ..positioning.inputs import bare_domain
-from . import rules
+from . import rules, suggest
 
 logger = logging.getLogger("apps")
 
@@ -66,15 +67,21 @@ def fill_keywords(program: GrowthProgram) -> int:
     gaps = program.keyword_snapshots.filter(kind=KeywordSnapshot.Kind.GAPS).first()
     _, report = latest_run(program)
     prompts = [p.get("prompt", "") for p in (report.lost_prompts if report else [])]
+    queries = [{"keyword": q.get("query", "")} for q in search_console_queries(program.organization)]
     picked = rules.pick_keywords(
-        brand_rows=brand.rows if brand else [],
+        brand_rows=(brand.rows if brand else []) + queries,
         gap_rows=gaps.rows if gaps else [],
         prompts=prompts,
         taken=known,
         room=room,
     )
-    TrackedKeyword.objects.bulk_create([TrackedKeyword(program=program, keyword=k) for k in picked])
-    return len(picked)
+    if len(picked) < room and report is not None:
+        # No keyword data yet: turn the brand's topics and AI prompts into short Google keywords.
+        topics = (report.context_gaps or {}).get("missing_topics") or []
+        ideas = suggest.suggest(program, topics, prompts, room - len(picked))
+        picked += [k for k in ideas if k not in known and k not in picked]
+    TrackedKeyword.objects.bulk_create([TrackedKeyword(program=program, keyword=k) for k in picked[:room]])
+    return min(len(picked), room)
 
 
 def _seo_rows(keywords: list[str], domains: list[str]) -> list[dict]:

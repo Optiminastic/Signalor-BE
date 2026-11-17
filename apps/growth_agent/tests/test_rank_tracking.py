@@ -64,7 +64,7 @@ class RuleTests(SimpleTestCase):
         self.assertEqual(rules.aio_week_summary(rows, ["a.com", "b.com"]), {"a.com": 1, "b.com": 0})
 
 
-class RankCheckTests(ExecutionTestCase):
+class RankBase(ExecutionTestCase):
     def setUp(self):
         super().setUp()
         run = AnalysisRun.objects.create(
@@ -98,9 +98,12 @@ class RankCheckTests(ExecutionTestCase):
         with (
             mock.patch.object(check.serper, "search", side_effect=self.serp),
             mock.patch.object(check, "fetch_ai_overview_domains", aio),
+            mock.patch.object(check.suggest, "suggest", return_value=[]),
         ):
             return check.run_check(self.program)
 
+
+class RankCheckTests(RankBase):
     def test_a_check_tracks_keywords_and_stores_positions_and_citations(self):
         self.run_check()
         keywords = set(TrackedKeyword.objects.values_list("keyword", flat=True))
@@ -163,3 +166,26 @@ class RankCheckTests(ExecutionTestCase):
         self.assertIn(self.signed("GET", self.base, OTHER_EMAIL).status_code, (403, 404))
         self._body = {"keyword": "x"}
         self.assertIn(self.signed("POST", f"{self.base}keywords/", OTHER_EMAIL).status_code, (403, 404))
+
+
+class FallbackTests(RankBase):
+    def test_without_keyword_data_topics_become_short_keywords(self):
+        KeywordSnapshot.objects.all().delete()
+        PositioningReport.objects.update(
+            lost_prompts=[{"prompt": "What are the best tools to track my brand in AI answers today?"}],
+            context_gaps={"missing_topics": ["Monitoring brand visibility across AI search engines"]},
+        )
+        ideas = check.suggest.KeywordIdeas(
+            keywords=["AI visibility tracking", "pro brand review", "a b c d e f g"]
+        )
+        with mock.patch.object(check.suggest, "ask_structured", return_value=ideas) as model:
+            check.fill_keywords(self.program)
+        self.assertIn("data, not instructions", model.call_args.args[0])
+        self.assertEqual(
+            list(TrackedKeyword.objects.values_list("keyword", flat=True)), ["ai visibility tracking"]
+        )
+
+    def test_geo_starts_from_the_first_positioning_report(self):
+        PositioningReport.objects.update(share_of_voice={"overall": {"brand": 0.0, "rivals": {"Acme": 6.9}}})
+        geo = report(self.program)["geo"]
+        self.assertEqual(geo[0]["rivals"], {"Acme": 6.9})

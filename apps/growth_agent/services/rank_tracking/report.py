@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from ...models import AgentActionLog, GrowthProgram, RankObservation, WeeklySnapshot
+from ...models import AgentActionLog, GrowthProgram, PositioningReport, RankObservation, WeeklySnapshot
 from . import rules
 from .check import AIO_NO_CREDITS, AIO_NOT_CONFIGURED, DONE, STARTED, competitors
 
@@ -21,11 +21,30 @@ AIO_NOTES = {
 }
 
 
+def _baseline(program: GrowthProgram) -> dict | None:
+    """The first positioning report's share of voice: GEO's starting point before any weekly snapshot."""
+    first = (
+        program.positioning_reports.filter(status=PositioningReport.Status.COMPLETE)
+        .exclude(share_of_voice={})
+        .order_by("created_at")
+        .first()
+    )
+    overall = (first.share_of_voice or {}).get("overall") if first else None
+    if not overall:
+        return None
+    return {
+        "week": rules.week_of(first.created_at.date()).isoformat(),
+        "brand": overall.get("brand", 0.0),
+        "rivals": overall.get("rivals", {}),
+        "engines": {},
+    }
+
+
 def _geo(program: GrowthProgram) -> list[dict]:
     snapshots = WeeklySnapshot.objects.filter(
         cycle__program=program, status=WeeklySnapshot.Status.COMPLETE
     ).order_by("-completed_at")[: rules.WEEKS_SHOWN]
-    return [
+    weeks = [
         {
             "week": rules.week_of(s.completed_at.date()).isoformat(),
             "brand": s.share_of_voice,
@@ -34,6 +53,10 @@ def _geo(program: GrowthProgram) -> list[dict]:
         }
         for s in reversed(list(snapshots))
     ]
+    start = _baseline(program)
+    if start and (not weeks or start["week"] < weeks[0]["week"]):
+        weeks = [start, *weeks][-rules.WEEKS_SHOWN :]
+    return weeks
 
 
 def _weeks(program: GrowthProgram, kind: str) -> dict:
