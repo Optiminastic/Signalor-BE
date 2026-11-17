@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 MAX_TOPICS = 3
 MAX_TOPIC_WORDS = 6
@@ -42,6 +42,26 @@ FARM_MARKERS = (
     "casino",
     "cbd",
 )
+# A company in the brand's own space (a product or an agency) is a competitor, not a publisher.
+VENDOR_MARKERS = (
+    "pricing",
+    "book a demo",
+    "request a demo",
+    "free trial",
+    "start for free",
+    "get started free",
+    "case studies",
+    "our clients",
+)
+VENDOR_THRESHOLD = 2
+# What a guidelines page's address looks like. A "Write for us" link in a blog's footer
+# is not an invitation on that page; the agent follows the link instead.
+_GUIDELINE_PATH = re.compile(
+    r"write-?for|guest-?(post|blog|author|contribut)|contribut|submission|submit-?(an-)?(article|post)"
+    r"|become-?a-?(writer|contributor|author)|editorial-?guidelines",
+    re.IGNORECASE,
+)
+_HREF = re.compile(r"""href\s*=\s*["']([^"'#]+)["']""", re.IGNORECASE)
 _PRICE = re.compile(r"(\$|usd|€|£)\s?\d{2,4}\s*(per|/)\s*(post|article|link)", re.IGNORECASE)
 _TAGS = re.compile(r"<(script|style)[^>]*>.*?</\1>|<[^>]+>", re.IGNORECASE | re.DOTALL)
 _WORD = re.compile(r"[a-z0-9]+")
@@ -55,10 +75,26 @@ class PageCheck:
     accepts_guest_posts: bool
     on_topic: bool
     sells_links: bool
+    vendor: bool = False
 
     @property
     def ok(self) -> bool:
-        return self.accepts_guest_posts and self.on_topic and not self.sells_links
+        return self.accepts_guest_posts and self.on_topic and not self.sells_links and not self.vendor
+
+
+def is_guidelines_url(url: str) -> bool:
+    """Whether the address itself looks like a write-for-us / contribute page."""
+    return bool(_GUIDELINE_PATH.search(urlparse(url).path))
+
+
+def guidelines_link(html: str, page_url: str) -> str:
+    """The page's own link to its guidelines (same site), or "" when it has none."""
+    site = domain_of(page_url)
+    for href in _HREF.findall(html or ""):
+        url = urljoin(page_url, href.strip())
+        if url.startswith("http") and domain_of(url) == site and is_guidelines_url(url):
+            return url
+    return ""
 
 
 def domain_of(url: str) -> str:
@@ -113,7 +149,8 @@ def check_page(html: str, topic_list: list[str]) -> PageCheck:
     on_topic = bool(_topic_words(topic_list) & words)
     sells = any(marker in text for marker in FARM_MARKERS) or bool(_PRICE.search(text))
     accepts = any(marker in text for marker in INVITATION_MARKERS)
-    return PageCheck(accepts_guest_posts=accepts, on_topic=on_topic, sells_links=sells)
+    vendor = sum(marker in text for marker in VENDOR_MARKERS) >= VENDOR_THRESHOLD
+    return PageCheck(accepts_guest_posts=accepts, on_topic=on_topic, sells_links=sells, vendor=vendor)
 
 
 def excluded(domain: str, *, blocked_domains: set[str], rivals: set[str]) -> bool:

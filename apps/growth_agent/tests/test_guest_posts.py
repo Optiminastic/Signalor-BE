@@ -53,7 +53,7 @@ def fake_fetch(pages):
 
 
 @override_settings(SATELLITE_SITES={"research": "https://brightsfindings.com"})
-class GuestFinderTests(ExecutionTestCase):
+class GuestFinderBase(ExecutionTestCase):
     def setUp(self):
         super().setUp()
         report = PositioningReport.objects.create(
@@ -71,6 +71,9 @@ class GuestFinderTests(ExecutionTestCase):
         ):
             return finder.run_find(self.program)
 
+
+@override_settings(SATELLITE_SITES={"research": "https://brightsfindings.com"})
+class GuestFinderTests(GuestFinderBase):
     def test_cited_sites_come_first_and_checked_sites_join_the_plan(self):
         query = rules.queries(["AI citations"])[0]
         results = {
@@ -118,3 +121,51 @@ class GuestFinderTests(ExecutionTestCase):
         self.assertEqual(first.status_code, 202)
         self.assertTrue(first.json()["searching"])
         self.assertEqual(second.status_code, 409)
+
+
+BLOG_POST = (
+    "<html><body><h1>Discovered Labs vs Outrank: AI SEO comparison</h1><p>AI citations matter.</p>"
+    '<a href="/pricing">Pricing</a> <a href="/demo">Book a demo</a> <a href="/write-for-us">Write for us</a>'
+    "</body></html>"
+)
+PUBLISHER_POST = (
+    '<html><body><h1>How AI citations work</h1><a href="/contribute">Write for us</a></body></html>'
+)
+
+
+class GuidelinesPageTests(SimpleTestCase):
+    def test_only_guidelines_addresses_count_as_guidelines(self):
+        self.assertTrue(rules.is_guidelines_url("https://geo-weekly.com/write-for-us"))
+        self.assertTrue(rules.is_guidelines_url("https://x.com/become-a-contributor/"))
+        self.assertFalse(rules.is_guidelines_url("https://x.com/blog/discovered-labs-vs-outrank"))
+
+    def test_a_blog_posts_footer_link_leads_to_the_real_guidelines(self):
+        self.assertEqual(
+            rules.guidelines_link(PUBLISHER_POST, "https://geo-weekly.com/blog/ai"),
+            "https://geo-weekly.com/contribute",
+        )
+        self.assertEqual(
+            rules.guidelines_link('<a href="https://other.com/write-for-us">x</a>', "https://a.com/p"), ""
+        )
+
+    def test_a_vendor_in_the_brands_space_is_not_a_publisher(self):
+        self.assertTrue(rules.check_page(BLOG_POST, ["AI citations"]).vendor)
+        self.assertFalse(rules.check_page(BLOG_POST, ["AI citations"]).ok)
+        self.assertFalse(rules.check_page(INVITE, ["AI citations"]).vendor)
+
+
+@override_settings(SATELLITE_SITES={})
+class FinderFollowsLinksTests(GuestFinderBase):
+    def test_search_result_blog_posts_are_followed_to_their_guidelines_or_dropped(self):
+        query = rules.queries(["AI citations"])[0]
+        results = {query: ["https://geo-weekly.com/blog/ai", "https://discoveredlabs.com/blog/vs-outrank"]}
+        pages = {
+            "https://geo-weekly.com/blog/ai": PUBLISHER_POST,
+            "https://geo-weekly.com/contribute": INVITE,
+            "https://discoveredlabs.com/blog/vs-outrank": BLOG_POST,
+            "https://discoveredlabs.com/write-for-us": BLOG_POST,
+        }
+        self.find(pages, results)
+        sites = {t.target: t.target_url for t in GrowthTask.objects.filter(tactic="guest_post")}
+        self.assertEqual(sites.get("geo-weekly.com"), "https://geo-weekly.com/contribute")
+        self.assertNotIn("discoveredlabs.com", sites)

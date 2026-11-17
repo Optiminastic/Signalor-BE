@@ -94,6 +94,10 @@ def _blocked_domains(program: GrowthProgram, cycle: GrowthCycle | None) -> set[s
     blocked |= set(OutreachContact.objects.filter(organization=org).values_list("domain", flat=True))
     if cycle is not None:
         blocked |= {rules.domain_of(t.target_url) for t in cycle.tasks.exclude(target_url="")}
+        run = getattr(cycle.positioning_report, "analysis_run", None)
+        if run is not None:
+            # Every competitor the site analysis found, not only those AI answers name.
+            blocked |= {rules.domain_of(c.url) for c in run.competitors.all()}
     return {d.removeprefix("www.") for d in blocked if d}
 
 
@@ -127,12 +131,27 @@ def find_sites(program: GrowthProgram, limit: int) -> list[Found]:
             break
         if rules.excluded(domain, blocked_domains=blocked, rivals=rivals):
             continue
-        checked += 1
-        html = fetch(session, url)
-        if html and rules.check_page(html, topic_list).ok:
-            found.append(Found(domain=domain, guidelines_url=url, source=source, topic=topic))
+        page, checked = _guidelines_page(session, url, checked)
+        if page and rules.check_page(page[1], topic_list).ok:
+            found.append(Found(domain=domain, guidelines_url=page[0], source=source, topic=topic))
             blocked.add(domain)
     return found
+
+
+def _guidelines_page(session, url: str, checked: int) -> tuple[tuple[str, str] | None, int]:
+    """((guidelines url, html), pages fetched so far). A page whose address isn't a guidelines
+    page (a blog post with a "Write for us" footer link) only counts through that link."""
+    html = fetch(session, url)
+    checked += 1
+    if not html:
+        return None, checked
+    if rules.is_guidelines_url(url):
+        return (url, html), checked
+    link = rules.guidelines_link(html, url)
+    if not link or checked >= MAX_PAGES_CHECKED:
+        return None, checked
+    linked = fetch(session, link)
+    return ((link, linked) if linked else None), checked + 1
 
 
 def _task(cycle: GrowthCycle, site: Found, day: date) -> GrowthTask:
