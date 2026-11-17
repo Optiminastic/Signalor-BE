@@ -48,6 +48,7 @@ from .views_indexing import (
     IndexingView,
     SatelliteRankView,
 )
+from .views_keyword_tools import KeywordToolConnectView, KeywordToolDisconnectView, KeywordToolListView
 from .views_keywords import KeywordsRefreshView, KeywordsView
 from .views_social import BufferDisconnectView, BufferSignInView, SocialCheckView, SocialView
 
@@ -140,6 +141,17 @@ urlpatterns = [
     path("programs/<str:org_slug>/guest-posts/find/", GuestPostsFindView.as_view(), name="guest-posts-find"),
     path("programs/<str:org_slug>/keywords/", KeywordsView.as_view(), name="keywords"),
     path("programs/<str:org_slug>/keywords/refresh/", KeywordsRefreshView.as_view(), name="keywords-refresh"),
+    path("programs/<str:org_slug>/keyword-tools/", KeywordToolListView.as_view(), name="keyword-tools"),
+    path(
+        "programs/<str:org_slug>/keyword-tools/<str:provider>/connect/",
+        KeywordToolConnectView.as_view(),
+        name="keyword-tool-connect",
+    ),
+    path(
+        "programs/<str:org_slug>/keyword-tools/<str:provider>/disconnect/",
+        KeywordToolDisconnectView.as_view(),
+        name="keyword-tool-disconnect",
+    ),
     path("programs/<str:org_slug>/social/", SocialView.as_view(), name="social"),
     path("programs/<str:org_slug>/social/check/", SocialCheckView.as_view(), name="social-check"),
     path(

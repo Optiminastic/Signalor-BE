@@ -54,3 +54,16 @@ No customer connection is needed: the data comes from signalor.ai's own DataForS
 
 - Google Ads accounts or bidding.
 - Rank tracking for hand-picked keywords (a later step if wanted).
+
+## Keyword tools in the + panel (17 Nov 2026)
+
+The + panel next to the chat has a "Keyword data" group:
+
+| Tool | How it connects | What it does |
+|---|---|---|
+| Signalor keyword data | Built in (DataForSEO) | Default source for weekly keyword reads |
+| Google Search Console | Integrations page (existing OAuth) | Top 25 real Google queries shown in the Keywords tab, from the stored sync |
+| Semrush | The brand's own API key (checked free with the unit-balance call) | Weekly reads use it instead of the built-in data |
+| Ahrefs | The brand's own API key (checked free with limits-and-usage) | Same, when Semrush isn't connected |
+
+Keys are stored encrypted on `Integration` (providers `semrush`, `ahrefs`, choices-only migration `integrations 0016`); only the last 4 characters are shown.

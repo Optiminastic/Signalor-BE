@@ -1,8 +1,9 @@
 """
 Weekly keyword read for a brand, from signalor.ai's DataForSEO account.
 
-Brand keywords reuse the analyzer's 7-day Domain Analytics snapshot when it is
-fresh (no extra cost); otherwise one Ranked Keywords call. Competitor gaps cost
+When the brand connected its own Semrush or Ahrefs key (+ panel), every read
+uses that account. Otherwise brand keywords reuse the analyzer's 7-day Domain
+Analytics snapshot when it is fresh (no extra cost), else one Ranked Keywords call. Competitor gaps cost
 one call per competitor (top 3). Runs on the worker, at most once a day on
 request and once a week on schedule.
 """
@@ -10,6 +11,7 @@ request and once a week on schedule.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import timedelta
 
 from django.db import transaction
@@ -25,6 +27,7 @@ from ...models import AgentActionLog, GrowthProgram, KeywordSnapshot, Positionin
 from ..execution import audit
 from ..execution.brand import display_name
 from ..positioning.inputs import bare_domain
+from . import accounts, providers
 from . import gaps as rules
 
 logger = logging.getLogger("apps")
@@ -48,12 +51,29 @@ def latest_run(program: GrowthProgram):
     return (report.analysis_run, report) if report else (None, None)
 
 
-def _brand_keywords(run, domain: str) -> tuple[list[dict], str]:
-    """(rows, source). The analyzer's cached snapshot when fresh, else one DataForSEO call."""
+Fetch = Callable[[str], list[dict]]
+
+
+def _dataforseo(domain: str) -> list[dict]:
+    return fetch_ranked_keywords(domain, limit=KEYWORD_LIMIT)
+
+
+def _reader(organization) -> tuple[Fetch, str]:
+    """The brand's own Semrush or Ahrefs account when connected, else Signalor's DataForSEO."""
+    own = accounts.own_source(organization)
+    if own is None:
+        return _dataforseo, "dataforseo"
+    provider, key = own
+    return (lambda domain: providers.FETCHERS[provider](domain, key)), provider
+
+
+def _brand_keywords(run, domain: str, fetch: Fetch, source: str) -> tuple[list[dict], str]:
+    """(rows, source). With the built-in data, the analyzer's fresh 7-day snapshot saves a call."""
     snapshot = getattr(run, "domain_analytics", None) if run else None
-    if snapshot and snapshot.top_keywords and timezone.now() - snapshot.synced_at < SNAPSHOT_FRESH:
+    fresh = snapshot and snapshot.top_keywords and timezone.now() - snapshot.synced_at < SNAPSHOT_FRESH
+    if source == "dataforseo" and fresh:
         return list(snapshot.top_keywords), "analyzer_snapshot"
-    return fetch_ranked_keywords(domain, limit=KEYWORD_LIMIT), "dataforseo"
+    return fetch(domain), source
 
 
 def _is_billing(exc: DataForSEOError) -> bool:
@@ -61,16 +81,18 @@ def _is_billing(exc: DataForSEOError) -> bool:
     return "402" in str(exc)
 
 
-def _rival_keywords(rivals: list[rules.Rival]) -> dict[rules.Rival, list[dict]]:
+def _rival_keywords(rivals: list[rules.Rival], fetch: Fetch) -> dict[rules.Rival, list[dict]]:
     """One call per competitor. A competitor that fails is left out, not the whole read."""
     out = {}
     for rival in rivals:
         try:
-            out[rival] = fetch_ranked_keywords(rival.domain, limit=KEYWORD_LIMIT)
+            out[rival] = fetch(rival.domain)
         except DataForSEOError as exc:
             if _is_billing(exc):
                 raise  # every other call would fail too; don't store an empty "no gaps" read
             logger.warning("keywords: competitor %s skipped: %s", rival.domain, exc)
+        except providers.ProviderError:
+            logger.warning("keywords: competitor %s skipped (own keyword account)", rival.domain)
     return out
 
 
@@ -94,11 +116,16 @@ def run_refresh(program: GrowthProgram) -> bool:
     brand = rules.Rival(display_name(org), domain)
     candidates = [rules.Rival(c.name, bare_domain(c.url)) for c in run.competitors.all().order_by("id")]
     rivals = rules.top_rivals(candidates, report.lost_prompts, own_domain=domain)
+    fetch, source = _reader(org)
     try:
-        brand_rows, source = _brand_keywords(run, domain)
-        rival_rows = _rival_keywords(rivals)
+        brand_rows, source = _brand_keywords(run, domain, fetch, source)
+        rival_rows = _rival_keywords(rivals, fetch)
     except DataForSEONotConfigured:
         _fail(program, "not_configured")
+        return False
+    except providers.ProviderError:
+        # The brand's own Semrush or Ahrefs key was refused or out of units.
+        _fail(program, "own_account_error")
         return False
     except DataForSEOError as exc:
         if _is_billing(exc):

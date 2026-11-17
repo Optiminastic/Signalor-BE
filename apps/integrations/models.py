@@ -45,6 +45,10 @@ class Integration(models.Model):
         APOLLO = "apollo", "Apollo"
         # Social scheduling for the Growth Agent (OAuth tokens, like Hunter and Apollo).
         BUFFER = "buffer", "Buffer"
+        # Keyword data for the Growth Agent: the brand's own API key (encrypted),
+        # used instead of Signalor's built-in DataForSEO when connected.
+        SEMRUSH = "semrush", "Semrush"
+        AHREFS = "ahrefs", "Ahrefs"
 
     organization = models.ForeignKey(
         "organizations.Organization",
