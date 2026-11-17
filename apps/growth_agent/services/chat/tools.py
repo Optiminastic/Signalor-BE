@@ -12,7 +12,7 @@ import logging
 from collections.abc import Callable
 
 from ...models import CHANNELS, GrowthProgram
-from . import read_tools, status_tools, write_tools
+from . import insight_tools, read_tools, status_tools, write_tools
 
 logger = logging.getLogger("apps")
 Handler = Callable[[GrowthProgram, dict], dict]
@@ -51,6 +51,35 @@ _TOOLS: dict[str, tuple[str, dict, Handler]] = {
         "Sites that invite guest articles, found by the agent: why each was picked and its stage.",
         _NO_ARGS,
         status_tools.get_guest_posts,
+    ),
+    "get_competitor_tracking": (
+        "The brand vs its top competitors, this week vs last: share of AI answers mentioning each (GEO), "
+        "keywords in Google's top 10 and each tracked keyword's position (SEO), and Google AI Overview "
+        "citations (AIO). Use for 'how are my competitors doing', 'who ranks for X', 'are we improving'.",
+        _NO_ARGS,
+        insight_tools.get_competitor_tracking,
+    ),
+    "get_keywords": (
+        "Keyword data: keywords the brand ranks for, keywords competitors win where the brand doesn't "
+        "(with monthly searches), and the brand's top Search Console queries.",
+        _NO_ARGS,
+        insight_tools.get_keywords,
+    ),
+    "get_site_health": (
+        "The daily site check (up or down, noindex, robots.txt blocking Google or AI bots, sitemap, homepage "
+        "title) and anything that changed on the site in the last 30 days, including Google clicks drops.",
+        _NO_ARGS,
+        insight_tools.get_site_health,
+    ),
+    "check_ranks_now": (
+        "Start a check of Google positions and AI Overview citations for the tracked keywords (once a day).",
+        _NO_ARGS,
+        insight_tools.check_ranks_now,
+    ),
+    "refresh_keywords_now": (
+        "Start a fresh read of the brand's keywords and competitor keyword gaps (once a day).",
+        _NO_ARGS,
+        insight_tools.refresh_keywords_now,
     ),
     "get_connections": (
         "Which outside tools are connected (Gmail, Hunter, Apollo, Buffer, Search Console, Bing, "
