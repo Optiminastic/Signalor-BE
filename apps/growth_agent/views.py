@@ -41,7 +41,7 @@ from .serializers import (
     UpdateTaskSerializer,
     WeeklySnapshotSerializer,
 )
-from .services import autopilot, onboarding, programs
+from .services import activity, autopilot, onboarding, programs
 from .services.chat import conversation
 from .services.execution import on_demand
 from .services.onboarding import Outcome
@@ -244,18 +244,25 @@ class TrackingView(GrowthBaseView):
         return Response(_tracking_payload(cycle), status=code)
 
 
-ACTIVITY_PAGE_SIZE = 50
-
-
 class ActivityView(GrowthBaseView):
-    """GET the agent's latest actions (read-only view of the append-only audit log)."""
+    """GET the agent's actions, newest first (read-only view of the append-only audit log).
 
-    def get(self, request, org_slug: str):
+    activity/                         -> latest page, every category
+    activity/<category>/              -> one category (articles, guest, keywords, social, site, outreach, other)
+    activity/<category>/<before id>/  -> the next page (older than that id); category may be "all"
+    Filters live in the path because the app's signed proxy forwards paths, not query strings.
+    """
+
+    def get(self, request, org_slug: str, category: str = activity.ALL, before: int | None = None):
         program = programs.get_program(request.user.email, org_slug)
         if program is None:
             return Response({"detail": "Program not found."}, status=status.HTTP_404_NOT_FOUND)
-        logs = program.action_logs.select_related("task").order_by("-created_at")[:ACTIVITY_PAGE_SIZE]
-        return Response({"activity": AgentActionLogSerializer(logs, many=True).data})
+        if category != activity.ALL and category not in activity.CATEGORIES:
+            return Response({"detail": "Unknown category."}, status=status.HTTP_404_NOT_FOUND)
+        rows, next_before = activity.page(program.action_logs.select_related("task"), category, before)
+        return Response(
+            {"activity": AgentActionLogSerializer(rows, many=True).data, "next_before": next_before}
+        )
 
 
 def _thread_payload(conv) -> list:

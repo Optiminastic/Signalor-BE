@@ -114,6 +114,14 @@ urlpatterns = [
         name="action-detail",
     ),
     path("programs/<str:org_slug>/activity/", ActivityView.as_view(), name="activity"),
+    path(
+        "programs/<str:org_slug>/activity/<str:category>/", ActivityView.as_view(), name="activity-category"
+    ),
+    path(
+        "programs/<str:org_slug>/activity/<str:category>/<int:before>/",
+        ActivityView.as_view(),
+        name="activity-page",
+    ),
     path("programs/<str:org_slug>/tracking/", TrackingView.as_view(), name="tracking"),
     path("programs/<str:org_slug>/plan/", PlanView.as_view(), name="plan"),
     path(

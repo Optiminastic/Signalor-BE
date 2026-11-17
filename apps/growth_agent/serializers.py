@@ -13,6 +13,7 @@ from .models import (
     WeeklySnapshot,
 )
 from .serializers_control import TaskActionSummarySerializer
+from .services.activity import category_of
 from .services.control import actions
 from .services.execution.publishers.resolver import connected_platform
 from .services.outreach.channel import gmail_integration
@@ -178,11 +179,15 @@ class WeeklySnapshotSerializer(serializers.ModelSerializer):
 
 class AgentActionLogSerializer(serializers.ModelSerializer):
     task_title = serializers.CharField(source="task.title", default="", read_only=True)
+    category = serializers.SerializerMethodField()
 
     class Meta:
         model = AgentActionLog
-        fields = ["id", "channel", "action", "outcome", "task_title", "detail", "created_at"]
+        fields = ["id", "channel", "action", "outcome", "task_title", "detail", "category", "created_at"]
         read_only_fields = fields
+
+    def get_category(self, row: AgentActionLog) -> str:
+        return category_of(row.channel, row.action)
 
 
 class AgentMessageSerializer(serializers.ModelSerializer):

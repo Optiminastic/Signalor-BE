@@ -101,6 +101,22 @@ def _previous_gaps(program: GrowthProgram) -> set[str]:
     return {row.get("keyword", "") for row in last.rows} if last else set()
 
 
+GOLDEN = "golden_keywords_found"
+RANK_CHANGES = "keyword_rank_changes"
+
+
+def _log_findings(program: GrowthProgram, gap_rows: list[dict], last_brand, brand_rows: list[dict]) -> None:
+    """Activity lines worth the owner's attention: golden keywords, and ranking moves since last week."""
+    found = rules.golden(gap_rows, first_read=last_brand is None)
+    if found:
+        audit.record(program, None, GOLDEN, AgentActionLog.Outcome.SUCCEEDED, {"keywords": found})
+    if last_brand is None:
+        return
+    changes = rules.rank_changes(last_brand.rows, brand_rows)
+    if any(changes.values()):
+        audit.record(program, None, RANK_CHANGES, AgentActionLog.Outcome.SUCCEEDED, changes)
+
+
 def _fail(program: GrowthProgram, reason: str) -> None:
     audit.record(program, None, DONE, AgentActionLog.Outcome.FAILED, {"reason": reason})
 
@@ -137,7 +153,9 @@ def run_refresh(program: GrowthProgram) -> bool:
         return False
     gap_rows = rules.gaps(brand_rows, rival_rows, brand=brand, previous=_previous_gaps(program))
     used = [{"name": r.name, "domain": r.domain} for r in rival_rows]
+    last_brand = program.keyword_snapshots.filter(kind=KeywordSnapshot.Kind.BRAND).first()
     with transaction.atomic():
+        _log_findings(program, gap_rows, last_brand, rules.brand_rows(brand_rows))
         KeywordSnapshot.objects.create(
             program=program,
             kind=KeywordSnapshot.Kind.BRAND,

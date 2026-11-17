@@ -108,3 +108,57 @@ def brand_rows(rows: list[dict]) -> list[dict]:
         if r.get("keyword")
     ]
     return out
+
+
+GOLDEN_MIN_VOLUME = 500
+GOLDEN_LIMIT = 3
+TOP_TEN = 10
+BIG_MOVE = 3
+MOVES_LIMIT = 5
+
+
+def golden(gap_rows: list[dict], *, first_read: bool) -> list[dict]:
+    """The best opportunities worth telling the owner about: high-demand gaps, new this week.
+
+    On the first read every gap is new, so the top ones by volume are taken.
+    """
+    fresh = [g for g in gap_rows if first_read or g.get("new")]
+    worthy = [g for g in fresh if int(g.get("search_volume") or 0) >= GOLDEN_MIN_VOLUME]
+    return [
+        {
+            "keyword": g["keyword"],
+            "search_volume": g["search_volume"],
+            "rival": (g.get("rivals") or [{}])[0].get("domain", ""),
+            "position": (g.get("rivals") or [{}])[0].get("position", 0),
+        }
+        for g in worthy[:GOLDEN_LIMIT]
+    ]
+
+
+def _positions(rows: list[dict]) -> dict[str, int]:
+    return {r["keyword"]: int(r.get("position") or 0) for r in rows if r.get("keyword")}
+
+
+def rank_changes(previous: list[dict], current: list[dict]) -> dict[str, list[dict]]:
+    """How the brand's keywords moved since last week (brand rows from two snapshots).
+
+    up / down: moved by BIG_MOVE places or more. entered / left: crossed into or out of the top 10.
+    Biggest search demand first, a few of each.
+    """
+    before, now = _positions(previous), _positions(current)
+    volume = {r["keyword"]: int(r.get("search_volume") or 0) for r in current + previous}
+    changes: dict[str, list[dict]] = {"up": [], "down": [], "entered": [], "left": []}
+    for keyword in set(before) | set(now):
+        old, new = before.get(keyword, 0), now.get(keyword, 0)
+        row = {"keyword": keyword, "from": old, "to": new, "search_volume": volume.get(keyword, 0)}
+        if new and new <= TOP_TEN and not (old and old <= TOP_TEN):
+            changes["entered"].append(row)
+        elif old and old <= TOP_TEN and not (new and new <= TOP_TEN):
+            changes["left"].append(row)
+        elif old and new and old - new >= BIG_MOVE:
+            changes["up"].append(row)
+        elif old and new and new - old >= BIG_MOVE:
+            changes["down"].append(row)
+    for name in changes:
+        changes[name] = sorted(changes[name], key=lambda r: -r["search_volume"])[:MOVES_LIMIT]
+    return changes

@@ -322,3 +322,31 @@ def dispatch_keyword_refresh(program_id: int) -> None:
         threading.Thread(target=_refresh_keywords, args=(program_id,), daemon=True).start()
     else:
         refresh_keywords_task.delay(program_id)
+
+
+def _check_site(program_id: int) -> None:
+    from django.db import close_old_connections
+
+    from .models import GrowthProgram
+    from .services.site_watch import watch
+
+    close_old_connections()
+    try:
+        program = GrowthProgram.objects.select_related("organization").filter(pk=program_id).first()
+        if program is not None:
+            watch.run_check(program)
+    finally:
+        close_old_connections()
+
+
+@analysis_app.task(name="growth_agent.check_site")
+def check_site_task(program_id: int) -> None:
+    _check_site(program_id)
+
+
+def dispatch_site_check(program_id: int) -> None:
+    """Check the brand's site for problems (homepage, robots.txt, sitemap), off the request path."""
+    if analysis_app.conf.task_always_eager:
+        threading.Thread(target=_check_site, args=(program_id,), daemon=True).start()
+    else:
+        check_site_task.delay(program_id)
