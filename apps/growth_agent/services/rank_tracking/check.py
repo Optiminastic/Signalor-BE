@@ -20,6 +20,7 @@ from django.utils import timezone
 from core.llm import serper
 
 from ...models import AgentActionLog, GrowthProgram, KeywordSnapshot, RankObservation, TrackedKeyword
+from .. import run_guard
 from ..brand_mentions import check as mentions
 from ..execution import audit
 from ..execution.brand import display_name
@@ -116,8 +117,7 @@ def start(program: GrowthProgram, *, guard: timedelta, actor_email: str = "") ->
     """Queue a check, at most once per ``guard`` (each one costs search calls)."""
     from ...analysis_tasks import dispatch_rank_check
 
-    last = AgentActionLog.objects.filter(program=program, action=STARTED).order_by("-created_at").first()
-    if last is not None and timezone.now() - last.created_at < guard:
+    if not run_guard.may_start(program, STARTED, DONE, guard):
         return False
     audit.record(program, None, STARTED, AgentActionLog.Outcome.SUCCEEDED, {}, actor_email=actor_email)
     transaction.on_commit(lambda: dispatch_rank_check(program.id))

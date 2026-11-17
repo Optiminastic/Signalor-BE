@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from ...models import AgentActionLog, GrowthProgram, PositioningReport, RankObservation, WeeklySnapshot
+from .. import run_guard
 from ..brand_mentions import report as mentions_report
 from . import rules
 from .check import DONE, STARTED, competitors
@@ -98,8 +99,7 @@ def _seo(program: GrowthProgram, domains: list[str]) -> dict:
 
 def _state(program: GrowthProgram) -> dict:
     done = AgentActionLog.objects.filter(program=program, action=DONE).order_by("-created_at").first()
-    started = AgentActionLog.objects.filter(program=program, action=STARTED).order_by("-created_at").first()
-    checking = started is not None and (done is None or started.created_at > done.created_at)
+    checking = run_guard.is_running(program, STARTED, DONE)
     return {"checking": checking, "last_check_at": done.created_at.isoformat() if done else None}
 
 

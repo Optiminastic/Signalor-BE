@@ -5,6 +5,7 @@ from __future__ import annotations
 from django.conf import settings
 
 from ...models import AgentActionLog, GrowthProgram, KeywordSnapshot
+from .. import run_guard
 from .accounts import own_source, search_console_queries
 from .refresh import DONE, STARTED
 
@@ -22,8 +23,7 @@ def _latest(program: GrowthProgram, kind: str) -> KeywordSnapshot | None:
 
 def _state(program: GrowthProgram) -> dict:
     done = AgentActionLog.objects.filter(program=program, action=DONE).order_by("-created_at").first()
-    started = AgentActionLog.objects.filter(program=program, action=STARTED).order_by("-created_at").first()
-    refreshing = started is not None and (done is None or started.created_at > done.created_at)
+    refreshing = run_guard.is_running(program, STARTED, DONE)
     failed = done is not None and done.outcome == AgentActionLog.Outcome.FAILED
     reason = (done.detail or {}).get("reason", "") if failed else ""
     return {"refreshing": refreshing, "note": NOTES.get(reason, "")}

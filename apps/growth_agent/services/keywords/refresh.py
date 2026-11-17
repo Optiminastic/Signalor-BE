@@ -24,6 +24,7 @@ from apps.integrations.services.dataforseo import (
 )
 
 from ...models import AgentActionLog, GrowthProgram, KeywordSnapshot, PositioningReport
+from .. import run_guard
 from ..execution import audit
 from ..execution.brand import display_name
 from ..positioning.inputs import bare_domain
@@ -178,8 +179,7 @@ def start(program: GrowthProgram, *, guard: timedelta, actor_email: str = "") ->
     """Queue a refresh, at most once per ``guard`` (each refresh is paid)."""
     from ...analysis_tasks import dispatch_keyword_refresh
 
-    last = AgentActionLog.objects.filter(program=program, action=STARTED).order_by("-created_at").first()
-    if last is not None and timezone.now() - last.created_at < guard:
+    if not run_guard.may_start(program, STARTED, DONE, guard):
         return False
     audit.record(program, None, STARTED, AgentActionLog.Outcome.SUCCEEDED, {}, actor_email=actor_email)
     transaction.on_commit(lambda: dispatch_keyword_refresh(program.id))
