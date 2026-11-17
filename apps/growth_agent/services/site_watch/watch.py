@@ -56,20 +56,20 @@ def _get(session: requests.Session, url: str) -> Page | None:
 
 def _homepage(session: requests.Session, url: str) -> dict:
     reply = _get(session, url)
-    if reply is None or reply.status_code >= 400:
-        return {"url": url, "down": True, "status": reply.status_code if reply is not None else 0}
+    if reply is None or reply.status >= 400:
+        return {"url": url, "down": True, "status": reply.status if reply is not None else 0}
     page = checks.read_homepage(reply.text, reply.robots_header)
-    return {"url": url, "down": False, "status": reply.status_code, **page}
+    return {"url": url, "down": False, "status": reply.status, **page}
 
 
 def _robots_and_sitemap(session: requests.Session, url: str) -> dict:
     reply = _get(session, urljoin(url, "/robots.txt"))
-    robots = reply.text if reply is not None and reply.status_code == 200 else ""
+    robots = reply.text if reply is not None and reply.status == 200 else ""
     sitemaps = checks.sitemap_urls(robots) or [urljoin(url, "/sitemap.xml")]
     found = _get(session, sitemaps[0])
     return {
         "blocked": checks.blocked_bots(robots),
-        "sitemap_missing": found is None or found.status_code >= 400,
+        "sitemap_missing": found is None or found.status >= 400,
     }
 
 

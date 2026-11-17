@@ -62,6 +62,47 @@ class CheckRuleTests(SimpleTestCase):
         self.assertIsNone(checks.clicks_drop(steady))
 
 
+class FakeReply:
+    def __init__(self, status, body="", headers=None):
+        self.status_code = status
+        self.headers = headers or {}
+        self.encoding = "utf-8"
+        self.raw = mock.Mock()
+        self.raw.read.return_value = body.encode()
+
+
+class ReadStateTests(SimpleTestCase):
+    """The real fetch path, with a fake HTTP session (no network)."""
+
+    def read(self, pages):
+        session = mock.Mock()
+        session.get.side_effect = lambda url, **kw: pages.get(url, FakeReply(404))
+        with mock.patch.object(watch, "guarded_session", return_value=session):
+            return watch.read_state("https://pro.example")
+
+    def test_a_healthy_site(self):
+        state = self.read(
+            {
+                "https://pro.example": FakeReply(200, PAGE),
+                "https://pro.example/robots.txt": FakeReply(200, "User-agent: GPTBot\nDisallow: /\n"),
+                "https://pro.example/sitemap.xml": FakeReply(200, "<urlset/>"),
+            }
+        )
+        self.assertEqual(
+            (state["down"], state["title"], state["blocked"], state["sitemap_missing"]),
+            (False, "Pro Brand - GEO", ["GPTBot"], False),
+        )
+
+    def test_an_error_page_is_down(self):
+        state = self.read({"https://pro.example": FakeReply(503)})
+        self.assertEqual((state["down"], state["status"]), (True, 503))
+
+    def test_noindex_header_and_missing_sitemap(self):
+        state = self.read({"https://pro.example": FakeReply(200, PAGE, {"X-Robots-Tag": "noindex"})})
+        self.assertTrue(state["noindex"])
+        self.assertTrue(state["sitemap_missing"])
+
+
 class SiteWatchRunTests(ExecutionTestCase):
     def run_with(self, state):
         with mock.patch.object(watch, "read_state", return_value=state):
