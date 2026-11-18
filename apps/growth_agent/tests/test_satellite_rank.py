@@ -17,6 +17,7 @@ from apps.organizations.models import Organization
 from ..models import AgentActionLog, GrowthTask
 from ..services.execution import audit
 from ..services.indexing import satellite_rank, weekly
+from .db_helpers import append_only_bypass
 from .test_api import OTHER_EMAIL, PRO_EMAIL
 from .test_execution_flow import ExecutionTestCase
 
@@ -65,7 +66,8 @@ class SatelliteRankTests(ExecutionTestCase):
         entry = audit.record(
             self.program, self.article, "publish", AgentActionLog.Outcome.SUCCEEDED, {"url": URL}
         )
-        AgentActionLog.objects.filter(pk=entry.pk).update(created_at=timezone.now() - timedelta(days=9))
+        with append_only_bypass():
+            AgentActionLog.objects.filter(pk=entry.pk).update(created_at=timezone.now() - timedelta(days=9))
 
     def run_checks(self, on_google=False):
         inspection = {"on_google": on_google, "coverage_state": "Discovered - currently not indexed"}
@@ -118,7 +120,10 @@ class RefreshQueueTests(SatelliteRankTests):
         audit.record(
             self.program, self.article, satellite_rank.CHECKED, AgentActionLog.Outcome.SUCCEEDED, detail
         )
-        AgentActionLog.objects.filter(action="publish").update(created_at=timezone.now() - timedelta(days=15))
+        with append_only_bypass():
+            AgentActionLog.objects.filter(action="publish").update(
+                created_at=timezone.now() - timedelta(days=15)
+            )
 
     def test_an_article_below_page_one_after_two_weeks_gets_one_refresh_task(self):
         self.flag_below_page_one()
@@ -134,5 +139,8 @@ class RefreshQueueTests(SatelliteRankTests):
         audit.record(
             self.program, self.article, satellite_rank.CHECKED, AgentActionLog.Outcome.SUCCEEDED, detail
         )
-        AgentActionLog.objects.filter(action="publish").update(created_at=timezone.now() - timedelta(days=15))
+        with append_only_bypass():
+            AgentActionLog.objects.filter(action="publish").update(
+                created_at=timezone.now() - timedelta(days=15)
+            )
         self.assertEqual(satellite_rank.queue_refreshes(self.program), 0)

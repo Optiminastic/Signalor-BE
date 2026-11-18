@@ -16,6 +16,7 @@ from apps.analyzer.models import AnalysisRun, BrandVisibility
 from ..models import AgentActionLog
 from ..services.chat import read_tools
 from ..services.social import check, reddit, score, youtube
+from .db_helpers import append_only_bypass
 from .test_api import OTHER_EMAIL, PRO_EMAIL
 from .test_execution_flow import ExecutionTestCase
 
@@ -151,7 +152,8 @@ class SocialCheckTests(ExecutionTestCase):
     def test_the_report_shows_the_change_since_last_week(self):
         check.run_check(self.program)
         first = AgentActionLog.objects.get(action=check.CHECKED)
-        AgentActionLog.objects.filter(pk=first.pk).update(created_at=timezone.now() - timedelta(days=7))
+        with append_only_bypass():
+            AgentActionLog.objects.filter(pk=first.pk).update(created_at=timezone.now() - timedelta(days=7))
         with (
             override_settings(YOUTUBE_API_KEY="yt"),
             mock.patch.object(

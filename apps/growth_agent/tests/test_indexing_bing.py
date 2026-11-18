@@ -17,6 +17,7 @@ from apps.analyzer.services.indexnow import SubmissionResult
 from ..models import AgentActionLog, GrowthProgram
 from ..services.indexing import bing, report, sitemap, weekly
 from ..services.indexing.sitemap import SitemapEntry
+from .db_helpers import append_only_bypass
 from .test_api import OTHER_EMAIL, PRO_EMAIL, GrowthApiTestCase
 
 DISPATCH = "apps.growth_agent.analysis_tasks.dispatch_bing_send"
@@ -126,9 +127,10 @@ class WeeklyBingTests(BingTestCase):
             weekly.weekly_round(self.program)
             weekly.weekly_round(self.program)
         dispatch.assert_called_once_with(self.program.id)
-        AgentActionLog.objects.filter(action=bing.STARTED).update(
-            created_at=timezone.now() - timedelta(days=8)
-        )
+        with append_only_bypass():
+            AgentActionLog.objects.filter(action=bing.STARTED).update(
+                created_at=timezone.now() - timedelta(days=8)
+            )
         with mock.patch(DISPATCH) as dispatch, self.captureOnCommitCallbacks(execute=True):
             weekly.weekly_round(self.program)
         dispatch.assert_called_once()

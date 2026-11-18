@@ -32,6 +32,7 @@ from ..models import (
 from ..services.control import actions, approvals, dispatch
 from ..services.execution import executor, guardrails
 from ..services.execution.channel_base import ChannelOutcome
+from .db_helpers import append_only_bypass
 from .test_api import OTHER_EMAIL, PRO_EMAIL
 from .test_execution_flow import REGISTRY, ExecutionTestCase, FakeChannel
 
@@ -349,7 +350,8 @@ class SendGateTests(ApprovalFlowTestCase):
     def test_content_changed_after_approval_is_detected_and_not_sent(self):
         self.approve()
         tampered = {**self.version.payload, "slug": "something-else"}
-        ActionVersion._base_manager.filter(pk=self.version.pk).update(payload=tampered)
+        with append_only_bypass():
+            ActionVersion._base_manager.filter(pk=self.version.pk).update(payload=tampered)
         self.send()
         self.assertEqual(self.channel.executed, [])
         self.assertEqual(self.action.state, GrowthAction.State.FAILED)
@@ -357,7 +359,8 @@ class SendGateTests(ApprovalFlowTestCase):
 
     def test_destination_changed_after_approval_is_detected_and_not_sent(self):
         self.approve()
-        ActionVersion._base_manager.filter(pk=self.version.pk).update(destination={"platform": "github"})
+        with append_only_bypass():
+            ActionVersion._base_manager.filter(pk=self.version.pk).update(destination={"platform": "github"})
         self.send()
         self.assertEqual(self.channel.executed, [])
         self.assertEqual(self.action.state, GrowthAction.State.FAILED)

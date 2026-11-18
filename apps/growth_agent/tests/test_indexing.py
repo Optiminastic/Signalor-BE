@@ -16,6 +16,7 @@ from apps.integrations.models import GSCIndexStatusSnapshot, Integration
 
 from ..models import AgentActionLog, GrowthProgram
 from ..services.indexing import reasons, report, requests, weekly
+from .db_helpers import append_only_bypass
 from .test_api import OTHER_EMAIL, PRO_EMAIL, GrowthApiTestCase
 
 DISPATCH = "apps.growth_agent.analysis_tasks.dispatch_indexing_check"
@@ -212,9 +213,10 @@ class RequestIndexingTests(IndexingTestCase):
         body = self.signed("POST", self.url("requested/"), PRO_EMAIL).json()
         self.assertNotIn("https://brand-pro.com/found", [i["url"] for i in body["to_request"]])
         self.assertEqual([i["url"] for i in body["requested"]], ["https://brand-pro.com/found"])
-        AgentActionLog.objects.filter(action=requests.REQUESTED).update(
-            created_at=timezone.now() - timedelta(days=8)
-        )
+        with append_only_bypass():
+            AgentActionLog.objects.filter(action=requests.REQUESTED).update(
+                created_at=timezone.now() - timedelta(days=8)
+            )
         self.assertIn(
             "https://brand-pro.com/found", [i["url"] for i in report.build(self.pro_org)["to_request"]]
         )
