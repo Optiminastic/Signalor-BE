@@ -48,7 +48,9 @@ def _published(program: GrowthProgram, **filters) -> int:
     ).count()
 
 
-def check(task: GrowthTask) -> Decision:
+def check(task: GrowthTask, *, in_flight: int = 0) -> Decision:
+    """``in_flight``: sends of this brand already past the final check with no result yet.
+    They count against the caps, so two sends can't both take the last slot."""
     cycle = task.cycle
     program = cycle.program
     if program.kill_switch:
@@ -60,8 +62,8 @@ def check(task: GrowthTask) -> Decision:
     day_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
     shared = SHARED_CAPS.get(task.channel, (task.channel,))
     cap = DAILY_CHANNEL_CAPS.get(shared[0], DEFAULT_DAILY_CAP)
-    if _published(program, channel__in=shared, created_at__gte=day_start) >= cap:
+    if _published(program, channel__in=shared, created_at__gte=day_start) + in_flight >= cap:
         return Decision(False, f"Daily cap of {cap} reached for {task.channel}.", retry_later=True)
-    if _published(program, task__cycle=cycle) >= MAX_ACTIONS_PER_CYCLE:
+    if _published(program, task__cycle=cycle) + in_flight >= MAX_ACTIONS_PER_CYCLE:
         return Decision(False, f"Monthly budget of {MAX_ACTIONS_PER_CYCLE} actions used up.")
     return Decision(True)

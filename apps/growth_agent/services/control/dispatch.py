@@ -35,7 +35,7 @@ from ..execution import audit, guardrails
 from ..execution.channel_base import ChannelOutcome
 from ..execution.channels import REGISTRY
 from ..outreach.follow_up_actions import follow_up_block
-from . import actions, approvals, expiry, ledger, trail
+from . import actions, approvals, expiry, ledger, locks, trail
 
 logger = logging.getLogger("apps")
 
@@ -138,6 +138,7 @@ def _claim_step(action_id: int) -> tuple[GrowthAction | None, str]:
     """Step 1: move one approved action to "being sent". Returns the claimed
     action (carrying its attempt number), or None and how the attempt ended."""
     with transaction.atomic():
+        locks.lock_brand(action_id)
         action = _locked(action_id, GrowthAction.State.APPROVED)
         if action is None:
             return None, ledger.CLOSED
@@ -150,7 +151,9 @@ def _claim_step(action_id: int) -> tuple[GrowthAction | None, str]:
         if reason:
             _refuse(action, reason)
             return None, ledger.CLOSED
-        if not guardrails.check(action.task).allowed or _send_blocker(action):
+        if not guardrails.check(action.task, in_flight=locks.in_flight(action)).allowed or _send_blocker(
+            action
+        ):
             # Paused, kill switch on, a daily cap reached, or no mailbox yet:
             # the approval stands and the action simply waits.
             return None, ledger.PREFLIGHT_WAIT
@@ -183,6 +186,7 @@ def _gate_step(claimed: GrowthAction) -> str:
     ``PREFLIGHT_WAIT`` (a guardrail, approval kept) or ``CLOSED``."""
     attempt = claimed.dispatch_attempt
     with transaction.atomic():
+        locks.lock_brand(claimed.id)
         action = _locked(claimed.id, GrowthAction.State.DISPATCHING)
         if action is None:
             # Withdrawn (or otherwise moved on) since the claim. Nothing is sent.
@@ -198,7 +202,7 @@ def _gate_step(claimed: GrowthAction) -> str:
             _abort(action, attempt, reason)
             _refuse(action, reason)
             return ledger.CLOSED
-        decision = guardrails.check(action.task)
+        decision = guardrails.check(action.task, in_flight=locks.in_flight(action))
         if not decision.allowed:
             _abort(action, attempt, decision.reason)
             action.state = GrowthAction.State.APPROVED

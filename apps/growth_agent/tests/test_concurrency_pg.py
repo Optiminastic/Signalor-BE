@@ -13,6 +13,7 @@ Run: TEST_DATABASE_URL=... python manage.py test apps.growth_agent.tests.test_co
 """
 
 import threading
+import time
 from datetime import timedelta
 from functools import partial
 from unittest import mock, skipUnless
@@ -55,8 +56,7 @@ def run_together(*operations):
     return outcomes
 
 
-@skipUnless(connection.vendor == "postgresql", "needs Postgres row locks")
-class ConcurrencyTests(TransactionTestCase):
+class ConcurrencyBase(TransactionTestCase):
     def setUp(self):
         org = Organization.objects.create(name="Concurrency", url="https://c.example", owner_email=OWNER)
         self.program = GrowthProgram.objects.create(
@@ -107,6 +107,9 @@ class ConcurrencyTests(TransactionTestCase):
         approvals.decide(self.program, action.public_id, self.decision(action, "approved"))
         return self.fresh(action)
 
+
+@skipUnless(connection.vendor == "postgresql", "needs Postgres row locks")
+class ConcurrencyTests(ConcurrencyBase):
     def test_two_identical_approvals_record_one_decision(self):
         for number in range(ROUNDS):
             action = self.draft(number)
@@ -211,3 +214,38 @@ class ConcurrencyTests(TransactionTestCase):
                 action=action, decision__in=["resolved_sent", "resolved_cancelled"]
             )
             self.assertEqual(resolved.count(), 1)
+
+
+class SlowChannel(FakeChannel):
+    """A provider call that takes a moment, so two sends are in flight together."""
+
+    def execute(self, task, version):
+        time.sleep(0.4)
+        return super().execute(task, version)
+
+
+@skipUnless(connection.vendor == "postgresql", "needs Postgres row locks")
+class BrandCapConcurrencyTests(ConcurrencyBase):
+    """Two different actions of one brand racing for the last slot of its daily cap."""
+
+    def setUp(self):
+        super().setUp()
+        self.channel = SlowChannel()
+        patcher = mock.patch.dict(REGISTRY, {"owned_content": self.channel})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def published_today(self) -> int:
+        return guardrails._published(self.program, channel__in=("owned_content",))
+
+    def test_two_sends_never_both_take_the_last_cap_slot(self):
+        for number in range(0, ROUNDS, 2):
+            first, second = self.approve(self.draft(number)), self.approve(self.draft(number + 1))
+            before = len(self.channel.executed)
+            with mock.patch.dict(
+                guardrails.DAILY_CHANNEL_CAPS, {"owned_content": self.published_today() + 1}
+            ):
+                run_together(partial(dispatch.dispatch, first.id), partial(dispatch.dispatch, second.id))
+            self.assertEqual(len(self.channel.executed) - before, 1)
+            states = {self.fresh(first).state, self.fresh(second).state}
+            self.assertEqual(states, {GrowthAction.State.SUCCEEDED, GrowthAction.State.APPROVED})
