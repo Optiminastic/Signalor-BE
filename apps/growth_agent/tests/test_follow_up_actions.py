@@ -29,7 +29,6 @@ from .test_api import PRO_EMAIL
 from .test_outreach import CH, OutreachTestCase
 
 SENDER = "owner@brand-pro.com"
-COMMAND = "apps.growth_agent.management.commands.run_growth_tasks"
 CONTACT = "editor@site.com"
 
 
@@ -231,6 +230,6 @@ class SequenceStopTests(FollowUpActionTestCase):
 class SchedulerTests(FollowUpActionTestCase):
     def test_the_scheduler_drafts_due_follow_ups(self):
         # The reply check reads Gmail; it has its own tests.
-        with mock.patch(f"{COMMAND}.process_open_threads", return_value=0):
+        with mock.patch("apps.growth_agent.services.outreach.followups.process_open_threads", return_value=0):
             call_command("run_growth_tasks", stdout=StringIO())
         self.assertEqual(GrowthAction.objects.filter(thread=self.thread).count(), 1)

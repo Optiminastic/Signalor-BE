@@ -25,12 +25,13 @@ logger = logging.getLogger("apps")
 __all__ = ["FOLLOW_UP_GAPS", "OPEN_STATUSES", "open_threads", "process_open_threads", "process_thread"]
 
 
-def open_threads():
-    return OutreachThread.objects.filter(
+def open_threads(program: GrowthProgram | None = None):
+    threads = OutreachThread.objects.filter(
         status__in=OPEN_STATUSES,
         task__cycle__program__status=GrowthProgram.Status.ACTIVE,
         task__cycle__program__kill_switch=False,
     ).select_related("contact", "task__cycle__program__organization")
+    return threads.filter(task__cycle__program=program) if program is not None else threads
 
 
 def process_thread(client: GmailClient, thread: OutreachThread, sender: str) -> None:
@@ -39,11 +40,11 @@ def process_thread(client: GmailClient, thread: OutreachThread, sender: str) -> 
         record_reply(thread, opted_out=any(is_opt_out(m.snippet) for m in replies))
 
 
-def process_open_threads() -> int:
-    """Returns how many threads were processed. One Gmail client per brand."""
+def process_open_threads(program: GrowthProgram | None = None) -> int:
+    """Returns how many threads were processed (one brand's, or all). One Gmail client per brand."""
     clients: dict[int, tuple[GmailClient, str] | None] = {}
     processed = 0
-    for thread in open_threads():
+    for thread in open_threads(program):
         org = thread.task.cycle.program.organization
         if org.id not in clients:
             integration = gmail_integration(org)

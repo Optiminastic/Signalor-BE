@@ -58,6 +58,8 @@ class GrowthProgram(models.Model):
     # Monthly visibility uplift goal, in share-of-voice percentage points.
     uplift_target_points = models.PositiveSmallIntegerField(default=10)
     kill_switch = models.BooleanField(default=False)
+    # When the scheduler last finished a round of work for this brand (the heartbeat).
+    last_tick_at = models.DateTimeField(null=True, blank=True)
     created_by_email = models.EmailField()
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

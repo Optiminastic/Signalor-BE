@@ -314,3 +314,32 @@ class DeletionConcurrencyTests(ConcurrencyBase):
             # The deletion won before the call started: nothing was sent.
             self.assertFalse(Organization.objects.filter(pk=org.pk).exists())
             self.assertEqual(len(channel.executed), 0)
+
+
+@skipUnless(connection.vendor == "postgresql", "needs Postgres advisory locks")
+class CapacityConcurrencyTests(TransactionTestCase):
+    """Brands resuming at the same moment never push the active count past the cap."""
+
+    def brand(self, number, status):
+        owner = f"o{number}@cap.example"
+        org = Organization.objects.create(
+            name=f"Cap{number}", url=f"https://cap{number}.example", owner_email=owner
+        )
+        return GrowthProgram.objects.create(organization=org, created_by_email=owner, status=status)
+
+    def test_simultaneous_starts_never_exceed_the_cap(self):
+        from django.test import override_settings
+
+        from ..services.chat import write_tools
+
+        cap = 5
+        with override_settings(GROWTH_MAX_ACTIVE_PROGRAMS=cap):
+            for round_no in range(5):
+                Organization.objects.filter(name__startswith="Cap").delete()
+                for n in range(cap - 1):
+                    self.brand(f"{round_no}-a{n}", GrowthProgram.Status.ACTIVE)
+                paused = [self.brand(f"{round_no}-p{n}", GrowthProgram.Status.PAUSED) for n in range(8)]
+                outcomes = run_together(*[partial(write_tools.resume_program, p, {}) for p in paused])
+                active = GrowthProgram.objects.filter(status=GrowthProgram.Status.ACTIVE).count()
+                self.assertEqual(active, cap, outcomes)
+                self.assertEqual(sum(1 for o in outcomes if o == {"program_status": "active"}), 1)

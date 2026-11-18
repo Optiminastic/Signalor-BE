@@ -16,6 +16,7 @@ from ...models import CHANNELS, AgentActionLog, GrowthCycle, GrowthProgram, Grow
 from ..execution import audit
 from ..planning.plan import USER_EDITABLE_STATUSES, active_cycle
 from ..planning.schedule import DAYS_PER_WEEK, WEEKS_PER_CYCLE, workday
+from ..scheduling import capacity
 
 MAX_TASKS_PER_EDIT = 25
 MIN_UPLIFT_POINTS = 1
@@ -101,11 +102,20 @@ def move_task(program: GrowthProgram, args: dict) -> dict:
 
 
 def _set_program_status(program: GrowthProgram, allowed_from: str, to: str, action: str) -> dict:
-    if program.status != allowed_from:
-        return {"error": f"Program is {program.status}, cannot change to {to}."}
-    program.status = to
-    program.save(update_fields=["status", "updated_at"])
-    _log(program, action, {})
+    with transaction.atomic():
+        # Re-read under a row lock so two chat turns can't both flip the status.
+        current = GrowthProgram.objects.select_for_update().get(pk=program.pk)
+        if current.status != allowed_from:
+            return {"error": f"Program is {current.status}, cannot change to {to}."}
+        if to == GrowthProgram.Status.ACTIVE:
+            try:
+                capacity.ensure_place(current)
+            except capacity.CapacityReached as exc:
+                return {"error": str(exc)}
+        current.status = to
+        current.save(update_fields=["status", "updated_at"])
+        program.status = to
+        _log(program, action, {})
     return {"program_status": to}
 
 

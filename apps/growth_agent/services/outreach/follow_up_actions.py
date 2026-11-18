@@ -65,8 +65,8 @@ def _reply_subject(subject: str) -> str:
     return subject if subject.lower().startswith("re:") else f"Re: {subject}"
 
 
-def due_threads(today):
-    return OutreachThread.objects.filter(
+def due_threads(today, program: GrowthProgram | None = None):
+    threads = OutreachThread.objects.filter(
         status__in=OPEN_STATUSES,
         next_follow_up_on__lte=today,
         followups_sent__lt=len(FOLLOW_UPS),
@@ -75,6 +75,7 @@ def due_threads(today):
         task__cycle__program__status=GrowthProgram.Status.ACTIVE,
         task__cycle__program__kill_switch=False,
     ).select_related("contact", "task__cycle__program__organization")
+    return threads.filter(task__cycle__program=program) if program is not None else threads
 
 
 def _prepared(thread: OutreachThread, sequence: int, sender: str) -> Prepared:
@@ -111,9 +112,9 @@ def _draft(thread: OutreachThread) -> bool:
     return True
 
 
-def prepare_due_follow_ups(today) -> int:
-    """Draft the next follow-up for every thread where one is due. Returns how many."""
-    return sum(_draft(thread) for thread in due_threads(today))
+def prepare_due_follow_ups(today, program: GrowthProgram | None = None) -> int:
+    """Draft the next follow-up for every thread (of one brand, or all) where one is due."""
+    return sum(_draft(thread) for thread in due_threads(today, program))
 
 
 def follow_up_block(action: GrowthAction) -> str:

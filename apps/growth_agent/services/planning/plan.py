@@ -148,6 +148,11 @@ def create_plan(program: GrowthProgram, *, rebuild: bool = False) -> tuple[Growt
         )
         _log_satellite_plan(program, created)
         if program.status == GrowthProgram.Status.ONBOARDING:
+            # Raises CapacityReached (a PlanError) when full: the whole plan rolls back
+            # and the brand stays onboarding.
+            from ..scheduling import capacity  # noqa: PLC0415  (capacity imports PlanError from here)
+
+            capacity.ensure_place(program)
             program.status = GrowthProgram.Status.ACTIVE
             program.save(update_fields=["status", "updated_at"])
     return cycle, True

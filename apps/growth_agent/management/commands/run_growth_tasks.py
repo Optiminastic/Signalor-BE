@@ -1,114 +1,59 @@
 """
-One round of Growth Agent work:
+One Growth Agent round, for cron (the growth-scheduler service runs the same
+round every 15 minutes; use one or the other):
 
-1. Prepare a draft for every due task. Nothing is sent; each draft waits for
-   the brand owner's approval.
-2. Send every action the owner has approved.
-3. Check outreach threads for replies.
-4. Weekly indexing: start a Search Console check per brand when the last is a week old.
-5. Post each brand's weekly summary in the Agent chat.
-6. Score each brand's social presence weekly (LinkedIn, X, YouTube, Instagram, Reddit)
-   and plan next week's post drafts (one per platform it's on).
-7. Read each brand's keywords and competitor keyword gaps weekly (DataForSEO).
-8. Watch each brand's site daily (down, noindex, robots.txt blocks, sitemap, Google clicks drop).
-9. Check Google positions and AI Overview citations weekly for the brand and its top competitors.
+    python manage.py run_growth_tasks [--dry-run]
 
-Run from cron, e.g. every 15 minutes:
-    python manage.py run_growth_tasks [--limit N] [--dry-run]
+The round does quick housekeeping (onboarding, stuck sends, expired approvals),
+then queues one ``brand_tick`` per active brand. Each tick prepares at most
+3 drafts and sends at most 5 approved actions for its brand, checks its
+outreach replies, drafts due follow-ups, and runs its daily and weekly checks
+(indexing, social, guest sites, keywords, site watch, ranks, weekly summary).
+Without a broker (local dev) the ticks run inline.
 
-Tasks and actions are claimed with a row lock, so overlapping cron runs never
-prepare or send the same thing twice. With a RabbitMQ broker the work is queued
-on the worker; without one (local dev) it runs inline in this process.
+Every protection is unchanged: drafts wait for the owner's approval, and sends
+are claimed under row locks, so overlapping rounds never prepare or send the
+same thing twice.
 """
 
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from apps.growth_agent.analysis_tasks import dispatch_action_task, run_growth_task
-from apps.growth_agent.models import GrowthProgram
-from apps.growth_agent.services import weekly_summary
-from apps.growth_agent.services.autopilot import advance_onboarding
-from apps.growth_agent.services.control.dispatch import dispatch, dispatchable
-from apps.growth_agent.services.control.expiry import expire_due
-from apps.growth_agent.services.control.recovery import recover_stuck
-from apps.growth_agent.services.execution.executor import due_tasks, release_stale_executions, run_task
-from apps.growth_agent.services.guest_posts import finder as guest_finder
-from apps.growth_agent.services.indexing.weekly import weekly_round as weekly_indexing_round
-from apps.growth_agent.services.keywords import refresh as keyword_refresh
-from apps.growth_agent.services.outreach.follow_up_actions import prepare_due_follow_ups
-from apps.growth_agent.services.outreach.followups import process_open_threads
-from apps.growth_agent.services.planning.plan import add_satellite_topics
-from apps.growth_agent.services.rank_tracking import check as rank_check
-from apps.growth_agent.services.site_watch import watch as site_watch
-from apps.growth_agent.services.social import check as social_check
-from apps.growth_agent.services.social import posts as social_posts
-from config.celery_rabbit import analysis_app
-
-DEFAULT_LIMIT = 50
+from apps.growth_agent.services.control.dispatch import dispatchable
+from apps.growth_agent.services.execution.executor import due_tasks
+from apps.growth_agent.services.scheduling import tick
+from apps.growth_agent.services.scheduling.round import active_programs, run_round
 
 
 class Command(BaseCommand):
-    help = "Prepare due Growth Agent tasks and send the actions the owner approved."
+    help = "Run one Growth Agent round: housekeeping, then one tick per active brand."
 
     def add_arguments(self, parser):
-        parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="Max tasks to start this run.")
-        parser.add_argument("--dry-run", action="store_true", help="List due tasks without running them.")
+        parser.add_argument(
+            "--dry-run", action="store_true", help="List what each brand would do, without doing it."
+        )
 
     def handle(self, *args, **options):
-        if not options["dry_run"]:
-            # Setup moves on even if nobody opens Agent mode (e.g. a failed analysis is restarted).
-            for program in GrowthProgram.objects.filter(status=GrowthProgram.Status.ONBOARDING):
-                advance_onboarding(program)
-        released = release_stale_executions()
-        if released:
-            self.stdout.write(f"Re-queued {released} stale task(s).")
+        if options["dry_run"]:
+            self._dry_run()
+            return
+        result = run_round()
+        if result.skipped:
+            self.stdout.write("Another round is running; skipped.")
+            return
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Round done: {result.ticks} brand(s) queued, {result.recovered} stuck send(s) recovered, "
+                f"{result.expired} approval(s) expired, {result.released} stale task(s) re-queued."
+            )
+        )
+
+    def _dry_run(self) -> None:
         today = timezone.now().date()
-        tasks = list(due_tasks(today)[: options["limit"]])
-        for task in tasks:
-            if options["dry_run"]:
-                self.stdout.write(f"task {task.id} [{task.channel}] {task.title}")
-            elif analysis_app.conf.task_always_eager:
-                run_task(task.id)
-            else:
-                run_growth_task.delay(task.id)
-        verb = "Due" if options["dry_run"] else "Preparing"
-        self.stdout.write(self.style.SUCCESS(f"{verb}: {len(tasks)} task(s)."))
-        if not options["dry_run"]:
-            recovered = recover_stuck()
-            if recovered:
-                self.stdout.write(f"Recovered {recovered} send(s) whose worker stopped part-way.")
-            drafted = prepare_due_follow_ups(today)
-            if drafted:
-                self.stdout.write(f"Drafted {drafted} follow-up(s) for the owner to approve.")
-            expired = expire_due()
-            if expired:
-                self.stdout.write(f"Expired {expired} approval(s) older than the approval window.")
-        approved = list(dispatchable(today)[: options["limit"]])
-        for action in approved:
-            if options["dry_run"]:
-                self.stdout.write(f"approved action {action.public_id} [{action.kind}] {action.task.title}")
-            elif analysis_app.conf.task_always_eager:
-                dispatch(action.id)
-            else:
-                dispatch_action_task.delay(action.id)
-        verb = "Approved and due" if options["dry_run"] else "Sending"
-        self.stdout.write(self.style.SUCCESS(f"{verb}: {len(approved)} action(s)."))
-        if not options["dry_run"]:
-            threads = process_open_threads()
-            self.stdout.write(f"Checked {threads} outreach thread(s) for replies.")
-            # Weekly Search Console check per brand (queued; logged in Activity when done).
-            for program in GrowthProgram.objects.filter(status=GrowthProgram.Status.ACTIVE).select_related(
-                "organization"
-            ):
-                added = add_satellite_topics(program)
-                if added:
-                    self.stdout.write(f"Added {added} satellite article(s) to program {program.id}'s plan.")
-                weekly_indexing_round(program)
-                social_check.weekly(program)
-                guest_finder.weekly(program)
-                keyword_refresh.weekly(program)
-                site_watch.daily(program)
-                rank_check.weekly(program)
-                social_posts.queue_weekly(program)
-                if weekly_summary.post(program):
-                    self.stdout.write(f"Posted the weekly summary for program {program.id}.")
+        for program in active_programs():
+            tasks = due_tasks(today).filter(cycle__program=program)[: tick.PREPARES_PER_TICK]
+            actions = dispatchable(today).filter(task__cycle__program=program)[: tick.SENDS_PER_TICK]
+            for task in tasks:
+                self.stdout.write(f"program {program.id}: task {task.id} [{task.channel}] {task.title}")
+            for action in actions:
+                self.stdout.write(f"program {program.id}: approved action {action.public_id} [{action.kind}]")

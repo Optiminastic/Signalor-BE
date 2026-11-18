@@ -378,3 +378,34 @@ def dispatch_rank_check(program_id: int) -> None:
         threading.Thread(target=_check_ranks, args=(program_id,), daemon=True).start()
     else:
         check_ranks_task.delay(program_id)
+
+
+def _run_tick(program_id: int) -> None:
+    import logging
+
+    from .services.scheduling import tick
+
+    try:
+        tick.run(program_id)
+    except Exception:  # noqa: BLE001 - one brand's failure never stops another's tick
+        logging.getLogger("apps").exception("growth tick failed for program %s", program_id)
+
+
+@analysis_app.task(name="growth_agent.brand_tick")
+def brand_tick_task(program_id: int) -> None:
+    from django.db import close_old_connections
+
+    close_old_connections()
+    try:
+        _run_tick(program_id)
+    finally:
+        close_old_connections()
+
+
+def dispatch_brand_tick(program_id: int) -> None:
+    """One brand's round of work. On the background queue; inline without a broker
+    (the scheduler is its own process, so blocking it is fine there)."""
+    if analysis_app.conf.task_always_eager:
+        _run_tick(program_id)
+    else:
+        brand_tick_task.delay(program_id)

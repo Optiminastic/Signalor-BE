@@ -358,6 +358,13 @@ GROWTH_AGENT_SIGNING_SECRET = os.getenv("GROWTH_AGENT_SIGNING_SECRET", "")
 # bytes, separate from every other secret. Empty = codes can't be issued (503).
 GROWTH_CONFIRMATION_HMAC_KEY = os.getenv("GROWTH_CONFIRMATION_HMAC_KEY", "")
 GROWTH_CONFIRMATION_KEY_ID = os.getenv("GROWTH_CONFIRMATION_KEY_ID", "k1")
+# Brands the Growth Agent runs at once; workers and the load test are sized for 50.
+GROWTH_MAX_ACTIVE_PROGRAMS = int(os.getenv("GROWTH_MAX_ACTIVE_PROGRAMS", 50))
+# Scheduler round interval and the ops alert recipients (comma-separated).
+GROWTH_SCHEDULER_INTERVAL_SECONDS = int(os.getenv("GROWTH_SCHEDULER_INTERVAL_SECONDS", 900))
+GROWTH_OPS_ALERT_EMAILS = [
+    a.strip() for a in os.getenv("GROWTH_OPS_ALERT_EMAILS", "").split(",") if a.strip()
+]
 # Parallel prompt re-checks per weekly snapshot (each one calls every AI engine).
 GROWTH_RECHECK_WORKERS = int(os.getenv("GROWTH_RECHECK_WORKERS", 4))
 # Gmail outreach (server-side OAuth callback on this backend; add it to the Google
