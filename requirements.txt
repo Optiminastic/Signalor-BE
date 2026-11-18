@@ -15,6 +15,7 @@ Django==5.2.11
 django-cors-headers==4.3.1
 django-redis==5.4.0
 django-extensions==4.1
+django-otp==1.6.3
 djangorestframework==3.14.0
 google-ai-generativelanguage==0.6.15
 google-api-core==2.29.0

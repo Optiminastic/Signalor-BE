@@ -55,6 +55,9 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "corsheaders",
+    # TOTP for superusers: step-up for safety reviews and recovery commands (Phase 1).
+    "django_otp",
+    "django_otp.plugins.otp_totp",
     "apps.accounts.apps.AccountsConfig",
     "apps.organizations.apps.OrganizationsConfig",
     "apps.analyzer.apps.AnalyzerConfig",
@@ -351,6 +354,10 @@ GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 # ai-agent-signalor Next.js server, which signs every request after checking
 # the user's Signalor session. Empty = the API rejects every request.
 GROWTH_AGENT_SIGNING_SECRET = os.getenv("GROWTH_AGENT_SIGNING_SECRET", "")
+# Keys the owner's emailed confirmation codes (safety changes). At least 32 random
+# bytes, separate from every other secret. Empty = codes can't be issued (503).
+GROWTH_CONFIRMATION_HMAC_KEY = os.getenv("GROWTH_CONFIRMATION_HMAC_KEY", "")
+GROWTH_CONFIRMATION_KEY_ID = os.getenv("GROWTH_CONFIRMATION_KEY_ID", "k1")
 # Parallel prompt re-checks per weekly snapshot (each one calls every AI engine).
 GROWTH_RECHECK_WORKERS = int(os.getenv("GROWTH_RECHECK_WORKERS", 4))
 # Gmail outreach (server-side OAuth callback on this backend; add it to the Google

@@ -794,3 +794,125 @@ class ApprovalBatchItem(ImmutableModel):
 
     def __str__(self) -> str:
         return f"ApprovalBatchItem<{self.batch_id}:{self.action_id}:v{self.version_id}>"
+
+
+class GrowthSafetyChange(ImmutableModel):
+    """A change to who owns a brand or to a connector's identity, recorded by a
+    database trigger whatever code path made it (migration 0025).
+
+    ``actor`` comes from the transaction-local ``signalor.actor`` setting that
+    the app's own writers set (``owner:<digest>``, ``system:<part>``,
+    ``admin:<id>``), or ``unknown`` for anything else. A high-risk change from an
+    unknown actor blocks approvals and sends for the brand until reviewed.
+    """
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="growth_safety_changes"
+    )
+    entity = models.CharField(max_length=40)  # organization | integration | github_installation
+    entity_id = models.BigIntegerField()
+    provider = models.CharField(max_length=30, blank=True, default="")
+    field = models.CharField(max_length=40)
+    old_digest = models.CharField(max_length=64, blank=True, default="")
+    new_digest = models.CharField(max_length=64, blank=True, default="")
+    # What the owner is shown: site and repo names in full, mailboxes masked.
+    old_display = models.CharField(max_length=300, blank=True, default="")
+    new_display = models.CharField(max_length=300, blank=True, default="")
+    actor = models.CharField(max_length=120, default="unknown")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [models.Index(fields=["organization", "-created_at"], name="growth_safety_change_org_idx")]
+
+    def __str__(self) -> str:
+        return f"GrowthSafetyChange<{self.organization_id}:{self.entity}.{self.field}:{self.actor}>"
+
+
+class GrowthSafetyReview(ImmutableModel):
+    """One review event on a safety change. The newest event is its state:
+    ``cleared``, ``confirmed_incident`` (still blocks) or ``incident_resolved``."""
+
+    class Outcome(models.TextChoices):
+        CLEARED = "cleared", "Cleared"
+        CONFIRMED_INCIDENT = "confirmed_incident", "Confirmed incident"
+        INCIDENT_RESOLVED = "incident_resolved", "Incident resolved"
+
+    class StepUp(models.TextChoices):
+        EMAIL_CODE = "email_code", "Owner, emailed code"
+        TOTP = "totp", "Superuser, TOTP"
+        RECOVERY = "recovery", "Superuser recovery, TOTP"
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="growth_safety_reviews"
+    )
+    change = models.ForeignKey(GrowthSafetyChange, on_delete=models.CASCADE, related_name="reviews")
+    review_no = models.PositiveIntegerField()
+    outcome = models.CharField(max_length=20, choices=Outcome.choices)
+    step_up = models.CharField(max_length=12, choices=StepUp.choices)
+    reviewer_user_id = models.BigIntegerField(null=True, blank=True)
+    reviewer_owner_digest = models.CharField(max_length=64, blank=True, default="")
+    reason = models.CharField(max_length=500)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["change", "review_no"]
+        constraints = [
+            models.UniqueConstraint(fields=["change", "review_no"], name="growth_safety_review_once"),
+        ]
+
+    def __str__(self) -> str:
+        return f"GrowthSafetyReview<{self.change_id}#{self.review_no}:{self.outcome}>"
+
+
+class SafetyConfirmationEvent(ImmutableModel):
+    """The evidence trail of an owner's emailed-code confirmation of a connector change.
+
+    A challenge is issued (with a keyed verifier of its code, never the code), then
+    each attempt is reserved and committed before the code is compared: at most five
+    per challenge (database constraints), at most one verification.
+    """
+
+    class Event(models.TextChoices):
+        ISSUED = "issued", "Issued"
+        ATTEMPT = "attempt", "Attempt reserved"
+        RESULT = "result", "Attempt result"
+        VERIFIED = "verified", "Verified"
+        SUPERSEDED = "superseded", "Superseded"
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="growth_confirmations"
+    )
+    change = models.ForeignKey(GrowthSafetyChange, on_delete=models.CASCADE, related_name="confirmations")
+    challenge_id = models.CharField(max_length=32, db_index=True)
+    event = models.CharField(max_length=12, choices=Event.choices)
+    attempt_no = models.PositiveSmallIntegerField(null=True, blank=True)
+    outcome = models.CharField(max_length=20, blank=True, default="")
+    owner_digest = models.CharField(max_length=64, blank=True, default="")
+    verifier = models.CharField(max_length=64, blank=True, default="")
+    key_id = models.CharField(max_length=20, blank=True, default="")
+    expires_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["challenge_id", "event"],
+                condition=models.Q(event__in=["issued", "verified", "superseded"]),
+                name="growth_confirmation_once",
+            ),
+            models.UniqueConstraint(
+                fields=["challenge_id", "event", "attempt_no"],
+                condition=models.Q(event__in=["attempt", "result"]),
+                name="growth_confirmation_attempt_once",
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(event__in=["attempt", "result"])
+                | models.Q(attempt_no__gte=1, attempt_no__lte=5),
+                name="growth_confirmation_five_attempts",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"SafetyConfirmationEvent<{self.challenge_id}:{self.event}:{self.attempt_no}>"

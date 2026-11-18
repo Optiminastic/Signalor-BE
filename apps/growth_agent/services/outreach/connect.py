@@ -9,10 +9,12 @@ storing any token.
 from __future__ import annotations
 
 from django.core import signing
+from django.db import transaction
 
 from apps.integrations.models import Integration
 
 from ...models import GrowthProgram
+from ..control import safety
 from .gmail import GmailClient, authorization_url, exchange_code
 from .mailbox import gmail_integration, mailbox_address
 
@@ -69,19 +71,26 @@ def finish(code: str, state: str) -> GrowthProgram:
     tokens = exchange_code(code)
     if not tokens.get("refresh_token"):
         raise ConnectError("no_refresh_token")
-    integration, _ = Integration.objects.update_or_create(
-        organization=program.organization, provider=Integration.Provider.GMAIL, defaults={"is_active": True}
-    )
-    integration.set_access_token(tokens["access_token"])
-    integration.set_refresh_token(tokens["refresh_token"])
-    sender = GmailClient(integration, token=tokens["access_token"]).profile_email()
-    integration.metadata = {**integration.metadata, "email": sender.lower()}
-    integration.save()
+    sender = GmailClient(None, token=tokens["access_token"]).profile_email()
+    with transaction.atomic():
+        # The verified owner connected this mailbox: not an unknown-source change.
+        safety.set_actor(safety.owner_actor(program.organization.owner_email))
+        integration, _ = Integration.objects.update_or_create(
+            organization=program.organization,
+            provider=Integration.Provider.GMAIL,
+            defaults={"is_active": True},
+        )
+        integration.set_access_token(tokens["access_token"])
+        integration.set_refresh_token(tokens["refresh_token"])
+        integration.metadata = {**integration.metadata, "email": sender.lower()}
+        integration.save()
     return program
 
 
 def disconnect(program: GrowthProgram) -> bool:
-    updated = Integration.objects.filter(
-        organization=program.organization, provider=Integration.Provider.GMAIL, is_active=True
-    ).update(is_active=False)
+    with transaction.atomic():
+        safety.set_actor(safety.owner_actor(program.organization.owner_email))
+        updated = Integration.objects.filter(
+            organization=program.organization, provider=Integration.Provider.GMAIL, is_active=True
+        ).update(is_active=False)
     return updated > 0

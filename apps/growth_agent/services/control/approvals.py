@@ -22,7 +22,7 @@ from django.utils import timezone
 
 from ...models import AgentActionLog, ApprovalDecision, GrowthAction, GrowthProgram, GrowthTask
 from ..execution import audit
-from . import actions, trail
+from . import actions, safety, trail
 
 ROLE_OWNER = "owner"
 REJECTED_NOTE = "Rejected by the brand owner."
@@ -33,6 +33,11 @@ APPROVAL_TTL = timedelta(days=getattr(settings, "GROWTH_APPROVAL_TTL_DAYS", 14))
 FOLLOW_UP_APPROVAL_TTL = timedelta(days=getattr(settings, "GROWTH_FOLLOW_UP_APPROVAL_TTL_DAYS", 3))
 REASON_MAX_CHARS = 500
 IN_FLIGHT = "in_flight"
+SAFETY_REVIEW_PENDING = "safety_review_pending"
+SAFETY_REVIEW_MESSAGE = (
+    "A change to this brand's owner or a connected account needs a safety check first. "
+    "Open Approvals, Safety check."
+)
 IN_FLIGHT_MESSAGE = "This is being sent right now and can't be stopped. Its result will show here shortly."
 
 AUDIT_ACTION = {
@@ -132,6 +137,8 @@ def decide(program: GrowthProgram, public_id: str, request: DecisionRequest) -> 
             raise DecisionRefused("illegal_state", f"This action is {action.state} and can no longer change.")
         if not matches_current(action, request):
             raise DecisionRefused("stale", "The draft changed since you reviewed it. Review it again.")
+        if request.decision == ApprovalDecision.Decision.APPROVED and safety.blocked(action.organization_id):
+            raise DecisionRefused(SAFETY_REVIEW_PENDING, SAFETY_REVIEW_MESSAGE)
 
         ApprovalDecision.objects.create(
             organization=action.organization,

@@ -51,6 +51,7 @@ from .views_indexing import (
 )
 from .views_keyword_tools import KeywordToolConnectView, KeywordToolDisconnectView, KeywordToolListView
 from .views_keywords import KeywordsRefreshView, KeywordsView
+from .views_safety import SafetyChallengeView, SafetyChangeListView, SafetyConfirmView
 from .views_social import BufferDisconnectView, BufferSignInView, SocialCheckView, SocialView
 from .views_tracking import (
     RankTrackingCheckView,
@@ -86,6 +87,17 @@ urlpatterns = [
     ),
     path("programs/<str:org_slug>/approvals/", ApprovalListView.as_view(), name="approvals"),
     path("programs/<str:org_slug>/batches/", BatchListView.as_view(), name="batches"),
+    path("programs/<str:org_slug>/safety-changes/", SafetyChangeListView.as_view(), name="safety-changes"),
+    path(
+        "programs/<str:org_slug>/safety-changes/<int:change_id>/challenge/",
+        SafetyChallengeView.as_view(),
+        name="safety-challenge",
+    ),
+    path(
+        "programs/<str:org_slug>/safety-changes/<int:change_id>/confirm/",
+        SafetyConfirmView.as_view(),
+        name="safety-confirm",
+    ),
     path("programs/<str:org_slug>/batches/<int:batch_id>/", BatchDetailView.as_view(), name="batch"),
     path(
         "programs/<str:org_slug>/batches/<int:batch_id>/decide/",

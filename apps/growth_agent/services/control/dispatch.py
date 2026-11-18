@@ -35,7 +35,7 @@ from ..execution import audit, guardrails
 from ..execution.channel_base import ChannelOutcome
 from ..execution.channels import REGISTRY
 from ..outreach.follow_up_actions import follow_up_block
-from . import actions, approvals, expiry, ledger, locks, trail
+from . import actions, approvals, expiry, ledger, locks, safety, trail
 
 logger = logging.getLogger("apps")
 
@@ -151,10 +151,12 @@ def _claim_step(action_id: int) -> tuple[GrowthAction | None, str]:
         if reason:
             _refuse(action, reason)
             return None, ledger.CLOSED
-        if not guardrails.check(action.task, in_flight=locks.in_flight(action)).allowed or _send_blocker(
-            action
+        if (
+            not guardrails.check(action.task, in_flight=locks.in_flight(action)).allowed
+            or _send_blocker(action)
+            or safety.blocked(action.organization_id)
         ):
-            # Paused, kill switch on, a daily cap reached, or no mailbox yet:
+            # Paused, kill switch on, a daily cap reached, no mailbox yet, or a safety check pending:
             # the approval stands and the action simply waits.
             return None, ledger.PREFLIGHT_WAIT
         action.dispatch_attempt = trail.next_attempt_number(action)
@@ -205,6 +207,8 @@ def _gate_step(claimed: GrowthAction) -> str:
             _refuse(action, reason)
             return ledger.CLOSED
         decision = guardrails.check(action.task, in_flight=locks.in_flight(action))
+        if decision.allowed and safety.blocked(action.organization_id):
+            decision = guardrails.Decision(False, approvals.SAFETY_REVIEW_MESSAGE, retry_later=True)
         if not decision.allowed:
             _abort(action, attempt, decision.reason)
             action.state = GrowthAction.State.APPROVED
