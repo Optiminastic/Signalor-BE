@@ -75,6 +75,31 @@ jobs:
     # GitHub Environment to make the deploy step a one-click approval.
     environment: production
     steps:
+      # The server can't pull from GHCR on its own (no stored registry login), and
+      # Coolify silently reuses a cached image when its pull fails. So pull the exact
+      # image this run built, using this job's short-lived GITHUB_TOKEN (it expires
+      # when the job ends; nothing stays on the server), and tag it :latest there
+      # before Coolify recreates the containers. A failure here stops the deploy.
+      - name: Pull the new image on the server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          REMOTE="docker login ghcr.io -u $GHCR_USER --password-stdin >/dev/null"
+          REMOTE="$REMOTE && docker pull -q $IMAGE:$TAG && docker tag $IMAGE:$TAG $IMAGE:latest"
+          REMOTE="$REMOTE; rc=\$?; docker logout ghcr.io >/dev/null; exit \$rc"
+          printf '%s' "$GHCR_TOKEN" | ssh -i ~/.ssh/deploy_key -o BatchMode=yes "$SSH_USER@$SSH_HOST" "$REMOTE"
+          echo "Pulled $IMAGE:$TAG on the server and tagged it :latest."
+
       - name: Trigger Coolify deployment
         env:
           COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
