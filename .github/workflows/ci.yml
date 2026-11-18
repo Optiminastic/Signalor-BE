@@ -119,10 +119,33 @@ jobs:
       - name: Growth Agent tests on Postgres
         # test_postgres only accepts TEST_DATABASE_URL on a local/CI host, and
         # Django creates and drops its own test_signalor_ci database there.
-        run: python manage.py test apps.growth_agent --settings=config.settings.test_postgres --noinput --verbosity=2
+        # The organizations, integrations and GitHub suites run too: the safety
+        # triggers fire on their tables. test_db_roles_pg proves the runtime
+        # role can't disable or bypass the triggers.
+        run: >-
+          python manage.py test apps.growth_agent apps.organizations apps.integrations apps.github_agent
+          --settings=config.settings.test_postgres --noinput --verbosity=2
         env:
           SECRET_KEY: ci-postgres-tests-not-used-in-prod
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/signalor_ci
+
+      - name: Migrate as signalor_owner and apply the role split
+        # The deploy path for split databases: roles from deploy/sql, every
+        # migration as the owner role, then the split, then the runtime role
+        # must pass check_db_target. CI-only throwaway passwords.
+        run: |
+          psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -f deploy/sql/phase1_roles.sql
+          psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -c "ALTER ROLE signalor_owner PASSWORD 'ci-owner'" \
+            -c "ALTER ROLE signalor_app PASSWORD 'ci-app'"
+          MIGRATION_DATABASE_URL="$OWNER_URL" sh scripts/migrate.sh
+          DATABASE_URL="$APP_URL" python manage.py check_db_target --expect-host localhost \
+            --expect-db signalor_ci --snapshot-ref ci-throwaway --role runtime
+        env:
+          SECRET_KEY: ci-postgres-tests-not-used-in-prod
+          DJANGO_SETTINGS_MODULE: config.settings.development
+          ADMIN_URL: postgres://postgres:postgres@localhost:5432/signalor_ci
+          OWNER_URL: postgres://signalor_owner:ci-owner@localhost:5432/signalor_ci
+          APP_URL: postgres://signalor_app:ci-app@localhost:5432/signalor_ci
 
   migrations:
     name: Migration safety (backend)

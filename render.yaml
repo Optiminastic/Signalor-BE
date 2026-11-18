@@ -21,7 +21,7 @@ services:
     # Migrations + drift reconciliation run once per deploy before traffic
     # cuts over. Replaces the corresponding steps that used to live in
     # build.sh (no longer used since the web service runs from the image).
-    preDeployCommand: "python scripts/reconcile_migrations.py && python manage.py migrate --no-input"
+    preDeployCommand: "python scripts/reconcile_migrations.py && sh scripts/migrate.sh"
     startCommand: opentelemetry-instrument gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 600
     healthCheckPath: /api/auth/get-session
     envVars:
