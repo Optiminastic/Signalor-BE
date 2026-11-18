@@ -42,8 +42,12 @@ From the limits in the code (24 planned tasks and at most 40 actions per brand p
 | Weekly checks | 50 a week, spread over the week | several minutes each |
 | Chat replies | bursty | 10 to 60 seconds each |
 
-- `growth-worker` with 4 slots gives 96 slot-hours a day, against 1 to 5 hours of work: ample headroom.
-- `growth-interactive-worker` with 4 slots handles 4 chats at the same moment; a 5th waits seconds.
+- `growth-worker` with 2 slots gives 48 slot-hours a day, against 1 to 5 hours of work: ample headroom.
+- `growth-interactive-worker` with 2 slots handles 2 chats at the same moment; a 3rd waits seconds.
+- Both start at 2 slots because of memory. Measured on the production server on 2026-11-18:
+  - 4 CPUs, 7.6 GiB RAM, 4.8 GiB available, 4 GiB swap, 121 GB free disk;
+  - existing workers use about 0.6 to 0.7 GiB each;
+  - the 3 new services should add about 1.6 to 2 GiB.
 - The real limits at 50 brands are provider rate limits (Gemini, OpenAI, Serper, Gmail), not workers.
 - Raising the cap above 50 needs the load test re-run at the new size first.
 
