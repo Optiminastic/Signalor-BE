@@ -21,6 +21,23 @@ class OrganizationAdmin(admin.ModelAdmin):
     list_filter = ("platform",)
     readonly_fields = ("slug", "normalized_url", "created_at", "updated_at")
 
+    # Ownership decides who may edit, delete and approve work for a brand, so it
+    # is not an editable admin field (SEC-1a). A superuser assigns the owner
+    # when adding a brand on someone's behalf. Changing the owner of an existing
+    # brand has no admin path yet: it needs a database administrator under a
+    # written change record until the audited transfer view (SEC-1b) exists.
+    OWNER_FIELD = "owner_email"
+
+    def get_readonly_fields(self, request, obj=None):
+        fields = tuple(super().get_readonly_fields(request, obj))
+        return fields if obj is None else (*fields, self.OWNER_FIELD)
+
+    def has_add_permission(self, request):
+        return bool(request.user.is_active and request.user.is_superuser)
+
+    def has_delete_permission(self, request, obj=None):
+        return bool(request.user.is_active and request.user.is_superuser)
+
 
 @admin.register(BrandProfile)
 class BrandProfileAdmin(admin.ModelAdmin):

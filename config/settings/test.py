@@ -5,7 +5,15 @@ touches the remote Postgres. Inherits everything else from development.
 Run with:  manage.py test --settings=config.settings.test
 """
 
+import os
+
+from cryptography.fernet import Fernet
+
 from .development import *  # noqa: F401,F403
+
+# Connector tokens are encrypted with ENCRYPTION_KEY. Locally .env provides one; CI
+# has no .env, so tests get a throwaway key generated per run (never a real key).
+os.environ.setdefault("ENCRYPTION_KEY", Fernet.generate_key().decode())
 
 DATABASES = {
     "default": {

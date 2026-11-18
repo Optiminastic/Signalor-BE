@@ -55,12 +55,16 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "corsheaders",
+    # TOTP for superusers: step-up for safety reviews and recovery commands (Phase 1).
+    "django_otp",
+    "django_otp.plugins.otp_totp",
     "apps.accounts.apps.AccountsConfig",
     "apps.organizations.apps.OrganizationsConfig",
     "apps.analyzer.apps.AnalyzerConfig",
     "apps.drip.apps.DripConfig",
     "apps.integrations.apps.IntegrationsConfig",
     "apps.github_agent.apps.GithubAgentConfig",
+    "apps.growth_agent.apps.GrowthAgentConfig",
     "apps.visibility.apps.VisibilityConfig",
     "apps.recommendation.apps.RecommendationConfig",
     "apps.referrals.apps.ReferralsConfig",
@@ -236,6 +240,8 @@ REST_FRAMEWORK = {
         # Public API (Bearer-token) — per-key ceilings; plan tiers can refine later.
         "public_api_read": "300/minute",
         "public_api_write": "30/minute",
+        # Growth Agent API, per signed user (chat polling included).
+        "growth_agent": "120/minute",
     },
     "EXCEPTION_HANDLER": "shared.exceptions.custom_exception_handler",
 }
@@ -254,6 +260,15 @@ BETTER_AUTH_JWT_ALGORITHMS = [
     a.strip() for a in os.getenv("BETTER_AUTH_JWT_ALGORITHMS", "EdDSA").split(",") if a.strip()
 ]
 REQUIRE_VERIFIED_IDENTITY = os.getenv("REQUIRE_VERIFIED_IDENTITY", "false").strip().lower() == "true"
+
+# ── Brand endpoint observation (SEC-1a-0) ───────────────────────────────────
+# Fallback channel for unauthorized-attempt alerts on the brand edit/delete
+# endpoint (apps/organizations/observation.py). Sentry is the primary channel;
+# these addresses also get a direct email. Comma-separated. Empty disables the
+# email only, never the error-level log. See docs/runbooks/ORG_ENDPOINT_ALERTS.md.
+ORG_ENDPOINT_ALERT_EMAILS = [
+    address.strip() for address in os.getenv("ORG_ENDPOINT_ALERT_EMAILS", "").split(",") if address.strip()
+]
 
 LOGGING = {
     "version": 1,
@@ -334,6 +349,30 @@ GITHUB_APP_ID = os.getenv("GITHUB_APP_ID", "")
 GITHUB_APP_SLUG = os.getenv("GITHUB_APP_SLUG", "")
 GITHUB_APP_PRIVATE_KEY = os.getenv("GITHUB_APP_PRIVATE_KEY", "")
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+
+# Growth Agent (apps.growth_agent). HMAC secret shared ONLY with the
+# ai-agent-signalor Next.js server, which signs every request after checking
+# the user's Signalor session. Empty = the API rejects every request.
+GROWTH_AGENT_SIGNING_SECRET = os.getenv("GROWTH_AGENT_SIGNING_SECRET", "")
+# Keys the owner's emailed confirmation codes (safety changes). At least 32 random
+# bytes, separate from every other secret. Empty = codes can't be issued (503).
+GROWTH_CONFIRMATION_HMAC_KEY = os.getenv("GROWTH_CONFIRMATION_HMAC_KEY", "")
+GROWTH_CONFIRMATION_KEY_ID = os.getenv("GROWTH_CONFIRMATION_KEY_ID", "k1")
+# Brands the Growth Agent runs at once; workers and the load test are sized for 50.
+GROWTH_MAX_ACTIVE_PROGRAMS = int(os.getenv("GROWTH_MAX_ACTIVE_PROGRAMS", 50))
+# Scheduler round interval and the ops alert recipients (comma-separated).
+GROWTH_SCHEDULER_INTERVAL_SECONDS = int(os.getenv("GROWTH_SCHEDULER_INTERVAL_SECONDS", 900))
+GROWTH_OPS_ALERT_EMAILS = [
+    a.strip() for a in os.getenv("GROWTH_OPS_ALERT_EMAILS", "").split(",") if a.strip()
+]
+# Parallel prompt re-checks per weekly snapshot (each one calls every AI engine).
+GROWTH_RECHECK_WORKERS = int(os.getenv("GROWTH_RECHECK_WORKERS", 4))
+# Gmail outreach (server-side OAuth callback on this backend; add it to the Google
+# Cloud OAuth client's redirect URIs). The app URL is where the browser returns.
+GROWTH_GMAIL_REDIRECT_URI = os.getenv(
+    "GROWTH_GMAIL_REDIRECT_URI", "http://localhost:8000/api/growth/oauth/gmail/callback/"
+)
+GROWTH_AGENT_APP_URL = os.getenv("GROWTH_AGENT_APP_URL", "http://localhost:3100")
 
 # Knowledge base ingestion (Epic 3). Each analysis run chunks + embeds the pages
 # it already crawled into BrandCorpusChunk rows (org-scoped, fail-soft). Bounds
@@ -519,3 +558,38 @@ OUTREACH_REUSE_HOURS = _env_number("OUTREACH_REUSE_HOURS", 24.0, float)
 # so the same question yields the same answer for every prospect and paying
 # twice buys identical words. 0 disables.
 OUTREACH_ANSWER_CACHE_SECONDS = _env_number("OUTREACH_ANSWER_CACHE_SECONDS", 86400, int)
+
+# ── Contact finders (Growth Agent outreach) ─────────────────────────────────
+# Used only when a site publishes no contact email and the owner clicks
+# "Find contacts". A finder without a key is skipped. Hunter's documented
+# "test-api-key" returns dummy data, which is useful locally.
+HUNTER_API_KEY = os.getenv("HUNTER_API_KEY", "")
+APOLLO_API_KEY = os.getenv("APOLLO_API_KEY", "")
+# IndexNow key hosted on signalor.ai's own satellite sites (one key file per
+# site). When set, each satellite article the Growth Agent publishes is sent to
+# Bing the same day; when empty, publishing still works and Bing isn't told.
+SATELLITE_INDEXNOW_KEY = os.getenv("SATELLITE_INDEXNOW_KEY", "")
+# Slug of signalor.ai's own brand in Signalor. Its Search Console connection
+# (the Google account that owns the satellite domains as properties) is used to
+# check satellite articles' indexing, position and clicks every week.
+SATELLITE_GSC_ORG_SLUG = os.getenv("SATELLITE_GSC_ORG_SLUG", "")
+# Social presence score (Growth Agent): public YouTube channel numbers and
+# Reddit brand mentions. Each part is skipped (shown as "not measured") when unset.
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
+REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "")
+REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET", "")
+# The old daily batch (5 AI articles per brand per day on the satellite sites,
+# scheduled or via the "add" button). Replaced by the Growth Agent's satellite
+# articles (one every 3 days, owner-approved, sponsored links); off unless set.
+SATELLITE_DAILY_BATCH_ENABLED = os.getenv("SATELLITE_DAILY_BATCH_ENABLED", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+# Frontend origins a "Sign in with Hunter/Apollo" may send the browser back to
+# (comma separated, e.g. "https://signalor.ai,http://localhost:3002").
+GROWTH_APP_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("GROWTH_APP_ORIGINS", FRONTEND_BASE_URL).split(",")
+    if origin.strip()
+]

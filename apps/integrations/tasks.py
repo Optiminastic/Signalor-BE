@@ -214,6 +214,11 @@ def _run_gsc_index_sync(integration_id: int):
         snapshot.save(update_fields=["sync_status", "error_message"])
 
 
+def run_gsc_index_sync(integration_id: int) -> None:
+    """Run the index-status pass in the calling process (a queue worker), not a new thread."""
+    _run_gsc_index_sync(integration_id)
+
+
 def start_shopify_sync(integration_id: int):
     """Spawn a daemon thread to sync Shopify data."""
     thread = threading.Thread(

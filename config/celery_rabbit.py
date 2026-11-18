@@ -69,6 +69,28 @@ analysis_app.conf.timezone = "UTC"
 # marks the run FAILED in the DB, and acks the message cleanly. The DLQ is only
 # the safety net for messages that can't be processed at all.
 _dlx = Exchange("analysis.dlx", type="direct")
+_growth_dlx = Exchange("growth.dlx", type="direct")
+# The Growth Agent's own queues, each served by its own worker service, so chat
+# replies and approved sends never wait behind a 40-minute site analysis.
+GROWTH_INTERACTIVE = "growth.interactive"
+GROWTH_BACKGROUND = "growth.background"
+
+
+def _growth_queue(name: str) -> Queue:
+    """Same durability as ``analysis``: quorum, parked after 3 failed deliveries."""
+    return Queue(
+        name,
+        Exchange(name, type="direct"),
+        routing_key=name,
+        queue_arguments={
+            "x-queue-type": "quorum",
+            "x-delivery-limit": 3,
+            "x-dead-letter-exchange": "growth.dlx",
+            "x-dead-letter-routing-key": "growth.dead",
+        },
+    )
+
+
 analysis_app.conf.task_default_queue = "analysis"
 analysis_app.conf.task_queues = [
     Queue(
@@ -83,12 +105,46 @@ analysis_app.conf.task_queues = [
         },
     ),
     Queue("analysis.dlq", _dlx, routing_key="analysis.dead"),  # the "problem shelf"
+    *(_growth_queue(name) for name in (GROWTH_INTERACTIVE, GROWTH_BACKGROUND)),
+    Queue("growth.dlq", _growth_dlx, routing_key="growth.dead"),
 ]
 analysis_app.conf.task_routes = {
     "analyzer.run_analysis": {"queue": "analysis"},
     "analyzer.run_scheduled_analysis": {"queue": "analysis"},
     "analyzer.run_outreach_benchmark": {"queue": "analysis"},
+    # Growth Agent: someone is waiting on these, so they never queue behind analyses.
+    "growth_agent.run_chat_turn": {"queue": GROWTH_INTERACTIVE},
+    "growth_agent.preview_task": {"queue": GROWTH_INTERACTIVE},
+    # Everything else the agent does (ticks, drafts, sends, weekly checks).
+    "growth_agent.*": {"queue": GROWTH_BACKGROUND},
 }
+
+# Per-task time limits (seconds): a stuck job frees its slot quickly instead of
+# holding it for the 40 minutes an analysis may need. (hard, soft)
+GROWTH_TIME_LIMITS = {
+    "growth_agent.run_chat_turn": (120, 110),
+    "growth_agent.preview_task": (300, 280),
+    "growth_agent.run_task": (300, 280),
+    "growth_agent.dispatch_action": (120, 110),
+    "growth_agent.brand_tick": (20 * 60, 19 * 60),
+    "growth_agent.run_weekly_snapshot": (20 * 60, 19 * 60),
+    "growth_agent.build_positioning_report": (20 * 60, 19 * 60),
+}
+# Other growth checks (ranks, social, keywords, site, indexing, guest sites): 10 minutes.
+GROWTH_DEFAULT_TIME_LIMIT = (600, 570)
+
+
+class _GrowthTimeLimits:
+    """Celery annotation object: time limits for every ``growth_agent.*`` task."""
+
+    def annotate(self, task):
+        if not task.name.startswith("growth_agent."):
+            return None
+        hard, soft = GROWTH_TIME_LIMITS.get(task.name, GROWTH_DEFAULT_TIME_LIMIT)
+        return {"time_limit": hard, "soft_time_limit": soft}
+
+
+analysis_app.conf.task_annotations = [_GrowthTimeLimits()]
 
 # Look for `analysis_tasks` modules (NOT `celery_tasks`) so only the analysis
 # task registers on this RabbitMQ app.

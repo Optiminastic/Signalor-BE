@@ -129,6 +129,19 @@ class GithubClient:
             raise ValueError(f"create_pull_request failed (HTTP {resp.status_code}): {resp.text[:300]}")
         return resp.json()
 
+    def merge_pull_request(self, number: int, commit_title: str) -> dict:
+        """Squash-merge a PR. Used by the Growth Agent for fully autonomous publishing."""
+        resp = self.session.put(
+            self._repo_url(f"/pulls/{number}/merge"),
+            json={"merge_method": "squash", "commit_title": commit_title},
+            timeout=20,
+        )
+        if resp.status_code != 200:
+            raise ValueError(
+                f"merge_pull_request #{number} failed (HTTP {resp.status_code}): {resp.text[:300]}"
+            )
+        return resp.json()
+
     def get_pull_request(self, number: int) -> dict | None:
         """One PR's current state, or None when it can't be read.
 

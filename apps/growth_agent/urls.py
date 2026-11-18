@@ -1,0 +1,250 @@
+from django.urls import path
+
+from .views import (
+    ActivityView,
+    BrandAnalysisView,
+    BrandOnboardView,
+    ConversationChatView,
+    ConversationListView,
+    GmailCallbackView,
+    GmailConnectionView,
+    GmailDisconnectView,
+    MeView,
+    PlanView,
+    PositioningReportView,
+    ProgramDetailView,
+    ProgramListCreateView,
+    TaskActionView,
+    TaskUpdateView,
+    TrackingView,
+)
+from .views_batches import BatchDecideView, BatchDetailView, BatchListView
+from .views_control import (
+    APPROVE,
+    REJECT,
+    REVOKE,
+    ActionDecisionView,
+    ActionDetailView,
+    ActionEditView,
+    ActionPostedView,
+    ActionResolveView,
+    ApprovalListView,
+    FindContactsView,
+    TaskContactView,
+)
+from .views_finders import (
+    FinderConnectView,
+    FinderDisconnectView,
+    FinderListView,
+    FinderOAuthCallbackView,
+    FinderSignInView,
+)
+from .views_guest_posts import GuestPostsFindView, GuestPostsView
+from .views_indexing import (
+    BingSendView,
+    BingSwitchView,
+    BingVerifyView,
+    IndexingCheckView,
+    IndexingRequestedView,
+    IndexingView,
+    SatelliteRankView,
+)
+from .views_keyword_tools import KeywordToolConnectView, KeywordToolDisconnectView, KeywordToolListView
+from .views_keywords import KeywordsRefreshView, KeywordsView
+from .views_safety import SafetyChallengeView, SafetyChangeListView, SafetyConfirmView
+from .views_social import BufferDisconnectView, BufferSignInView, SocialCheckView, SocialView
+from .views_tracking import (
+    RankTrackingCheckView,
+    RankTrackingView,
+    TrackedKeywordAddView,
+    TrackedKeywordRemoveView,
+)
+
+app_name = "growth_agent"
+
+urlpatterns = [
+    path("me/", MeView.as_view(), name="me"),
+    path("brands/", BrandOnboardView.as_view(), name="brands"),
+    path("brands/<str:org_slug>/analysis/", BrandAnalysisView.as_view(), name="brand-analysis"),
+    path("programs/", ProgramListCreateView.as_view(), name="programs"),
+    path("programs/<str:org_slug>/positioning/", PositioningReportView.as_view(), name="positioning"),
+    path("oauth/gmail/callback/", GmailCallbackView.as_view(), name="gmail-callback"),
+    path(
+        "programs/<str:org_slug>/connections/gmail/",
+        GmailConnectionView.as_view(),
+        name="gmail-connection",
+    ),
+    path(
+        "programs/<str:org_slug>/connections/gmail/disconnect/",
+        GmailDisconnectView.as_view(),
+        name="gmail-disconnect",
+    ),
+    path("programs/<str:org_slug>/chats/", ConversationListView.as_view(), name="chats"),
+    path(
+        "programs/<str:org_slug>/chats/<str:public_id>/",
+        ConversationChatView.as_view(),
+        name="chat",
+    ),
+    path("programs/<str:org_slug>/approvals/", ApprovalListView.as_view(), name="approvals"),
+    path("programs/<str:org_slug>/batches/", BatchListView.as_view(), name="batches"),
+    path("programs/<str:org_slug>/safety-changes/", SafetyChangeListView.as_view(), name="safety-changes"),
+    path(
+        "programs/<str:org_slug>/safety-changes/<int:change_id>/challenge/",
+        SafetyChallengeView.as_view(),
+        name="safety-challenge",
+    ),
+    path(
+        "programs/<str:org_slug>/safety-changes/<int:change_id>/confirm/",
+        SafetyConfirmView.as_view(),
+        name="safety-confirm",
+    ),
+    path("programs/<str:org_slug>/batches/<int:batch_id>/", BatchDetailView.as_view(), name="batch"),
+    path(
+        "programs/<str:org_slug>/batches/<int:batch_id>/decide/",
+        BatchDecideView.as_view(),
+        name="batch-decide",
+    ),
+    path(
+        "programs/<str:org_slug>/actions/<str:public_id>/approve/",
+        ActionDecisionView.as_view(decision=APPROVE),
+        name="action-approve",
+    ),
+    path(
+        "programs/<str:org_slug>/actions/<str:public_id>/reject/",
+        ActionDecisionView.as_view(decision=REJECT),
+        name="action-reject",
+    ),
+    path(
+        "programs/<str:org_slug>/actions/<str:public_id>/revoke/",
+        ActionDecisionView.as_view(decision=REVOKE),
+        name="action-revoke",
+    ),
+    path(
+        "programs/<str:org_slug>/actions/<str:public_id>/edit/",
+        ActionEditView.as_view(),
+        name="action-edit",
+    ),
+    path(
+        "programs/<str:org_slug>/actions/<str:public_id>/resolve/",
+        ActionResolveView.as_view(),
+        name="action-resolve",
+    ),
+    path(
+        "programs/<str:org_slug>/actions/<str:public_id>/posted/",
+        ActionPostedView.as_view(),
+        name="action-posted",
+    ),
+    path(
+        "programs/<str:org_slug>/actions/<str:public_id>/",
+        ActionDetailView.as_view(),
+        name="action-detail",
+    ),
+    path("programs/<str:org_slug>/activity/", ActivityView.as_view(), name="activity"),
+    path(
+        "programs/<str:org_slug>/activity/<str:category>/", ActivityView.as_view(), name="activity-category"
+    ),
+    path(
+        "programs/<str:org_slug>/activity/<str:category>/<int:before>/",
+        ActivityView.as_view(),
+        name="activity-page",
+    ),
+    path("programs/<str:org_slug>/tracking/", TrackingView.as_view(), name="tracking"),
+    path("programs/<str:org_slug>/plan/", PlanView.as_view(), name="plan"),
+    path(
+        "programs/<str:org_slug>/tasks/<int:task_id>/find-contacts/",
+        FindContactsView.as_view(),
+        name="task-find-contacts",
+    ),
+    path(
+        "programs/<str:org_slug>/tasks/<int:task_id>/contact/",
+        TaskContactView.as_view(),
+        name="task-contact",
+    ),
+    path(
+        "programs/<str:org_slug>/tasks/<int:task_id>/preview/",
+        TaskActionView.as_view(action="preview"),
+        name="task-preview",
+    ),
+    path(
+        "programs/<str:org_slug>/tasks/<int:task_id>/run/",
+        TaskActionView.as_view(action="run"),
+        name="task-run",
+    ),
+    path("programs/<str:org_slug>/tasks/<int:task_id>/", TaskUpdateView.as_view(), name="task"),
+    path("programs/<str:org_slug>/guest-posts/", GuestPostsView.as_view(), name="guest-posts"),
+    path("programs/<str:org_slug>/guest-posts/find/", GuestPostsFindView.as_view(), name="guest-posts-find"),
+    path("programs/<str:org_slug>/keywords/", KeywordsView.as_view(), name="keywords"),
+    path("programs/<str:org_slug>/keywords/refresh/", KeywordsRefreshView.as_view(), name="keywords-refresh"),
+    path("programs/<str:org_slug>/keyword-tools/", KeywordToolListView.as_view(), name="keyword-tools"),
+    path("programs/<str:org_slug>/rank-tracking/", RankTrackingView.as_view(), name="rank-tracking"),
+    path(
+        "programs/<str:org_slug>/rank-tracking/check/",
+        RankTrackingCheckView.as_view(),
+        name="rank-tracking-check",
+    ),
+    path(
+        "programs/<str:org_slug>/rank-tracking/keywords/",
+        TrackedKeywordAddView.as_view(),
+        name="rank-tracking-keyword-add",
+    ),
+    path(
+        "programs/<str:org_slug>/rank-tracking/keywords/<int:keyword_id>/remove/",
+        TrackedKeywordRemoveView.as_view(),
+        name="rank-tracking-keyword-remove",
+    ),
+    path(
+        "programs/<str:org_slug>/keyword-tools/<str:provider>/connect/",
+        KeywordToolConnectView.as_view(),
+        name="keyword-tool-connect",
+    ),
+    path(
+        "programs/<str:org_slug>/keyword-tools/<str:provider>/disconnect/",
+        KeywordToolDisconnectView.as_view(),
+        name="keyword-tool-disconnect",
+    ),
+    path("programs/<str:org_slug>/social/", SocialView.as_view(), name="social"),
+    path("programs/<str:org_slug>/social/check/", SocialCheckView.as_view(), name="social-check"),
+    path(
+        "programs/<str:org_slug>/social/buffer/sign-in/",
+        BufferSignInView.as_view(),
+        name="social-buffer-sign-in",
+    ),
+    path(
+        "programs/<str:org_slug>/social/buffer/disconnect/",
+        BufferDisconnectView.as_view(),
+        name="social-buffer-disconnect",
+    ),
+    path("programs/<str:org_slug>/indexing/", IndexingView.as_view(), name="indexing"),
+    path("programs/<str:org_slug>/indexing/check/", IndexingCheckView.as_view(), name="indexing-check"),
+    path(
+        "programs/<str:org_slug>/indexing/requested/",
+        IndexingRequestedView.as_view(),
+        name="indexing-requested",
+    ),
+    path("programs/<str:org_slug>/indexing/bing/", BingSwitchView.as_view(), name="indexing-bing"),
+    path(
+        "programs/<str:org_slug>/indexing/satellite/", SatelliteRankView.as_view(), name="indexing-satellite"
+    ),
+    path(
+        "programs/<str:org_slug>/indexing/bing/verify/", BingVerifyView.as_view(), name="indexing-bing-verify"
+    ),
+    path("programs/<str:org_slug>/indexing/bing/send/", BingSendView.as_view(), name="indexing-bing-send"),
+    path("programs/<str:org_slug>/finders/", FinderListView.as_view(), name="finders"),
+    path("oauth/finders/callback/", FinderOAuthCallbackView.as_view(), name="finder-oauth-callback"),
+    path(
+        "programs/<str:org_slug>/finders/<str:provider>/sign-in/",
+        FinderSignInView.as_view(),
+        name="finder-sign-in",
+    ),
+    path(
+        "programs/<str:org_slug>/finders/<str:provider>/connect/",
+        FinderConnectView.as_view(),
+        name="finder-connect",
+    ),
+    path(
+        "programs/<str:org_slug>/finders/<str:provider>/disconnect/",
+        FinderDisconnectView.as_view(),
+        name="finder-disconnect",
+    ),
+    path("programs/<str:org_slug>/", ProgramDetailView.as_view(), name="program-detail"),
+]

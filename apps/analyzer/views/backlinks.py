@@ -139,6 +139,7 @@ class BacklinkCatalogView(APIView):
                 },
             )
 
+
 class BacklinkOrderListCreateView(APIView):
     """
     GET  /runs/s/<slug>/backlinks/orders/         — list orders for this run
@@ -252,6 +253,7 @@ class BacklinkOrderListCreateView(APIView):
 
         return Response(_serialize_order(order), status=status.HTTP_201_CREATED)
 
+
 class BacklinkOrderDetailView(APIView):
     """
     GET  /runs/s/<slug>/backlinks/orders/<int:order_id>/  — refresh status
@@ -343,6 +345,7 @@ class BacklinkOrderDetailView(APIView):
         order.save(update_fields=["status"])
         return Response(_serialize_order(order))
 
+
 class BacklinkOrderConfirmPaymentView(APIView):
     """
     POST /runs/s/<slug>/backlinks/orders/<int:order_id>/confirm-payment/
@@ -401,6 +404,7 @@ class BacklinkOrderConfirmPaymentView(APIView):
 
         return Response(_serialize_order(order))
 
+
 class RunBacklinkFreeView(APIView):
     """Site-level free backlink opportunities (no prompt required).
 
@@ -450,6 +454,7 @@ class RunBacklinkFreeView(APIView):
         kit.payload = {**(kit.payload or {}), "site_backlink_opportunities": rows}
         kit.save(update_fields=["payload", "updated_at"])
         return Response({"rows": rows, "has_generated": True})
+
 
 class DomainRatingFreeView(APIView):
     """POST /api/analyzer/tools/domain-rating/
@@ -503,6 +508,7 @@ class DomainRatingFreeView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
+
 class OurBacklinksView(APIView):
     """GET /runs/s/<slug>/backlinks/our/ — backlinks created for this brand by
     publishing blogs to the satellite network (read from the shared blog DB)."""
@@ -537,6 +543,7 @@ class OurBacklinksView(APIView):
             logger.warning("our-backlinks: S3 read failed for %s: %s", slug, exc)
         return Response({"rows": rows, "can_add_today": _auto_can_add_today(run)})
 
+
 class BacklinkScheduleView(APIView):
     """GET/POST /runs/s/<slug>/backlinks/schedule/ — the per-brand DAILY
     auto-backlinks schedule. When active, ``run_backlink_schedules`` publishes a
@@ -558,18 +565,23 @@ class BacklinkScheduleView(APIView):
 
     @staticmethod
     def _serialize(sched):
+        from ..services.backlink_engine import daily_batch_enabled
+
+        replaced = not daily_batch_enabled()
         if not sched:
             return {
                 "is_active": False,
                 "next_run_at": None,
                 "last_run_at": None,
                 "last_batch_count": 0,
+                "replaced_by_agent": replaced,
             }
         return {
-            "is_active": sched.is_active,
+            "is_active": sched.is_active and not replaced,
             "next_run_at": sched.next_run_at,
             "last_run_at": sched.last_run_at,
             "last_batch_count": sched.last_batch_count,
+            "replaced_by_agent": replaced,
         }
 
     def get(self, request, slug):
@@ -583,9 +595,12 @@ class BacklinkScheduleView(APIView):
         from django.utils import timezone
 
         from ..models import BacklinkSchedule
+        from ..services.backlink_engine import REPLACED_BY_AGENT, daily_batch_enabled
 
         run = get_object_or_404(AnalysisRun, slug=slug)
         is_active = bool(request.data.get("is_active", True))
+        if is_active and not daily_batch_enabled():
+            return Response({"error": REPLACED_BY_AGENT}, status=status.HTTP_409_CONFLICT)
 
         sched = self._lookup(run)
         if sched is None:

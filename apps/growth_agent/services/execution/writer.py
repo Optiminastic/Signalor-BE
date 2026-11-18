@@ -1,0 +1,87 @@
+"""
+Writes an answer-first page for an owned-content task.
+
+Grounding: brand facts come only from the approved brand card and the brand's
+own knowledge base (pgvector retrieval). The prompt forbids inventing numbers,
+customers or claims about competitors; ``safety.py`` then checks the result.
+"""
+
+from __future__ import annotations
+
+from core.llm.structured import ask_structured
+
+from ...models import GrowthTask
+from .article import ArticleDraft
+from .brand import brand_card, brand_facts, display_name
+
+WRITER_TIER = "strong"
+WRITER_MAX_TOKENS = 4000
+KNOWLEDGE_CHARS = 3000
+PURPOSE = "growth-owned-content"
+
+_TACTIC_BRIEFS = {
+    "answer_content": (
+        "Write an answer-first explainer on the topic below. Open with a direct 2 to 3 sentence answer, "
+        "then 4 to 6 sections that cover the sub-questions buyers ask, then 4 to 6 FAQs."
+    ),
+    "comparison_page": (
+        "Write a neutral, genuinely useful comparison guide that answers the buyer question below. "
+        "Explain the evaluation criteria, where the brand fits and who it is best for. Mention other "
+        "options only in neutral, verifiable terms; never disparage competitors."
+    ),
+    # Published on a signalor.ai editorial site, not the brand's own site: it must be
+    # useful on its own and cover the question broadly, with the brand as one option.
+    "satellite_article": (
+        "Write an independent, genuinely useful editorial article that answers the question below for "
+        "readers who don't know the brand yet. Open with a direct 2 to 3 sentence answer, then 4 to 6 "
+        "sections covering how to evaluate the options and what matters, then 3 to 5 FAQs. Describe "
+        "approaches and types of solutions in neutral terms, without naming or judging specific "
+        "competitors. The brand appears as one option in its own section, described only with the facts "
+        "given. Do not write it as an advertisement."
+    ),
+    # A published satellite article that isn't reaching page 1: rewrite it to answer better.
+    "satellite_refresh": (
+        "Rewrite the CURRENT ARTICLE in KNOWLEDGE so it answers the question below better than any page "
+        "on the topic: a sharper direct answer first, fuller coverage of what readers need to decide, "
+        "clearer section headings that match how people search, and 4 to 6 FAQs. Keep it independent and "
+        "useful on its own, with the brand as one option in its own section. Do not add facts that are "
+        "not in KNOWLEDGE."
+    ),
+}
+
+_RULES = (
+    "Rules:\n"
+    "- Use ONLY facts about the brand from BRAND CONTEXT and KNOWLEDGE. If a fact is not there, leave it out.\n"
+    "- Never invent statistics, prices, customer names, awards, rankings or testimonials.\n"
+    "- Never make claims about competitors' pricing, quality or failings.\n"
+    "- Write for humans first: specific, plain language, no hype words like 'revolutionary' or 'best-in-class'.\n"
+    "- Each section should be self-contained so an AI engine can quote it on its own.\n"
+    "- Include one section on where the brand fits, named after the brand, using only the facts given. "
+    "If the facts are thin, keep it to a short, factual description of what the brand does."
+)
+
+
+def build_prompt(task: GrowthTask, brand_name: str, knowledge: str) -> str:
+    brief = _TACTIC_BRIEFS.get(task.tactic, _TACTIC_BRIEFS["answer_content"])
+    return (
+        f"Brand: {brand_name}\n{brief}\n\nTOPIC / QUESTION: {task.target}\n\n"
+        f"KNOWLEDGE (from the brand's own site):\n{knowledge or '(none available)'}\n\n{_RULES}"
+    )
+
+
+def gather_knowledge(task: GrowthTask) -> str:
+    """Brand facts for this topic; the safety check must see exactly the same text."""
+    return brand_facts(task.cycle.program.organization, task.target, KNOWLEDGE_CHARS)
+
+
+def write_article(task: GrowthTask, knowledge: str) -> ArticleDraft | None:
+    org = task.cycle.program.organization
+    return ask_structured(
+        build_prompt(task, display_name(org), knowledge),
+        ArticleDraft,
+        system=brand_card(org) or None,
+        tier=WRITER_TIER,
+        max_tokens=WRITER_MAX_TOKENS,
+        temperature=0.3,
+        purpose=PURPOSE,
+    )

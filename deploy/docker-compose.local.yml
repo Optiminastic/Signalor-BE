@@ -107,7 +107,7 @@ services:
       - sh
       - -c
       - >
-        python manage.py migrate --no-input &&
+        sh scripts/migrate.sh &&
         exec opentelemetry-instrument gunicorn config.wsgi:application
         --bind 0.0.0.0:8000 --workers 2 --threads 4 --timeout 600
     depends_on:
@@ -145,6 +145,49 @@ services:
       - ${SITEONE_BIN:-/dev/null}:/usr/local/bin/siteone-crawler:ro
     depends_on:
       db: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+      web: {condition: service_started}
+
+  growth-interactive-worker:
+    <<: *app
+    # Growth Agent jobs someone is waiting on (chat replies, previews). Its own
+    # queue and worker, so they never wait behind a 40-minute site analysis.
+    command: ["celery", "-A", "config.celery_rabbit", "worker", "-Q", "growth.interactive", "--loglevel=info",
+              "--concurrency=2", "-O", "fair", "--max-tasks-per-child=200", "-n", "growth-interactive@%h"]
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+      web: {condition: service_started}
+
+  growth-worker:
+    <<: *app
+    # Everything else the agent does: one tick per brand per round (drafts, approved
+    # sends, reply checks, weekly checks). Sized for 50 active brands; raise the
+    # concurrency (and GROWTH_MAX_ACTIVE_PROGRAMS) only after re-running the load test.
+    command: ["celery", "-A", "config.celery_rabbit", "worker", "-Q", "growth.background", "--loglevel=info",
+              "--concurrency=2", "-O", "fair", "--max-tasks-per-child=100", "-n", "growth-background@%h"]
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+      web: {condition: service_started}
+
+  growth-scheduler:
+    <<: *app
+    # Exactly one per deployment: queues a round of brand ticks every 15 minutes and
+    # alerts (GROWTH_OPS_ALERT_EMAILS) when the scheduler, a brand or a send stalls.
+    # Replaces a host cron running run_growth_tasks; don't run both.
+    command: ["python", "manage.py", "run_growth_scheduler"]
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
       rabbitmq: {condition: service_healthy}
       web: {condition: service_started}
 

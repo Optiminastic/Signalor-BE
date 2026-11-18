@@ -74,5 +74,6 @@ REST_FRAMEWORK = {
         "onboard_email": None,
         "public_api_read": None,
         "public_api_write": None,
+        "growth_agent": None,
     },
 }

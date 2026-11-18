@@ -132,17 +132,14 @@ def list_gsc_sites(integration: Integration) -> list[dict]:
         body = resp.text or ""
         # A disabled API is a Google Cloud project config gap, not a bad
         # connection — say so, so users stop reconnecting in circles.
-        if resp.status_code == 403 and (
-            "SERVICE_DISABLED" in body or "has not been used in project" in body
-        ):
+        if resp.status_code == 403 and ("SERVICE_DISABLED" in body or "has not been used in project" in body):
             raise ValueError(
                 "The Google Search Console API is disabled for this project. Enable "
                 "'Search Console API' in Google Cloud, wait ~2 minutes, then retry."
             )
         if resp.status_code in (401, 403):
             raise ValueError(
-                "Google denied access to Search Console. Reconnect and grant the "
-                "Search Console permission."
+                "Google denied access to Search Console. Reconnect and grant the Search Console permission."
             )
         raise ValueError(f"Failed to list Search Console sites (HTTP {resp.status_code}).")
 
@@ -308,7 +305,9 @@ def fetch_gsc_data(integration: Integration, days: int = 30) -> dict:
     }
 
 
-def fetch_gsc_page_metrics(integration: Integration, page_url: str, days: int = 30) -> dict:
+def fetch_gsc_page_metrics(
+    integration: Integration, page_url: str, days: int = 30, *, site_url: str | None = None
+) -> dict:
     """
     Fetch Search Console metrics for a single analyzed page URL.
 
@@ -325,7 +324,8 @@ def fetch_gsc_page_metrics(integration: Integration, page_url: str, days: int = 
     if not page_url:
         return empty
 
-    site_url = integration.metadata.get("site_url")
+    # ``site_url`` picks another property of the same account (default: the selected one).
+    site_url = site_url or integration.metadata.get("site_url")
     if not site_url:
         raise ValueError("No Search Console property selected for this integration.")
 
@@ -368,7 +368,9 @@ def fetch_gsc_page_metrics(integration: Integration, page_url: str, days: int = 
     }
 
 
-def inspect_gsc_url(integration: Integration, page_url: str, token: str | None = None) -> dict:
+def inspect_gsc_url(
+    integration: Integration, page_url: str, token: str | None = None, *, site_url: str | None = None
+) -> dict:
     """
     Run the URL Inspection API for a single URL against the selected property.
 
@@ -378,7 +380,7 @@ def inspect_gsc_url(integration: Integration, page_url: str, token: str | None =
     Pass ``token`` to reuse a pre-fetched bearer across many inspections (avoids a
     DB hit + token rebuild per call) — important when inspecting in parallel.
     """
-    site_url = integration.metadata.get("site_url")
+    site_url = site_url or integration.metadata.get("site_url")
     if not site_url:
         raise ValueError("No Search Console property selected for this integration.")
     if not page_url:

@@ -22,4 +22,4 @@ python manage.py collectstatic --no-input
 # scripts/reconcile_migrations.py — safe on fresh and healthy databases too.
 python scripts/reconcile_migrations.py
 
-python manage.py migrate --no-input
+sh scripts/migrate.sh

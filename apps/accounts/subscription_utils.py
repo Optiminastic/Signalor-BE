@@ -249,6 +249,12 @@ def _effective_plan_key(email: str | None) -> str:
     return "starter"
 
 
+def effective_plan_key(email: str | None) -> str:
+    """Public accessor: the plan key that applies to this email right now
+    (``business`` for internal emails, ``starter`` without an active sub)."""
+    return _effective_plan_key(email)
+
+
 def get_plan_limits(email: str | None) -> dict:
     """Return the plan limits dict for a user (defaults to starter).
     Internal emails get unlimited (business) limits."""
@@ -509,9 +515,7 @@ def _autofix_generation_qs(organization, since):
     return autofix_generations(since).filter(analysis_run__organization=organization)
 
 
-def autofix_limit_reached(
-    email: str | None, organization, additional: int = 1
-) -> tuple[bool, str]:
+def autofix_limit_reached(email: str | None, organization, additional: int = 1) -> tuple[bool, str]:
     """Whether generating ``additional`` more auto-fixes would exceed the
     brand's daily or 30-day quota."""
     if is_internal_email(email):

@@ -1,9 +1,10 @@
 name: Deploy backend (main)
 
 # Build the image on push to main, push it to GHCR, then trigger a Coolify
-# deployment (signalor now runs under Coolify — dashboard at deploy.signalor.ai —
-# NOT the old standalone docker-compose stack). Coolify pulls the freshly built
-# `:latest` image and recreates the web/worker/analysis-worker containers.
+# deployment. Signalor runs as a Coolify service on server signalor-nbg1,
+# managed from deploy.optiminastic.com (moved from the old deploy.signalor.ai
+# panel on 2026-11-18). Coolify pulls the freshly built `:latest` image and
+# recreates the service's containers (web, workers, growth workers, scheduler).
 #
 # Required repo secret:
 #   COOLIFY_TOKEN  — Coolify API token with the `deploy` ability.
@@ -28,8 +29,8 @@ permissions:
 
 env:
   IMAGE: ghcr.io/optiminastic/signalor-be
-  COOLIFY_URL: https://deploy.signalor.ai
-  COOLIFY_SERVICE_UUID: d11oz4lylx5pgz8rtuj1ho3d
+  COOLIFY_URL: https://deploy.optiminastic.com
+  COOLIFY_SERVICE_UUID: ijsynrscylkfu6umdwsixb5i
 
 jobs:
   build:
