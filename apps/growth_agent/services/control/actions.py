@@ -19,6 +19,7 @@ from ...models import ActionVersion, AgentActionLog, GrowthAction, GrowthTask
 from ..execution import audit
 from ..execution.article import ArticleDraft, render_markdown
 from ..execution.channel_base import Prepared
+from . import batch_items
 
 FIRST_VERSION = 1
 AUDIT_PREPARED = "prepared"
@@ -106,6 +107,7 @@ def create_action(task: GrowthTask, prepared: Prepared, *, thread=None, sequence
         )
         action.current_version = version
         action.save(update_fields=["current_version", "updated_at"])
+        batch_items.add(action, version)
         detail = {"action": action.public_id, "version": version.number, "kind": action.kind}
         if prepared.review_notes:
             detail["concerns"] = list(prepared.review_notes)

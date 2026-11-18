@@ -746,3 +746,51 @@ class DispatchAttemptLedger(ImmutableModel):
 
     def __str__(self) -> str:
         return f"DispatchAttemptLedger<{self.action_public_id}:{self.kind}:{self.seq}>"
+
+
+class ApprovalBatch(ImmutableModel):
+    """A group of drafts for the owner to review together: one per brand per day.
+
+    Grouping only. Approval stays one decision per action and exact version;
+    a batch can reject several drafts at once, never approve them.
+    """
+
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="growth_batches")
+    day = models.DateField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-day", "-id"]
+        constraints = [
+            models.UniqueConstraint(fields=["organization", "day"], name="growth_batch_one_per_day"),
+        ]
+
+    def __str__(self) -> str:
+        return f"ApprovalBatch<{self.organization_id}:{self.day}>"
+
+
+class ApprovalBatchItem(ImmutableModel):
+    """One exact version of an action in a batch. An edit adds a new item, never
+    changes an old one; an item whose version is no longer current is superseded."""
+
+    class Reason(models.TextChoices):
+        PREPARED = "prepared", "Drafted"
+        EDITED = "edited", "Edited"
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="growth_batch_items"
+    )
+    batch = models.ForeignKey(ApprovalBatch, on_delete=models.CASCADE, related_name="items")
+    action = models.ForeignKey(GrowthAction, on_delete=models.CASCADE, related_name="batch_items")
+    version = models.ForeignKey(ActionVersion, on_delete=models.CASCADE, related_name="batch_items")
+    added_reason = models.CharField(max_length=8, choices=Reason.choices, default=Reason.PREPARED)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(fields=["batch", "action", "version"], name="growth_batch_item_once"),
+        ]
+
+    def __str__(self) -> str:
+        return f"ApprovalBatchItem<{self.batch_id}:{self.action_id}:v{self.version_id}>"

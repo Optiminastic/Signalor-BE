@@ -24,8 +24,8 @@ from django.utils import timezone
 
 from apps.organizations.models import Organization
 
-from ..models import ApprovalDecision, GrowthAction, GrowthCycle, GrowthProgram, GrowthTask
-from ..services.control import approvals, dispatch, editing, resolution
+from ..models import ApprovalBatchItem, ApprovalDecision, GrowthAction, GrowthCycle, GrowthProgram, GrowthTask
+from ..services.control import approvals, batches, dispatch, editing, resolution
 from ..services.execution import executor, guardrails
 from .test_execution_flow import REGISTRY, FakeChannel
 
@@ -249,3 +249,24 @@ class BrandCapConcurrencyTests(ConcurrencyBase):
             self.assertEqual(len(self.channel.executed) - before, 1)
             states = {self.fresh(first).state, self.fresh(second).state}
             self.assertEqual(states, {GrowthAction.State.SUCCEEDED, GrowthAction.State.APPROVED})
+
+
+@skipUnless(connection.vendor == "postgresql", "needs Postgres row locks")
+class BatchConcurrencyTests(ConcurrencyBase):
+    def test_a_bulk_reject_racing_an_approval_records_exactly_one_decision(self):
+        for number in range(ROUNDS):
+            action = self.draft(number)
+            version = action.current_version
+            item = batches.BatchItemRequest(action.public_id, version.number, version.payload_hash)
+            batch = ApprovalBatchItem.objects.get(action=action).batch
+            outcomes = run_together(
+                partial(batches.reject, self.program, batch, [item], actor_email=OWNER),
+                partial(self.approve, action),
+            )
+            decisions = ApprovalDecision.objects.filter(action=action).count()
+            final = self.fresh(action).state
+            self.assertIn(decisions, (1, 2))  # approve then reject is allowed (rejected after approval)
+            self.assertIn(final, (GrowthAction.State.APPROVED, GrowthAction.State.REJECTED))
+            if final == GrowthAction.State.APPROVED:
+                self.assertEqual(decisions, 1)
+                self.assertNotEqual(outcomes[0][0]["result"], "rejected")

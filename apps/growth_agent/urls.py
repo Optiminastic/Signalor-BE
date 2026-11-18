@@ -18,6 +18,7 @@ from .views import (
     TaskUpdateView,
     TrackingView,
 )
+from .views_batches import BatchDecideView, BatchDetailView, BatchListView
 from .views_control import (
     APPROVE,
     REJECT,
@@ -84,6 +85,13 @@ urlpatterns = [
         name="chat",
     ),
     path("programs/<str:org_slug>/approvals/", ApprovalListView.as_view(), name="approvals"),
+    path("programs/<str:org_slug>/batches/", BatchListView.as_view(), name="batches"),
+    path("programs/<str:org_slug>/batches/<int:batch_id>/", BatchDetailView.as_view(), name="batch"),
+    path(
+        "programs/<str:org_slug>/batches/<int:batch_id>/decide/",
+        BatchDecideView.as_view(),
+        name="batch-decide",
+    ),
     path(
         "programs/<str:org_slug>/actions/<str:public_id>/approve/",
         ActionDecisionView.as_view(decision=APPROVE),

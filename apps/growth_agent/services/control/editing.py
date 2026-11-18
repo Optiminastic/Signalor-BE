@@ -22,10 +22,17 @@ from dataclasses import dataclass
 
 from django.db import transaction
 
-from ...models import ActionVersion, AgentActionLog, GrowthAction, GrowthProgram, GrowthTask
+from ...models import (
+    ActionVersion,
+    AgentActionLog,
+    ApprovalBatchItem,
+    GrowthAction,
+    GrowthProgram,
+    GrowthTask,
+)
 from ..execution import audit
 from ..execution.article import SLUG_MAX_LENGTH, ArticleDraft, slugify
-from . import actions
+from . import actions, batch_items
 from .actions import FOOTER_SEPARATOR, split_footer
 from .approvals import ActionNotFound, DecisionRefused, matches_current
 
@@ -170,6 +177,7 @@ def edit(program: GrowthProgram, public_id: str, request: EditRequest) -> Growth
             review_notes=current.review_notes,
         )
         _back_to_review(action, version)
+        batch_items.add(action, version, ApprovalBatchItem.Reason.EDITED)
         audit.record(
             program,
             action.task,

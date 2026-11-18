@@ -88,6 +88,8 @@ class ActionSerializer(serializers.ModelSerializer):
     content = serializers.SerializerMethodField()
     # When the approval in force runs out; null unless the action is approved.
     approval_expires_at = serializers.SerializerMethodField()
+    # The review batch holding this exact version (for "reject selected").
+    batch_id = serializers.SerializerMethodField()
 
     class Meta:
         model = GrowthAction
@@ -101,10 +103,17 @@ class ActionSerializer(serializers.ModelSerializer):
             "payload_hash",
             "content",
             "approval_expires_at",
+            "batch_id",
             "created_at",
             "updated_at",
         ]
         read_only_fields = fields
+
+    def get_batch_id(self, action: GrowthAction) -> int | None:
+        for item in action.batch_items.all():
+            if item.version_id == action.current_version_id:
+                return item.batch_id
+        return None
 
     def get_version(self, action: GrowthAction) -> int | None:
         return action.current_version.number if action.current_version else None

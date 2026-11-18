@@ -62,7 +62,9 @@ class ApprovalListView(GrowthBaseView):
             return missing
         # Decisions are prefetched for each action's approval expiry.
         pending = (
-            _actions_for(program).filter(state__in=PENDING_STATES).prefetch_related("decisions")[:PAGE_SIZE]
+            _actions_for(program)
+            .filter(state__in=PENDING_STATES)
+            .prefetch_related("decisions", "batch_items")[:PAGE_SIZE]
         )
         return Response({"actions": ActionSerializer(pending, many=True).data})
 
