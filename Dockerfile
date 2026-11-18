@@ -61,6 +61,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # so the PDF/cairo path loads at runtime. (Chromium's own deps overlap these,
 # but listing them explicitly keeps the runtime contract independent of which
 # libs a given playwright version happens to pull.)
+# libatomic1: Playwright's bundled Node driver links libatomic.so.1 (playwright
+# >= ~1.5x, resolved from `playwright>=1.49,<2`); without it `playwright install`
+# exits 127 and the image doesn't build.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libcairo2 \
         libpango-1.0-0 \
@@ -68,6 +71,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgdk-pixbuf-2.0-0 \
         shared-mime-info \
         fontconfig \
+        libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Bring the finished venv over from the builder (ships zero compilers).
