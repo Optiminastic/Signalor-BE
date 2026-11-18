@@ -16,6 +16,7 @@ from core.auth.identity import resolve_request_email
 from core.permissions.throttling import PollingThrottle
 
 from . import access, observation
+from .exceptions import OrganizationDeletionBlocked
 from .models import BrandProfile, Organization
 from .serializers import (
     BrandProfileSerializer,
@@ -256,7 +257,15 @@ class OrganizationDetailView(APIView):
 
     def _destroy(self, request, org):
         org_id = org.pk
-        org.delete()
+        try:
+            # Its own atomic block: a refusal raised mid-delete rolls back cleanly
+            # even inside a caller's transaction (Django's delete uses no savepoint).
+            with transaction.atomic():
+                org.delete()
+        except OrganizationDeletionBlocked as exc:
+            # A send of this brand is in flight or its result is unknown; nothing was deleted.
+            logger.info("organization delete refused org_id=%s: unresolved sends", org_id)
+            return Response(exc.detail, status=status.HTTP_409_CONFLICT)
         logger.info("organization deleted org_id=%s", org_id)
         return Response(status=status.HTTP_204_NO_CONTENT)
 

@@ -18,10 +18,11 @@ from datetime import timedelta
 from functools import partial
 from unittest import mock, skipUnless
 
-from django.db import connection, connections
+from django.db import connection, connections, transaction
 from django.test import TransactionTestCase
 from django.utils import timezone
 
+from apps.organizations.exceptions import OrganizationDeletionBlocked
 from apps.organizations.models import Organization
 
 from ..models import ApprovalBatchItem, ApprovalDecision, GrowthAction, GrowthCycle, GrowthProgram, GrowthTask
@@ -270,3 +271,46 @@ class BatchConcurrencyTests(ConcurrencyBase):
             if final == GrowthAction.State.APPROVED:
                 self.assertEqual(decisions, 1)
                 self.assertNotEqual(outcomes[0][0]["result"], "rejected")
+
+
+class WatchingChannel(FakeChannel):
+    """A slow provider call that checks the brand still exists at the end of the call."""
+
+    def __init__(self, org_id):
+        super().__init__()
+        self.org_id = org_id
+        self.brand_gone_mid_call = 0
+
+    def execute(self, task, version):
+        time.sleep(0.3)
+        if not Organization.objects.filter(pk=self.org_id).exists():
+            self.brand_gone_mid_call += 1
+        return super().execute(task, version)
+
+
+@skipUnless(connection.vendor == "postgresql", "needs Postgres row locks")
+class DeletionConcurrencyTests(ConcurrencyBase):
+    """Deleting a brand racing one of its sends: the brand is never erased during a provider call."""
+
+    def test_a_brand_is_never_erased_while_a_send_is_in_flight(self):
+        org = self.program.organization
+        channel = WatchingChannel(org.pk)
+        patcher = mock.patch.dict(REGISTRY, {"owned_content": channel})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        action = self.approve(self.draft(0))
+
+        def delete_brand():
+            with transaction.atomic():
+                Organization.objects.get(pk=org.pk).delete()
+
+        outcomes = run_together(partial(dispatch.dispatch, action.id), delete_brand)
+        self.assertEqual(channel.brand_gone_mid_call, 0)
+        if isinstance(outcomes[1], OrganizationDeletionBlocked):
+            # The send won: it finished and its records survive.
+            self.assertTrue(Organization.objects.filter(pk=org.pk).exists())
+            self.assertEqual(len(channel.executed), 1)
+        else:
+            # The deletion won before the call started: nothing was sent.
+            self.assertFalse(Organization.objects.filter(pk=org.pk).exists())
+            self.assertEqual(len(channel.executed), 0)

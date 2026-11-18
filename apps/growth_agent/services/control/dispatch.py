@@ -190,7 +190,9 @@ def _gate_step(claimed: GrowthAction) -> str:
         action = _locked(claimed.id, GrowthAction.State.DISPATCHING)
         if action is None:
             # Withdrawn (or otherwise moved on) since the claim. Nothing is sent.
-            current = GrowthAction.objects.select_related("current_version").get(pk=claimed.id)
+            current = GrowthAction.objects.select_related("current_version").filter(pk=claimed.id).first()
+            if current is None:
+                return ledger.CLOSED  # the brand was deleted while this waited: nothing to send or record
             _abort(current, attempt, f"The action became {current.state} before sending.")
             return ledger.CLOSED
         if approvals.approval_expired(action):

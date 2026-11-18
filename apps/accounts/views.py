@@ -17,6 +17,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.organizations.exceptions import OrganizationDeletionBlocked
 from apps.partners.services import get_active_attribution
 from apps.referrals.models import Referral
 from core.auth.identity import resolve_request_email, verified_email
@@ -1177,9 +1178,7 @@ class VerifyCheckoutView(APIView):
             payer_email = str(metadata.get("email", "") or "").lower().strip()
         if payer_email != email:
             # Someone else's subscription id — never activate the caller from it.
-            logger.warning(
-                "verify-checkout: payer mismatch (request=%s, dodo=%s)", email, payer_email
-            )
+            logger.warning("verify-checkout: payer mismatch (request=%s, dodo=%s)", email, payer_email)
             return Response({"is_active": False, "status": sub.status if sub else "none"})
 
         # Webhook-shaped payload built from Dodo's own record, fed through the
@@ -1201,9 +1200,7 @@ class VerifyCheckoutView(APIView):
             return Response({"is_active": False, "status": sub.status if sub else "none"})
 
         sub = Subscription.objects.filter(email=email).first()
-        return Response(
-            {"is_active": bool(sub and sub.is_active), "status": sub.status if sub else "none"}
-        )
+        return Response({"is_active": bool(sub and sub.is_active), "status": sub.status if sub else "none"})
 
 
 class UsageView(APIView):
@@ -1264,17 +1261,13 @@ class UsageView(APIView):
         from .subscription_utils import QUOTA_WINDOW_DAYS, autofix_generations
 
         window_start = now - timedelta(days=QUOTA_WINDOW_DAYS)
-        analyses_30d = AnalysisRun.objects.filter(
-            email__iexact=email, created_at__gte=window_start
-        ).count()
+        analyses_30d = AnalysisRun.objects.filter(email__iexact=email, created_at__gte=window_start).count()
 
         # Same row filter as enforcement, aggregated across all owned brands.
         org_ids = list(Organization.objects.filter(owner_email=email).values_list("id", flat=True))
         if org_ids:
             autofixes_30d = (
-                autofix_generations(window_start)
-                .filter(analysis_run__organization_id__in=org_ids)
-                .count()
+                autofix_generations(window_start).filter(analysis_run__organization_id__in=org_ids).count()
             )
             autofixes_today = (
                 autofix_generations(now - timedelta(days=1))
@@ -1646,9 +1639,7 @@ class DeleteAccountView(APIView):
                     referee_email=email
                 ).update(referee_email=anon_email)
 
-                counts["partner_attributions"], _ = PartnerAttribution.objects.filter(
-                    email=email
-                ).delete()
+                counts["partner_attributions"], _ = PartnerAttribution.objects.filter(email=email).delete()
 
                 # If user is a Partner: anonymize when a financial trail exists
                 # (commissions or payouts both PROTECT the Partner and would block a
@@ -1674,9 +1665,7 @@ class DeleteAccountView(APIView):
                     models.Q(referrer_email=email) | models.Q(referee_email=email)
                 ).delete()
                 counts["referral_codes"], _ = ReferralCode.objects.filter(owner_email=email).delete()
-                counts["referral_rewards"], _ = ReferralReward.objects.filter(
-                    referrer_email=email
-                ).delete()
+                counts["referral_rewards"], _ = ReferralReward.objects.filter(referrer_email=email).delete()
 
                 counts["visibility_checks"], _ = VisibilityCheck.objects.filter(email=email).delete()
 
@@ -1721,6 +1710,10 @@ class DeleteAccountView(APIView):
                 # The User row itself — without this the account silently restores
                 # on next sign-in. This was the original bug.
                 counts["user"], _ = User.objects.filter(email=email).delete()
+        except OrganizationDeletionBlocked as exc:
+            # The whole deletion rolled back: nothing of the account was deleted.
+            logger.info("Account delete refused for %s: a brand has unresolved sends", email)
+            return Response(exc.detail, status=status.HTTP_409_CONFLICT)
         except Exception as exc:
             # Log the full cause, and return the exception detail so a blocking
             # record is diagnosable from the response (this is the caller deleting
