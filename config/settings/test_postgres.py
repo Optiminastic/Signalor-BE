@@ -20,23 +20,31 @@ from urllib.parse import urlsplit
 
 import dj_database_url
 
-from .test import *  # noqa: F401,F403
+# The file name matches the test runner's test*.py pattern, so a plain
+# ``manage.py test`` (SQLite settings) imports it while discovering tests. Only
+# check and switch the database when these are the settings actually in use.
+# Read before importing the base settings: they load .env with override=True,
+# which may replace DJANGO_SETTINGS_MODULE.
+_ACTIVE = os.environ.get("DJANGO_SETTINGS_MODULE") == __name__
+
+from .test import *  # noqa: E402, F401, F403
 
 # Hosts a throwaway test database may live on: this machine, or a CI/compose
 # service container. Anything else is refused.
 ALLOWED_TEST_DB_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "postgres", "db"})
 
 _url = os.getenv("TEST_DATABASE_URL", "")
-if not _url:
+if _ACTIVE and not _url:
     raise RuntimeError("config.settings.test_postgres needs TEST_DATABASE_URL (a throwaway Postgres).")
 _host = urlsplit(_url).hostname or ""
-if _host not in ALLOWED_TEST_DB_HOSTS:
+if _ACTIVE and _host not in ALLOWED_TEST_DB_HOSTS:
     raise RuntimeError(
         f"Refusing to run tests against database host {_host!r}: "
         "only a local or CI Postgres is allowed for config.settings.test_postgres."
     )
 
-DATABASES = {"default": dj_database_url.parse(_url)}
+if _ACTIVE:
+    DATABASES = {"default": dj_database_url.parse(_url)}
 
 # Real migrations, unlike the SQLite settings: they are part of what this checks.
 MIGRATION_MODULES = {}

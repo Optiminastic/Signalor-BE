@@ -74,6 +74,17 @@ class RuntimeRoleTests(TransactionTestCase):
         with connection.cursor() as cursor:
             self.assertEqual(role_split.problems(cursor), [])
 
+    def test_every_change_writing_function_runs_as_the_owner(self):
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT proname, pg_get_userbyid(proowner), prosecdef FROM pg_proc "
+                "WHERE proname IN ('growth_safety_insert', 'growth_watch_organization', "
+                "'growth_watch_integration', 'growth_watch_github') ORDER BY 1"
+            )
+            rows = cursor.fetchall()
+        self.assertEqual(len(rows), 4)
+        self.assertTrue(all(owner == OWNER and definer for _, owner, definer in rows), rows)
+
     def test_triggers_cannot_be_switched_off_or_dropped(self):
         for table in (
             "organizations_organization",

@@ -39,7 +39,8 @@ APPEND_ONLY_TABLES = (
 )
 AUDIT_LOG = "growth_agent_agentactionlog"
 CHANGE_LOG = "growth_agent_growthsafetychange"
-CHANGE_WRITER = "growth_safety_insert(bigint, text, bigint, text, text, text, text, boolean)"
+# Exactly as Postgres prints it (regprocedure: no spaces after commas), so it matches.
+CHANGE_WRITER = "growth_safety_insert(bigint,text,bigint,text,text,text,text,boolean)"
 DEFINER_FUNCTIONS = (
     CHANGE_WRITER,
     "growth_watch_organization()",
@@ -119,6 +120,28 @@ def apply(cursor) -> list[str]:
     return sql
 
 
+def _function_problems(cursor) -> list[str]:
+    found = []
+    functions = _existing_functions(cursor)
+    for function in DEFINER_FUNCTIONS:
+        if function not in functions:
+            continue
+        cursor.execute(
+            "SELECT pg_get_userbyid(proowner), prosecdef FROM pg_proc WHERE oid = %s::regprocedure",
+            [f"public.{function}"],
+        )
+        owner, definer = cursor.fetchone()
+        if owner != OWNER_ROLE or not definer:
+            found.append(f"{function} is not a SECURITY DEFINER function owned by {OWNER_ROLE}.")
+    if CHANGE_WRITER in functions:
+        cursor.execute(
+            "SELECT has_function_privilege(%s, %s, 'EXECUTE')", [RUNTIME_ROLE, f"public.{CHANGE_WRITER}"]
+        )
+        if cursor.fetchone()[0]:
+            found.append(f"{RUNTIME_ROLE} can call {CHANGE_WRITER} directly.")
+    return found
+
+
 def problems(cursor) -> list[str]:
     """Why this database is not split as it should be (empty when it is)."""
     if not roles_exist(cursor):
@@ -136,6 +159,7 @@ def problems(cursor) -> list[str]:
         cursor.execute("SELECT has_table_privilege(%s, %s, 'INSERT')", [RUNTIME_ROLE, f"public.{CHANGE_LOG}"])
         if cursor.fetchone()[0]:
             found.append(f"{RUNTIME_ROLE} can INSERT into {CHANGE_LOG}.")
+    found += _function_problems(cursor)
     for table in sorted(_existing_tables(cursor, MONITORED_TABLES + APPEND_ONLY_TABLES)):
         cursor.execute("SELECT has_table_privilege(%s, %s, 'TRUNCATE')", [RUNTIME_ROLE, f"public.{table}"])
         if cursor.fetchone()[0]:

@@ -133,19 +133,26 @@ jobs:
         # The deploy path for split databases: roles from deploy/sql, every
         # migration as the owner role, then the split, then the runtime role
         # must pass check_db_target. CI-only throwaway passwords.
+        # Role passwords are random for each run and masked in the logs.
         run: |
+          OWNER_PW=$(python -c "import secrets; print(secrets.token_hex(24))")
+          APP_PW=$(python -c "import secrets; print(secrets.token_hex(24))")
+          echo "::add-mask::$OWNER_PW"
+          echo "::add-mask::$APP_PW"
           psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -f deploy/sql/phase1_roles.sql
-          psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -c "ALTER ROLE signalor_owner PASSWORD 'ci-owner'" \
-            -c "ALTER ROLE signalor_app PASSWORD 'ci-app'"
-          MIGRATION_DATABASE_URL="$OWNER_URL" sh scripts/migrate.sh
-          DATABASE_URL="$APP_URL" python manage.py check_db_target --expect-host localhost \
+          # Extensions need a superuser; organizations 0008 then finds pgvector present.
+          psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS vector"
+          psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -c "ALTER ROLE signalor_owner PASSWORD '$OWNER_PW'" \
+            -c "ALTER ROLE signalor_app PASSWORD '$APP_PW'"
+          MIGRATION_DATABASE_URL="postgres://signalor_owner:${OWNER_PW}@localhost:5432/signalor_ci" \
+            sh scripts/migrate.sh
+          DATABASE_URL="postgres://signalor_app:${APP_PW}@localhost:5432/signalor_ci" \
+            python manage.py check_db_target --expect-host localhost \
             --expect-db signalor_ci --snapshot-ref ci-throwaway --role runtime
         env:
           SECRET_KEY: ci-postgres-tests-not-used-in-prod
           DJANGO_SETTINGS_MODULE: config.settings.development
           ADMIN_URL: postgres://postgres:postgres@localhost:5432/signalor_ci
-          OWNER_URL: postgres://signalor_owner:ci-owner@localhost:5432/signalor_ci
-          APP_URL: postgres://signalor_app:ci-app@localhost:5432/signalor_ci
 
   migrations:
     name: Migration safety (backend)
