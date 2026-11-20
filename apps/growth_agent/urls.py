@@ -59,6 +59,7 @@ from .views_tracking import (
     TrackedKeywordAddView,
     TrackedKeywordRemoveView,
 )
+from .views_weekly_reports import WeeklyReportListView
 
 app_name = "growth_agent"
 
@@ -87,6 +88,7 @@ urlpatterns = [
     ),
     path("programs/<str:org_slug>/approvals/", ApprovalListView.as_view(), name="approvals"),
     path("programs/<str:org_slug>/batches/", BatchListView.as_view(), name="batches"),
+    path("programs/<str:org_slug>/weekly-reports/", WeeklyReportListView.as_view(), name="weekly-reports"),
     path("programs/<str:org_slug>/safety-changes/", SafetyChangeListView.as_view(), name="safety-changes"),
     path(
         "programs/<str:org_slug>/safety-changes/<int:change_id>/challenge/",

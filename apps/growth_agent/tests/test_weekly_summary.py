@@ -6,10 +6,12 @@ Run: python manage.py test apps.growth_agent.tests.test_weekly_summary --setting
 """
 
 from datetime import timedelta
+from unittest import mock
 
+from django.core import mail
 from django.utils import timezone
 
-from ..models import AgentActionLog, AgentConversation, AgentMessage, GrowthProgram, GrowthTask
+from ..models import AgentActionLog, AgentConversation, GrowthProgram, GrowthTask, WeeklyReport
 from ..services import weekly_summary
 from ..services.execution import audit
 from .test_execution_flow import ExecutionTestCase
@@ -34,14 +36,37 @@ class WeeklySummaryTests(ExecutionTestCase):
         self.assertIn("Search Console isn't connected yet", text)
         self.assertIn("## Coming up", text)
 
-    def test_it_is_posted_as_its_own_conversation_once_a_week(self):
-        conversation = weekly_summary.post(self.program)
-        self.assertIsNotNone(conversation)
-        self.assertTrue(conversation.title.startswith("Weekly summary"))
-        message = AgentMessage.objects.get(conversation=conversation)
-        self.assertEqual((message.role, message.status), ("assistant", "complete"))
-        self.assertIsNone(weekly_summary.post(self.program))
-        self.assertEqual(AgentConversation.objects.count(), 1)
+    def test_it_is_saved_as_a_weekly_report_and_emailed_once_a_week_not_a_chat(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            report = weekly_summary.post(self.program)
+        self.assertIsNotNone(report)
+        self.assertIn("## Coming up", report.content)
+        self.assertFalse(AgentConversation.objects.exists())  # no new chat any more
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.program.organization.owner_email])
+        report.refresh_from_db()
+        self.assertIsNotNone(report.emailed_at)
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertIsNone(weekly_summary.post(self.program))
+        self.assertEqual(WeeklyReport.objects.count(), 1)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_a_mail_failure_keeps_the_report(self):
+        with mock.patch(
+            "django.core.mail.EmailMultiAlternatives.send", side_effect=RuntimeError("smtp down")
+        ):
+            with self.captureOnCommitCallbacks(execute=True):
+                report = weekly_summary.post(self.program)
+        report.refresh_from_db()
+        self.assertIsNone(report.emailed_at)
+        self.assertTrue(WeeklyReport.objects.filter(pk=report.pk).exists())
+
+    def test_the_next_report_is_due_a_week_after_the_last(self):
+        self.assertEqual(weekly_summary.next_report_on(self.program), timezone.now().date())
+        weekly_summary.post(self.program)
+        self.assertEqual(
+            weekly_summary.next_report_on(self.program), (timezone.now() + timedelta(days=7)).date()
+        )
 
     def test_a_new_brand_gets_no_summary_in_its_first_week(self):
         GrowthProgram.objects.filter(pk=self.program.pk).update(created_at=timezone.now() - timedelta(days=2))
