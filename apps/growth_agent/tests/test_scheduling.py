@@ -91,7 +91,7 @@ class RoundTests(SchedulingTestCase):
 class TickTests(SchedulingTestCase):
     def test_a_brand_with_a_backlog_gets_only_its_fair_share(self):
         busy, quiet = brand(1), brand(2)
-        for n in range(8):
+        for n in range(3 * tick.PREPARES_PER_TICK):
             due_task(busy, f"Busy {n}")
         due_task(quiet, "Quiet")
         rounds.run_round()
@@ -212,3 +212,27 @@ class HealthTests(SchedulingTestCase):
         self.assertEqual(health.alert(found), 0)
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].to, ["ops@signalor.example"])
+
+
+class DraftAheadTests(SchedulingTestCase):
+    def test_tasks_due_within_ten_days_are_drafted_now_but_later_ones_wait(self):
+        program = brand(1)
+        soon = due_task(program, "Soon")
+        GrowthTask.objects.filter(pk=soon.pk).update(scheduled_for=timezone.now().date() + timedelta(days=5))
+        later = due_task(program, "Later")
+        GrowthTask.objects.filter(pk=later.pk).update(
+            scheduled_for=timezone.now().date() + timedelta(days=20)
+        )
+        rounds.run_round()
+        self.assertTrue(GrowthAction.objects.filter(task=soon).exists())
+        self.assertFalse(GrowthAction.objects.filter(task=later).exists())
+
+    def test_an_early_draft_is_not_sent_before_its_day_even_if_approved(self):
+        from ..services.control import dispatch
+
+        program = brand(1)
+        task = due_task(program, "Next week")
+        GrowthTask.objects.filter(pk=task.pk).update(scheduled_for=timezone.now().date() + timedelta(days=5))
+        rounds.run_round()
+        action = GrowthAction.objects.get(task=task)
+        self.assertFalse(dispatch.dispatchable(timezone.now().date()).filter(pk=action.pk).exists())

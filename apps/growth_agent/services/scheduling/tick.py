@@ -2,6 +2,7 @@
 One brand's round of Growth Agent work ("brand tick"), run on the background
 queue once per scheduler round for every active brand.
 
+- Drafts are written ahead (``PREPARE_AHEAD``); sends wait for each task's day.
 - A fair share per round: at most ``PREPARES_PER_TICK`` drafts and
   ``SENDS_PER_TICK`` sends, oldest first; the rest waits for the next round, so
   no brand can take a whole round.
@@ -21,6 +22,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
+from datetime import timedelta
 
 from django.core.cache import cache
 from django.utils import timezone
@@ -31,7 +33,12 @@ from ..execution.executor import due_tasks, run_task
 
 logger = logging.getLogger("apps")
 
-PREPARES_PER_TICK = 3
+PREPARES_PER_TICK = 5
+# Drafts are written ahead, for tasks due within this window, so the owner has
+# drafts to review before each task's day. Sending still waits for the task's
+# day (``dispatchable``) and the owner's approval. Shorter than the approval TTL
+# (14 days), so an early approval can't expire before its send day.
+PREPARE_AHEAD = timedelta(days=10)
 SENDS_PER_TICK = 5
 # Longer than the brand_tick time limit (20 min), so a crashed worker frees it eventually.
 LOCK_SECONDS = 25 * 60
@@ -89,7 +96,7 @@ def _step(result: TickResult, program: GrowthProgram, name: str, call) -> None:
 
 def _work(program: GrowthProgram, result: TickResult) -> None:
     today = timezone.now().date()
-    for task in list(due_tasks(today).filter(cycle__program=program)[:PREPARES_PER_TICK]):
+    for task in list(due_tasks(today + PREPARE_AHEAD).filter(cycle__program=program)[:PREPARES_PER_TICK]):
         _step(result, program, f"prepare:{task.id}", lambda t=task: run_task(t.id))
         result.prepared += 1
     for action in list(dispatchable(today).filter(task__cycle__program=program)[:SENDS_PER_TICK]):
