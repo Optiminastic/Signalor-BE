@@ -28,7 +28,7 @@ from .. import run_guard
 from ..execution import audit
 from ..execution.brand import display_name
 from ..positioning.inputs import bare_domain
-from . import accounts, providers
+from . import accounts, google_source, providers
 from . import gaps as rules
 
 logger = logging.getLogger("apps")
@@ -118,6 +118,19 @@ def _log_findings(program: GrowthProgram, gap_rows: list[dict], last_brand, bran
         audit.record(program, None, RANK_CHANGES, AgentActionLog.Outcome.SUCCEEDED, changes)
 
 
+def _from_google(program: GrowthProgram) -> bool:
+    """No keyword provider: use the weekly rank check's Google positions instead."""
+    from ..rank_tracking.check import competitors  # noqa: PLC0415  (rank_tracking imports this module)
+
+    players = [p for p in competitors(program) if p.domain]
+    if not google_source.store(program, players):
+        _fail(program, "not_configured")
+        return False
+    detail = {"source": google_source.SOURCE, "competitors": [p.domain for p in players[1:]]}
+    audit.record(program, None, DONE, AgentActionLog.Outcome.SUCCEEDED, detail)
+    return True
+
+
 def _fail(program: GrowthProgram, reason: str) -> None:
     audit.record(program, None, DONE, AgentActionLog.Outcome.FAILED, {"reason": reason})
 
@@ -138,8 +151,7 @@ def run_refresh(program: GrowthProgram) -> bool:
         brand_rows, source = _brand_keywords(run, domain, fetch, source)
         rival_rows = _rival_keywords(rivals, fetch)
     except DataForSEONotConfigured:
-        _fail(program, "not_configured")
-        return False
+        return _from_google(program)
     except providers.ProviderError:
         # The brand's own Semrush or Ahrefs key was refused or out of units.
         _fail(program, "own_account_error")

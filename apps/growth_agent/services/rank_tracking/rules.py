@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from urllib.parse import urlparse
 
-MAX_KEYWORDS = 15
+MAX_KEYWORDS = 25
 MAX_KEYWORD_CHARS = 120
 MAX_PROMPT_WORDS = 7
 TOP_TEN = 10
