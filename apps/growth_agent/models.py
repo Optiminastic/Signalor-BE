@@ -918,3 +918,24 @@ class SafetyConfirmationEvent(ImmutableModel):
 
     def __str__(self) -> str:
         return f"SafetyConfirmationEvent<{self.challenge_id}:{self.event}:{self.attempt_no}>"
+
+
+class WeeklyReport(models.Model):
+    """The agent's weekly report for one brand: shown behind the Agent page's report
+    icon and emailed to the owner. Built from recorded facts (``weekly_summary``),
+    never by a model. One per brand per week."""
+
+    program = models.ForeignKey(GrowthProgram, on_delete=models.CASCADE, related_name="weekly_reports")
+    week_of = models.DateField()  # the Monday of the week the report covers
+    content = models.TextField()  # "## " headings, **bold** and "- " bullets
+    emailed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-week_of", "-id"]
+        constraints = [
+            models.UniqueConstraint(fields=["program", "week_of"], name="growth_weekly_report_once"),
+        ]
+
+    def __str__(self) -> str:
+        return f"WeeklyReport<{self.program_id}:{self.week_of}>"

@@ -1,19 +1,21 @@
-"""The agent's weekly summary, posted as a chat conversation for the owner.
+"""The agent's weekly report: saved for the Agent page's report icon and emailed
+to the owner (``weekly_email``), not posted as a chat.
 
 Built from what the agent already recorded (actions, the Agent log, indexing
 checks, satellite articles), never by a model, so every number is exact and
 nothing is claimed that didn't happen. One summary per brand per week, from
-the brand's first full week; posted from ``run_growth_tasks``.
+the brand's first full week; made by each brand's scheduler tick.
 """
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 
 from django.db import transaction
 from django.utils import timezone
 
-from ..models import AgentActionLog, AgentConversation, AgentMessage, GrowthAction, GrowthProgram, GrowthTask
+from ..models import AgentActionLog, GrowthAction, GrowthProgram, GrowthTask, WeeklyReport
+from . import weekly_email
 from .execution import audit
 from .indexing import bing, report, satellite_rank
 from .social import check as social_check
@@ -143,18 +145,32 @@ def due(program: GrowthProgram) -> bool:
     ).exists()
 
 
-def post(program: GrowthProgram) -> AgentConversation | None:
-    """Post this week's summary as its own conversation, once a week."""
+def next_report_on(program: GrowthProgram) -> date:
+    """The day the next weekly report is due (today if it's due now)."""
+    last = (
+        AgentActionLog.objects.filter(program=program, action=POSTED)
+        .order_by("-created_at")
+        .values_list("created_at", flat=True)
+        .first()
+    )
+    starts = max(program.created_at, last) + WEEK if last else program.created_at + WEEK
+    return max(starts, timezone.now()).date()
+
+
+def week_of(day: date) -> date:
+    """The Monday of ``day``'s week."""
+    return day - timedelta(days=day.weekday())
+
+
+def post(program: GrowthProgram) -> WeeklyReport | None:
+    """Save this week's report and email it to the owner, once a week."""
     if not due(program):
         return None
-    text = build(program)
-    title = f"Weekly summary · {timezone.now().strftime('%d %b')}"
     with transaction.atomic():
-        conversation = AgentConversation.objects.create(program=program, title=title)
-        AgentMessage.objects.create(
-            program=program, conversation=conversation, role=AgentMessage.Role.ASSISTANT, content=text
+        report, created = WeeklyReport.objects.get_or_create(
+            program=program, week_of=week_of(timezone.now().date()), defaults={"content": build(program)}
         )
-        audit.record(
-            program, None, POSTED, AgentActionLog.Outcome.SUCCEEDED, {"conversation": conversation.public_id}
-        )
-    return conversation
+        audit.record(program, None, POSTED, AgentActionLog.Outcome.SUCCEEDED, {"report": report.pk})
+    if created:
+        transaction.on_commit(lambda: weekly_email.send(report))
+    return report
