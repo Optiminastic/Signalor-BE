@@ -51,7 +51,9 @@ class Command(BaseCommand):
     def _dry_run(self) -> None:
         today = timezone.now().date()
         for program in active_programs():
-            tasks = due_tasks(today).filter(cycle__program=program)[: tick.PREPARES_PER_TICK]
+            tasks = due_tasks(today + tick.PREPARE_AHEAD).filter(cycle__program=program)[
+                : tick.PREPARES_PER_TICK
+            ]
             actions = dispatchable(today).filter(task__cycle__program=program)[: tick.SENDS_PER_TICK]
             for task in tasks:
                 self.stdout.write(f"program {program.id}: task {task.id} [{task.channel}] {task.title}")

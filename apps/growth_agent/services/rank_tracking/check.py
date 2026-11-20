@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
@@ -25,7 +26,8 @@ from ..brand_mentions import check as mentions
 from ..execution import audit
 from ..execution.brand import display_name
 from ..keywords import gaps as gap_rules
-from ..keywords.accounts import search_console_queries
+from ..keywords import google_source
+from ..keywords.accounts import own_source, search_console_queries
 from ..keywords.refresh import latest_run
 from ..positioning.inputs import bare_domain
 from . import rules, suggest
@@ -37,6 +39,11 @@ DONE = "rank_check_done"
 START_GUARD = timedelta(hours=24)
 CHECK_EVERY = timedelta(days=6)
 SERP_DEPTH = 100
+
+
+def keyword_data_configured(program: GrowthProgram) -> bool:
+    """signalor.ai's DataForSEO account, or the brand's own Semrush/Ahrefs key."""
+    return bool(getattr(settings, "DATAFORSEO_LOGIN", "")) or own_source(program.organization) is not None
 
 
 def competitors(program: GrowthProgram) -> list[gap_rules.Rival]:
@@ -110,6 +117,9 @@ def run_check(program: GrowthProgram) -> dict:
             _store(program, week, RankObservation.Kind.SEO, seo)
         detail = {"keywords": len(keywords), "domains": domains, "seo_rows": len(seo), "mentions": found}
         audit.record(program, None, DONE, AgentActionLog.Outcome.SUCCEEDED, detail)
+    if seo and not keyword_data_configured(program):
+        # No keyword provider: the Keywords tab shows these Google positions instead.
+        google_source.store(program, players)
     return detail
 
 

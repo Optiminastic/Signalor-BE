@@ -1,7 +1,9 @@
 """The weekly social check for one brand, and the report the Social tab shows.
 
 Inputs, each used only when available:
-- profiles found by the latest site analysis (``BrandVisibility.social_presence_details``);
+- profiles found by the latest site analysis (``BrandVisibility.social_presence_details``),
+  and by Google search (``discover``) for any the analysis couldn't find;
+- the top competitors' profiles, found the same way, to compare presence;
 - YouTube's public channel numbers (``YOUTUBE_API_KEY``);
 - Reddit mentions in the last 90 days (``REDDIT_CLIENT_ID`` / ``REDDIT_CLIENT_SECRET``).
 
@@ -24,7 +26,8 @@ from apps.analyzer.models import AnalysisRun
 from ...models import AgentActionLog, GrowthProgram
 from ..execution import audit
 from ..execution.brand import display_name
-from . import buffer, reddit, score, youtube
+from ..positioning.inputs import bare_domain
+from . import buffer, discover, reddit, score, youtube
 
 logger = logging.getLogger("apps")
 CHECKED, STARTED = "social_checked", "social_check_started"
@@ -54,6 +57,30 @@ def _profile(stored: dict) -> dict:
         "engagement": None,
         "source": stored.get("source", "none"),
     }
+
+
+def _with_search(program: GrowthProgram, profiles: dict) -> dict:
+    """Fill the platforms the site analysis didn't find, from Google search."""
+    missing = [name for name in discover.PROFILE_PATTERNS if not profiles[name]["url"]]
+    if not missing:
+        return profiles
+    org = program.organization
+    found = discover.find_profiles(display_name(org), bare_domain(org.url or ""))
+    for name in missing:
+        if found.get(name):
+            profiles[name] = {**profiles[name], "url": found[name], "source": "search"}
+    return profiles
+
+
+def _competitors(program: GrowthProgram) -> list[dict]:
+    """Each top competitor's profiles (found by search), to compare presence."""
+    from ..rank_tracking.check import competitors  # noqa: PLC0415  (avoids an import cycle)
+
+    rows = []
+    for rival in competitors(program)[1:]:
+        profiles = discover.find_profiles(rival.name, rival.domain)
+        rows.append({"name": rival.name, "domain": rival.domain, "profiles": profiles})
+    return rows
 
 
 def _with_youtube(profile: dict, notes: list[str]) -> dict:
@@ -100,21 +127,24 @@ def _reddit(program: GrowthProgram, notes: list[str]) -> dict | None:
 
 
 def measure(program: GrowthProgram) -> dict:
-    """This week's numbers and scores. Network: YouTube and Reddit, when their keys are set."""
+    """This week's numbers and scores. Network: Google search (Serper), YouTube and Reddit,
+    each only when its key is set."""
     stored, notes = _stored_profiles(program), []
     profiles = {name: _profile(stored.get(key) or {}) for name, key in STORED_NAMES.items()}
+    profiles = _with_search(program, profiles)
     profiles["youtube"] = _with_youtube(profiles["youtube"], notes)
     profiles = _with_buffer(program, profiles)
     mentions = _reddit(program, notes)
     scores = {name: score.profile_score(profile) for name, profile in profiles.items()}
     scores["reddit"] = score.reddit_score(mentions)
-    if not stored:
-        notes.append("No site analysis has found the brand's social profiles yet.")
+    if not any(p["url"] for p in profiles.values()):
+        notes.append("No social profiles were found for the brand, on its site or on Google.")
     return {
         "overall": score.overall(scores),
         "platforms": {name: {**scores[name], "profile": profiles.get(name)} for name in score.PLATFORMS},
         "reddit": mentions,
         "notes": notes,
+        "competitors": _competitors(program),
     }
 
 

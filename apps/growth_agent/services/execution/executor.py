@@ -105,8 +105,9 @@ def _retry_or_fail(task: GrowthTask, reason: str, payload: dict, *, retryable: b
     if not retryable or task.attempts >= MAX_ATTEMPTS:
         _set(task, GrowthTask.Status.FAILED, result_payload=detail)
     else:
-        tomorrow = timezone.now().date() + timedelta(days=1)
-        _set(task, GrowthTask.Status.PLANNED, scheduled_for=tomorrow, result_payload=detail)
+        # Retry tomorrow, but never earlier than the task's own day (drafts are written ahead).
+        retry_on = max(task.scheduled_for, timezone.now().date() + timedelta(days=1))
+        _set(task, GrowthTask.Status.PLANNED, scheduled_for=retry_on, result_payload=detail)
     audit.record(task.cycle.program, task, "draft_failed", AgentActionLog.Outcome.FAILED, detail)
 
 

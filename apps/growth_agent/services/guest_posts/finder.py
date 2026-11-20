@@ -32,14 +32,14 @@ from . import candidates as rules
 logger = logging.getLogger("apps")
 
 TACTIC = "guest_post"
-MONTHLY_CAP = 8
+MONTHLY_CAP = 12
 DAYS_BETWEEN = 3
 SERPER_ENDPOINT = "https://google.serper.dev/search"
 SEARCH_TIMEOUT = 12
 RESULTS_PER_QUERY = 10
 FETCH_TIMEOUT = 10
 MAX_PAGE_BYTES = 1_500_000
-MAX_PAGES_CHECKED = 25
+MAX_PAGES_CHECKED = 60
 GUIDELINE_PATHS = ("/write-for-us", "/contribute", "/guest-post", "/write-for-us/")
 USER_AGENT = "Mozilla/5.0 (compatible; SignalorGrowthAgent/1.0)"
 CITED_SCORE = 0.9
@@ -101,8 +101,18 @@ def _blocked_domains(program: GrowthProgram, cycle: GrowthCycle | None) -> set[s
     return {d.removeprefix("www.") for d in blocked if d}
 
 
-def _leads(report: dict, topic_list: list[str]) -> list[tuple[str, str, str]]:
-    """(url, source, topic) to check: cited sites' guidelines pages first, then search results."""
+def _rival_names(cycle: GrowthCycle) -> list[str]:
+    """The competitors the site analysis found (names, or domains when unnamed)."""
+    run = getattr(cycle.positioning_report, "analysis_run", None)
+    if run is None:
+        return []
+    names = [c.name or rules.domain_of(c.url) for c in run.competitors.all().order_by("id")]
+    return [n for n in names if n][: rules.MAX_RIVAL_QUERIES]
+
+
+def _leads(report: dict, topic_list: list[str], rivals: list[str]) -> list[tuple[str, str, str]]:
+    """(url, source, topic) to check: cited sites' guidelines pages first, then topic
+    searches, then sites that publish guest posts about the brand's competitors."""
     leads = [
         (f"https://{domain}{path}", "cited", topic_list[0])
         for domain in rules.cited_domains(report)
@@ -111,6 +121,9 @@ def _leads(report: dict, topic_list: list[str]) -> list[tuple[str, str, str]]:
     for topic in topic_list:
         for query in rules.queries([topic]):
             leads += [(url, "search", topic) for url in search(query)]
+    for rival in rivals:
+        for query in rules.rival_queries(rival):
+            leads += [(url, "competitor", topic_list[0]) for url in search(query)]
     return leads
 
 
@@ -125,7 +138,7 @@ def find_sites(program: GrowthProgram, limit: int) -> list[Found]:
     blocked, rivals = _blocked_domains(program, cycle), rules.rival_names(report)
     found: list[Found] = []
     checked, session = 0, guarded_session()
-    for url, source, topic in _leads(report, topic_list):
+    for url, source, topic in _leads(report, topic_list, _rival_names(cycle)):
         domain = rules.domain_of(url)
         if len(found) >= limit or checked >= MAX_PAGES_CHECKED:
             break
@@ -156,11 +169,10 @@ def _guidelines_page(session, url: str, checked: int) -> tuple[tuple[str, str] |
 
 def _task(cycle: GrowthCycle, site: Found, day: date) -> GrowthTask:
     tactic = TACTICS[TACTIC]
-    why = (
-        "AI answers already cite this site, and it invites guest articles."
-        if site.source == "cited"
-        else f"It invites guest articles on {site.topic}."
-    )
+    why = {
+        "cited": "AI answers already cite this site, and it invites guest articles.",
+        "competitor": "It publishes guest articles about your competitors and invites more.",
+    }.get(site.source, f"It invites guest articles on {site.topic}.")
     week = min((day - cycle.starts_on).days // DAYS_PER_WEEK + 1, WEEKS_PER_CYCLE)
     return GrowthTask(
         cycle=cycle,
