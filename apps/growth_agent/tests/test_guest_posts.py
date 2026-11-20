@@ -169,3 +169,43 @@ class FinderFollowsLinksTests(GuestFinderBase):
         sites = {t.target: t.target_url for t in GrowthTask.objects.filter(tactic="guest_post")}
         self.assertEqual(sites.get("geo-weekly.com"), "https://geo-weekly.com/contribute")
         self.assertNotIn("discoveredlabs.com", sites)
+
+
+class CompetitorLeadTests(GuestFinderBase):
+    """Sites that publish guest articles about the brand's competitors are leads too."""
+
+    def setUp(self):
+        super().setUp()
+        from apps.analyzer.models import AnalysisRun, Competitor
+
+        run = AnalysisRun.objects.create(
+            organization=self.pro_org,
+            url=self.pro_org.url,
+            email=PRO_EMAIL,
+            status=AnalysisRun.Status.COMPLETE,
+        )
+        Competitor.objects.create(analysis_run=run, name="Rival Co", url="https://rivalco.com")
+        report = self.cycle.positioning_report
+        PositioningReport.objects.filter(pk=report.pk).update(analysis_run=run)
+        self.cycle.refresh_from_db()
+
+    def test_rival_queries_name_the_competitor(self):
+        self.assertEqual(
+            rules.rival_queries("Rival Co"), ['"Rival Co" "guest post"', '"Rival Co" "write for us"']
+        )
+        self.assertEqual(rules.rival_queries("   "), [])
+
+    def test_a_site_covering_a_competitor_joins_the_plan_but_the_competitor_itself_never_does(self):
+        results = {
+            '"Rival Co" "guest post"': [
+                "https://space-news.com/write-for-us",
+                "https://rivalco.com/write-for-us",
+            ]
+        }
+        pages = {"https://space-news.com/write-for-us": INVITE, "https://rivalco.com/write-for-us": INVITE}
+        self.assertEqual(self.find(pages, results), 1)
+        task = GrowthTask.objects.get(tactic="guest_post")
+        self.assertEqual(
+            (task.target, task.draft_payload["guest"]["source"]), ("space-news.com", "competitor")
+        )
+        self.assertIn("competitors", task.rationale)

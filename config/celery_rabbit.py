@@ -129,6 +129,8 @@ GROWTH_TIME_LIMITS = {
     "growth_agent.brand_tick": (20 * 60, 19 * 60),
     "growth_agent.run_weekly_snapshot": (20 * 60, 19 * 60),
     "growth_agent.build_positioning_report": (20 * 60, 19 * 60),
+    # Checks up to 60 candidate pages, each with a 10 s fetch limit.
+    "growth_agent.find_guest_sites": (15 * 60, 14 * 60),
 }
 # Other growth checks (ranks, social, keywords, site, indexing, guest sites): 10 minutes.
 GROWTH_DEFAULT_TIME_LIMIT = (600, 570)

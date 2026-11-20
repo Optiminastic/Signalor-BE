@@ -13,12 +13,20 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
 
-MAX_TOPICS = 3
+MAX_TOPICS = 5
+MAX_RIVAL_QUERIES = 5
 MAX_TOPIC_WORDS = 6
 QUERY_TEMPLATES = (
     '"{topic}" "write for us"',
     '"{topic}" "guest post" guidelines',
     '"{topic}" "contribute" article',
+    '{topic} "submit a guest post"',
+    '{topic} blog "accepting guest posts"',
+)
+# Sites that have published guest articles about a competitor cover the brand's space.
+RIVAL_QUERY_TEMPLATES = (
+    '"{rival}" "guest post"',
+    '"{rival}" "write for us"',
 )
 INVITATION_MARKERS = (
     "write for us",
@@ -113,6 +121,12 @@ def topics(report: dict) -> list[str]:
             seen.add(topic.lower())
             chosen.append(topic)
     return chosen[:MAX_TOPICS]
+
+
+def rival_queries(rival: str) -> list[str]:
+    """Searches for sites that published guest articles mentioning ``rival``."""
+    name = " ".join(rival.split()[:MAX_TOPIC_WORDS]).strip()
+    return [t.format(rival=name) for t in RIVAL_QUERY_TEMPLATES] if name else []
 
 
 def queries(topic_list: list[str]) -> list[str]:
