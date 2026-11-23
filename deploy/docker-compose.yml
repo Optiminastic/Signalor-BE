@@ -102,13 +102,17 @@ services:
     # it patches Render/staging-specific migration drift that this fresh,
     # self-hosted DB never has, and it assumes django_migrations already
     # exists — which crashes the first boot on an empty DB.)
+    # 8 threads per process: several analyzer endpoints wait on model calls inside the
+    # request, and those threads mostly sit idle on the network. Processes are
+    # recycled after ~1000 requests (jittered) so a slow memory leak can't build up.
     command:
       - sh
       - -c
       - >
         sh scripts/migrate.sh &&
         exec opentelemetry-instrument gunicorn config.wsgi:application
-        --bind 0.0.0.0:8000 --workers 2 --threads 4 --timeout 600
+        --bind 0.0.0.0:8000 --workers 2 --threads 8 --timeout 600
+        --max-requests 1000 --max-requests-jitter 100
     depends_on:
       db: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -123,8 +127,11 @@ services:
       start_period: 90s
 
   worker:
+    # --max-memory-per-child (KiB) on every Celery worker: a child that grows past the
+    # limit is replaced after its current task, so one leaky job can't exhaust the
+    # host (7.6 GiB, shared with Postgres). Limits are ~3x today's measured use.
     <<: *app
-    command: ["celery", "-A", "config", "worker", "--loglevel=info", "--concurrency=2"]
+    command: ["celery", "-A", "config", "worker", "--loglevel=info", "--concurrency=2", "--max-memory-per-child=800000"]
     depends_on:
       db: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -151,7 +158,8 @@ services:
     <<: *app
     # Dedicated worker for the RabbitMQ-backed analyze / re-analyze pipeline.
     # -Q analysis: consume the work queue only, NOT the dead-letter queue.
-    command: ["celery", "-A", "config.celery_rabbit", "worker", "-Q", "analysis", "--loglevel=info", "--concurrency=2"]
+    command: ["celery", "-A", "config.celery_rabbit", "worker", "-Q", "analysis", "--loglevel=info", "--concurrency=2",
+              "--max-memory-per-child=1000000"]
     # Point the analysis app at the in-stack RabbitMQ. Set here (not via stack.env
     # interpolation) so the broker host resolves to the compose service name.
     environment:
@@ -165,10 +173,11 @@ services:
   growth-interactive-worker:
     <<: *app
     # Growth Agent jobs someone is waiting on: chat replies, previews and approved
-    # sends (growth.send, seconds each). Its own queues and worker, so they never
-    # wait behind a 40-minute site analysis or behind drafts.
-    command: ["celery", "-A", "config.celery_rabbit", "worker", "-Q", "growth.interactive,growth.send", "--loglevel=info",
-              "--concurrency=2", "-O", "fair", "--max-tasks-per-child=200", "-n", "growth-interactive@%h"]
+    # sends (seconds each). Its own queue and worker, so they never wait behind a
+    # 40-minute site analysis or behind drafts.
+    command: ["celery", "-A", "config.celery_rabbit", "worker", "-Q", "growth.interactive", "--loglevel=info",
+              "--concurrency=2", "-O", "fair", "--max-tasks-per-child=200", "--max-memory-per-child=500000",
+              "-n", "growth-interactive@%h"]
     environment:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
     depends_on:
@@ -185,7 +194,8 @@ services:
     # 3, while weekly checks keep moving. Memory: this worker measured ~0.3 GiB at 2
     # slots with 4.2 GiB free on the 7.6 GiB server (2026-11-23); 4 slots add ~0.2 GiB.
     command: ["celery", "-A", "config.celery_rabbit", "worker", "-Q", "growth.background", "--loglevel=info",
-              "--concurrency=4", "-O", "fair", "--max-tasks-per-child=100", "-n", "growth-background@%h"]
+              "--concurrency=4", "-O", "fair", "--max-tasks-per-child=100", "--max-memory-per-child=600000",
+              "-n", "growth-background@%h"]
     environment:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
     depends_on:
