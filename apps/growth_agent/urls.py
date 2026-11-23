@@ -19,6 +19,14 @@ from .views import (
     TrackingView,
 )
 from .views_batches import BatchDecideView, BatchDetailView, BatchListView
+from .views_business_profile import (
+    BusinessProfileCheckView,
+    BusinessProfileDraftView,
+    BusinessProfilePhotoListView,
+    BusinessProfilePhotoView,
+    BusinessProfileSuggestView,
+    BusinessProfileView,
+)
 from .views_control import (
     APPROVE,
     REJECT,
@@ -89,6 +97,32 @@ urlpatterns = [
     path("programs/<str:org_slug>/approvals/", ApprovalListView.as_view(), name="approvals"),
     path("programs/<str:org_slug>/batches/", BatchListView.as_view(), name="batches"),
     path("programs/<str:org_slug>/weekly-reports/", WeeklyReportListView.as_view(), name="weekly-reports"),
+    path("programs/<str:org_slug>/business-profile/", BusinessProfileView.as_view(), name="business-profile"),
+    path(
+        "programs/<str:org_slug>/business-profile/check/",
+        BusinessProfileCheckView.as_view(),
+        name="business-profile-check",
+    ),
+    path(
+        "programs/<str:org_slug>/business-profile/draft/",
+        BusinessProfileDraftView.as_view(),
+        name="business-profile-draft",
+    ),
+    path(
+        "programs/<str:org_slug>/business-profile/suggest/",
+        BusinessProfileSuggestView.as_view(),
+        name="business-profile-suggest",
+    ),
+    path(
+        "programs/<str:org_slug>/business-profile/photos/",
+        BusinessProfilePhotoListView.as_view(),
+        name="business-profile-photos",
+    ),
+    path(
+        "programs/<str:org_slug>/business-profile/photos/<int:photo_id>/",
+        BusinessProfilePhotoView.as_view(),
+        name="business-profile-photo",
+    ),
     path("programs/<str:org_slug>/safety-changes/", SafetyChangeListView.as_view(), name="safety-changes"),
     path(
         "programs/<str:org_slug>/safety-changes/<int:change_id>/challenge/",

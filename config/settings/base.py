@@ -360,6 +360,12 @@ GROWTH_CONFIRMATION_HMAC_KEY = os.getenv("GROWTH_CONFIRMATION_HMAC_KEY", "")
 GROWTH_CONFIRMATION_KEY_ID = os.getenv("GROWTH_CONFIRMATION_KEY_ID", "k1")
 # Brands the Growth Agent runs at once; workers and the load test are sized for 50.
 GROWTH_MAX_ACTIVE_PROGRAMS = int(os.getenv("GROWTH_MAX_ACTIVE_PROGRAMS", 50))
+# Google Business Profile photos: a private S3-compatible bucket (endpoint optional, e.g. R2).
+GBP_S3_BUCKET = os.getenv("GBP_S3_BUCKET", "")
+GBP_S3_REGION = os.getenv("GBP_S3_REGION", "")
+GBP_S3_ENDPOINT_URL = os.getenv("GBP_S3_ENDPOINT_URL", "")
+GBP_S3_ACCESS_KEY_ID = os.getenv("GBP_S3_ACCESS_KEY_ID", "")
+GBP_S3_SECRET_ACCESS_KEY = os.getenv("GBP_S3_SECRET_ACCESS_KEY", "")
 # Scheduler round interval and the ops alert recipients (comma-separated).
 GROWTH_SCHEDULER_INTERVAL_SECONDS = int(os.getenv("GROWTH_SCHEDULER_INTERVAL_SECONDS", 900))
 GROWTH_OPS_ALERT_EMAILS = [

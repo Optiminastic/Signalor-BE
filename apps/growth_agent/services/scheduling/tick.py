@@ -59,6 +59,7 @@ def _periodic_steps(program: GrowthProgram) -> list[tuple[str, object]]:
     """The brand's daily and weekly checks, in order. Imported here: they pull in
     heavy modules the scheduler process doesn't need."""
     from .. import weekly_summary  # noqa: PLC0415
+    from ..business_profile import profile as business_profile  # noqa: PLC0415
     from ..guest_posts import finder as guest_finder  # noqa: PLC0415
     from ..indexing.weekly import weekly_round  # noqa: PLC0415
     from ..keywords import refresh as keyword_refresh  # noqa: PLC0415
@@ -82,6 +83,7 @@ def _periodic_steps(program: GrowthProgram) -> list[tuple[str, object]]:
         ("site_watch", lambda: site_watch.daily(program)),
         ("ranks", lambda: rank_check.weekly(program)),
         ("social_posts", lambda: social_posts.queue_weekly(program)),
+        ("business_profile", lambda: business_profile.weekly(program)),
         ("weekly_summary", lambda: weekly_summary.post(program)),
     ]
 
