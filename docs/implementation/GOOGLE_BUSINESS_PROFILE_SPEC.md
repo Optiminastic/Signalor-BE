@@ -53,7 +53,7 @@ Shown in a new **Google Business** tab in Agent mode and offered in chat ("Your 
 | Website | The brand's URL | Prefilled |
 | Opening hours | Owner | |
 | Description | The agent drafts it from the brand profile; the owner edits | At most 750 characters; no links or promotions (Google policy) |
-| Photos: logo, cover, up to 10 more | Owner uploads | JPG or PNG, 10 KB to 5 MB, at least 250 px wide; stored in S3 |
+| Photos: logo, cover, up to 10 more | Owner uploads | JPG or PNG, 10 KB to 4 MB (Google allows 5; Vercel's request limit is 4.5), at least 250 px on each side; larger photos are resized in the browser; stored in S3 |
 
 - Photos go to a private S3 bucket under `gbp/<org-id>/`, and are shown back through short-lived signed links.
 - Each upload is checked for type, size and dimensions before it's accepted.

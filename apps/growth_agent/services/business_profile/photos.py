@@ -2,8 +2,9 @@
 Photos for a brand's Google Business Profile: checked, then kept in a private
 S3-compatible bucket (``GBP_S3_*``), shown back through short-lived signed links.
 
-Google's own limits are applied before anything is stored: JPG or PNG, 10 KB to
-5 MB, at least 250 px on each side. One logo and one cover per brand (a new one
+Google's limits are applied before anything is stored: JPG or PNG, at least 10 KB,
+at least 250 px on each side. The cap is 4 MB (Google allows 5): uploads pass
+through the frontend proxy on Vercel, which refuses request bodies over 4.5 MB. One logo and one cover per brand (a new one
 replaces the old), and up to 10 other photos.
 """
 
@@ -20,7 +21,7 @@ from PIL import Image, UnidentifiedImageError
 from ...models import BusinessProfilePhoto, GrowthProgram
 
 MIN_BYTES = 10 * 1024
-MAX_BYTES = 5 * 1024 * 1024
+MAX_BYTES = 4 * 1024 * 1024  # under Vercel's 4.5 MB request limit
 MIN_SIDE = 250
 MAX_OTHER = 10
 LINK_SECONDS = 15 * 60
@@ -57,7 +58,7 @@ def inspect(data: bytes) -> tuple[str, str, int, int]:
     if len(data) < MIN_BYTES:
         raise PhotoError("That photo is too small (under 10 KB). Use a clearer image.")
     if len(data) > MAX_BYTES:
-        raise PhotoError("That photo is over 5 MB. Use a smaller file.")
+        raise PhotoError("That photo is over 4 MB. Use a smaller file.")
     try:
         with Image.open(io.BytesIO(data)) as image:
             image.verify()

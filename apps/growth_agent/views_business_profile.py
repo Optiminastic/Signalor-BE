@@ -100,7 +100,7 @@ class BusinessProfilePhotoListView(GrowthBaseView):
                 {"detail": "Send one photo as 'file' and a 'kind'."}, status=status.HTTP_400_BAD_REQUEST
             )
         if upload.size > photos.MAX_BYTES:
-            return Response({"detail": "That photo is over 5 MB."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "That photo is over 4 MB."}, status=status.HTTP_400_BAD_REQUEST)
         try:
             photos.save(program, upload.read(), kind)
         except photos.PhotoError as exc:
