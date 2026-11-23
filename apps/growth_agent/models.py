@@ -939,3 +939,67 @@ class WeeklyReport(models.Model):
 
     def __str__(self) -> str:
         return f"WeeklyReport<{self.program_id}:{self.week_of}>"
+
+
+class BusinessProfileCheck(models.Model):
+    """One check of whether the brand has a Google Business Profile (Google Maps / search listing)."""
+
+    class Status(models.TextChoices):
+        FOUND = "found", "Listing found"
+        NOT_FOUND = "not_found", "No listing found"
+        UNKNOWN = "unknown", "Couldn't check"
+
+    program = models.ForeignKey(
+        GrowthProgram, on_delete=models.CASCADE, related_name="business_profile_checks"
+    )
+    status = models.CharField(max_length=10, choices=Status.choices)
+    place = models.JSONField(default=dict, blank=True)  # the matched listing: name, address, rating, link...
+    matched_by = models.CharField(max_length=20, blank=True, default="")  # website | name_address
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"BusinessProfileCheck<{self.program_id}:{self.status}>"
+
+
+class BusinessProfileDraft(models.Model):
+    """The owner's facts for a new Google Business Profile, edited in the Agent tab.
+    Becomes the payload of the listing's approval action (later step)."""
+
+    program = models.OneToOneField(
+        GrowthProgram, on_delete=models.CASCADE, related_name="business_profile_draft"
+    )
+    fields = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"BusinessProfileDraft<{self.program_id}>"
+
+
+class BusinessProfilePhoto(models.Model):
+    """A photo the owner uploaded for the listing, stored in the private photo bucket."""
+
+    class Kind(models.TextChoices):
+        LOGO = "logo", "Logo"
+        COVER = "cover", "Cover"
+        OTHER = "other", "Other"
+
+    program = models.ForeignKey(
+        GrowthProgram, on_delete=models.CASCADE, related_name="business_profile_photos"
+    )
+    kind = models.CharField(max_length=6, choices=Kind.choices, default=Kind.OTHER)
+    storage_key = models.CharField(max_length=300, unique=True)
+    content_type = models.CharField(max_length=40)
+    size = models.PositiveIntegerField()
+    width = models.PositiveIntegerField()
+    height = models.PositiveIntegerField()
+    sha256 = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+
+    def __str__(self) -> str:
+        return f"BusinessProfilePhoto<{self.program_id}:{self.kind}>"
