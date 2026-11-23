@@ -15,7 +15,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from apps.organizations.models import Organization
-from config.celery_rabbit import GROWTH_BACKGROUND, GROWTH_INTERACTIVE, GROWTH_SEND, analysis_app
+from config.celery_rabbit import GROWTH_BACKGROUND, GROWTH_INTERACTIVE, analysis_app
 
 from ..models import GrowthAction, GrowthCycle, GrowthProgram, GrowthTask, PositioningReport
 from ..services import autopilot
@@ -194,8 +194,9 @@ class QueueTests(TestCase):
             self.assertEqual(self.route(name), GROWTH_BACKGROUND)
         self.assertEqual(self.route("analyzer.run_analysis"), "analysis")
 
-    def test_approved_sends_have_their_own_queue(self):
-        self.assertEqual(self.route("growth_agent.dispatch_action"), GROWTH_SEND)
+    def test_approved_sends_never_wait_behind_drafts(self):
+        self.assertEqual(self.route("growth_agent.dispatch_action"), GROWTH_INTERACTIVE)
+        self.assertEqual(self.route("growth_agent.run_task"), GROWTH_BACKGROUND)
 
     def test_the_growth_app_stays_on_rabbitmq_when_celery_broker_url_points_at_redis(self):
         """Production sets CELERY_BROKER_URL to Redis for the other Celery app. Celery reads

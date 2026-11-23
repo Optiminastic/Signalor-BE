@@ -8,8 +8,8 @@ queue once per scheduler round for every active brand.
   no brand can take a whole round.
 - Drafts and sends are queued as their own jobs, not run inside the tick: a
   draft is a minute or two of model calls, and five of them in a row made one
-  tick hold a background slot for ~10 minutes. Sends go to their own queue
-  (``growth.send``) so an approved send never waits behind drafts. A short
+  tick hold a background slot for ~10 minutes. Sends go to the interactive
+  queue so an approved send never waits behind drafts. A short
   "queued" marker per draft and per send stops the next round queuing the same
   item again while it is still waiting.
 - One tick per brand at a time: a Redis lock (``cache.add``, atomic) with a TTL

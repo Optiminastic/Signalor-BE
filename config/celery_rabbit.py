@@ -86,9 +86,6 @@ _growth_dlx = Exchange("growth.dlx", type="direct")
 # replies and approved sends never wait behind a 40-minute site analysis.
 GROWTH_INTERACTIVE = "growth.interactive"
 GROWTH_BACKGROUND = "growth.background"
-# Approved sends: seconds each, and the owner is waiting, so never behind drafts.
-# Consumed by the interactive worker (``-Q growth.interactive,growth.send``).
-GROWTH_SEND = "growth.send"
 
 
 def _growth_queue(name: str) -> Queue:
@@ -120,7 +117,7 @@ analysis_app.conf.task_queues = [
         },
     ),
     Queue("analysis.dlq", _dlx, routing_key="analysis.dead"),  # the "problem shelf"
-    *(_growth_queue(name) for name in (GROWTH_INTERACTIVE, GROWTH_SEND, GROWTH_BACKGROUND)),
+    *(_growth_queue(name) for name in (GROWTH_INTERACTIVE, GROWTH_BACKGROUND)),
     Queue("growth.dlq", _growth_dlx, routing_key="growth.dead"),
 ]
 analysis_app.conf.task_routes = {
@@ -130,7 +127,10 @@ analysis_app.conf.task_routes = {
     # Growth Agent: someone is waiting on these, so they never queue behind analyses.
     "growth_agent.run_chat_turn": {"queue": GROWTH_INTERACTIVE},
     "growth_agent.preview_task": {"queue": GROWTH_INTERACTIVE},
-    "growth_agent.dispatch_action": {"queue": GROWTH_SEND},
+    # Approved sends take seconds and the owner is waiting, so they never wait behind
+    # drafts on the background queue. (Not a queue of their own: production's compose
+    # lives in Coolify, and a queue no worker consumes would strand every send.)
+    "growth_agent.dispatch_action": {"queue": GROWTH_INTERACTIVE},
     # Everything else the agent does (ticks, drafts, sends, weekly checks).
     "growth_agent.*": {"queue": GROWTH_BACKGROUND},
 }

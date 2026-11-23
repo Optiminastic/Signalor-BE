@@ -151,9 +151,9 @@ services:
   growth-interactive-worker:
     <<: *app
     # Growth Agent jobs someone is waiting on: chat replies, previews and approved
-    # sends (growth.send, seconds each). Its own queues and worker, so they never
-    # wait behind a 40-minute site analysis or behind drafts.
-    command: ["celery", "-A", "config.celery_rabbit", "worker", "-Q", "growth.interactive,growth.send", "--loglevel=info",
+    # sends (seconds each). Its own queue and worker, so they never wait behind a
+    # 40-minute site analysis or behind drafts.
+    command: ["celery", "-A", "config.celery_rabbit", "worker", "-Q", "growth.interactive", "--loglevel=info",
               "--concurrency=2", "-O", "fair", "--max-tasks-per-child=200", "-n", "growth-interactive@%h"]
     environment:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
