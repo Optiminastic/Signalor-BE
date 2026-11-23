@@ -96,6 +96,27 @@ MODELS = {
     "kimi": KIMI_MODEL,
 }
 
+# When a call fails, try at most this many other models, and only cheap ones: the
+# old fallback walked every model above (10 extra calls, Opus and Sonnet included)
+# for one failed request.
+FALLBACK_MODELS = (MODELS["gpt"], GEMINI_MODEL, HAIKU_MODEL, DEEPSEEK_MODEL)
+MAX_FALLBACKS = 2
+# Account problems (bad key, out of credits, forbidden) fail every model on the same
+# OpenRouter account, so trying others only multiplies the failed calls.
+ACCOUNT_ERRORS = frozenset({401, 402, 403})
+RATE_LIMITED = 429
+MAX_RATE_LIMIT_WAIT_SEC = 5
+
+
+def _retry_after_seconds(resp) -> float:
+    """The provider's Retry-After, capped so a worker slot is never held for long."""
+    try:
+        wait = float(resp.headers.get("Retry-After", "1"))
+    except (TypeError, ValueError):
+        wait = 1.0
+    return max(0.0, min(wait, MAX_RATE_LIMIT_WAIT_SEC))
+
+
 MODEL_LABELS = {
     "openai/gpt-4o-mini": "GPT-4o Mini",
     HAIKU_MODEL: "Claude Haiku 4.5",
@@ -112,6 +133,7 @@ MODEL_LABELS = {
     # Answer-engine models that differ from the internal worker set.
     "openai/gpt-4.1-mini": "GPT-4.1 Mini (search)",
 }
+
 
 # ── Answer-engine simulation ──────────────────────────────────────────────
 # The models above are *internal workers*: they summarise crawled pages, pick
@@ -215,9 +237,7 @@ _collected_logs: list[dict] | None = None
 # concurrent analyses on one worker cannot bleed into each other, and
 # ``propagate()`` copies the context into pool workers, which do NOT inherit it
 # on their own.
-_cost_scopes: contextvars.ContextVar[tuple[dict, ...]] = contextvars.ContextVar(
-    "llm_cost_scopes", default=()
-)
+_cost_scopes: contextvars.ContextVar[tuple[dict, ...]] = contextvars.ContextVar("llm_cost_scopes", default=())
 
 
 @contextlib.contextmanager
@@ -891,8 +911,14 @@ def _call_openrouter(
     web_search: str | None = None,
     allow_fallback: bool = True,
     timeout: int | None = None,
+    _rate_limit_retried: bool = False,
 ) -> tuple[str, list[dict]]:
-    """Call OpenRouter API. Returns (text, citations[])."""
+    """Call OpenRouter API. Returns (text, citations[]).
+
+    A rate-limited call (429) waits as asked (at most 5 s) and retries the same model
+    once; an account error (401/402/403) gives up at once; any other failure falls
+    back to at most ``MAX_FALLBACKS`` cheap models.
+    """
     model = model_override or _pick_model(preferred_provider, tier)
 
     headers = {
@@ -963,6 +989,29 @@ def _call_openrouter(
 
         logger.warning("[LLM FAILED] << %s | HTTP %d: %s", model, resp.status_code, resp.text[:200])
         _log_call(model, purpose, prompt, f"HTTP {resp.status_code}", "error", duration_ms)
+        if resp.status_code in ACCOUNT_ERRORS:
+            logger.error(
+                "[LLM] OpenRouter account problem (HTTP %d); not trying other models", resp.status_code
+            )
+            return ("", [])
+        if resp.status_code == RATE_LIMITED and not _rate_limit_retried:
+            time.sleep(_retry_after_seconds(resp))
+            return _call_openrouter(
+                prompt,
+                preferred_provider,
+                max_tokens,
+                temperature,
+                api_key,
+                purpose,
+                system=system,
+                tier=tier,
+                response_format=response_format,
+                model_override=model,
+                web_search=web_search,
+                allow_fallback=allow_fallback,
+                timeout=timeout,
+                _rate_limit_retried=True,
+            )
         if not allow_fallback:
             return ("", [])
         return _retry_with_next(
@@ -1013,12 +1062,9 @@ def _retry_with_next(
     system: str | None = None,
     response_format: dict | None = None,
 ) -> tuple[str, list[dict]]:
-    """Try the next model if the first one fails. Returns (text, citations[])."""
-    all_models = list(MODELS.values())
-    for model in all_models:
-        if model == failed_model:
-            continue
-
+    """Try up to ``MAX_FALLBACKS`` cheap models after a failure. Returns (text, citations[])."""
+    candidates = [m for m in dict.fromkeys(FALLBACK_MODELS) if m != failed_model][:MAX_FALLBACKS]
+    for model in candidates:
         t0 = time.time()
         try:
             payload = {
@@ -1036,6 +1082,11 @@ def _retry_with_next(
                 timeout=30,
             )
             duration_ms = int((time.time() - t0) * 1000)
+            if resp.status_code in ACCOUNT_ERRORS:
+                logger.error(
+                    "[LLM] OpenRouter account problem (HTTP %d); stopping fallbacks", resp.status_code
+                )
+                return ("", [])
             if resp.status_code == 200:
                 data = resp.json()
                 content = _content_of(data)
