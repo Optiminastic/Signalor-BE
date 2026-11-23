@@ -36,7 +36,18 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.development")
 # CELERY_BROKER_URL pointing at Redis - that clobbers a plain assignment and the
 # worker silently ends up on the wrong broker. Constructor args land in the
 # app's `_preconf`, which outranks any config source loaded afterwards.
-analysis_app = Celery("signalor_analysis", broker=os.getenv("RABBITMQ_URL", ""))
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "")
+analysis_app = Celery("signalor_analysis", broker=RABBITMQ_URL)
+# Celery reads the CELERY_BROKER_URL environment variable BEFORE the constructor
+# argument (celery.app.utils.Settings.broker_url), and the shared stack.env sets it
+# to Redis for config.celery's app. That silently moved this whole app onto Redis
+# in production: no quorum queues, no delivery limit, no dead-letter queues.
+# The read and write URLs are consulted before broker_url and are only overridden
+# by CELERY_BROKER_READ_URL / CELERY_BROKER_WRITE_URL, which nothing sets, so
+# pinning them keeps both publishers (web) and workers on RabbitMQ.
+if RABBITMQ_URL:
+    analysis_app.conf.broker_read_url = RABBITMQ_URL
+    analysis_app.conf.broker_write_url = RABBITMQ_URL
 
 # `celery -A config.celery_rabbit` resolves the app by looking for `.app`, then
 # `.celery`, then by scanning the module. Without this alias that search can
@@ -47,7 +58,8 @@ app = analysis_app
 
 # Configured directly (not via the shared ``CELERY_*`` settings namespace) so
 # the existing Redis-Celery config in config/settings/base.py is left untouched.
-analysis_app.conf.task_always_eager = not bool(analysis_app.conf.broker_url)
+# Eager only without RabbitMQ (local dev, tests). Not broker_url: that reports the Redis env var.
+analysis_app.conf.task_always_eager = not RABBITMQ_URL
 analysis_app.conf.task_eager_propagates = True
 analysis_app.conf.task_acks_late = True
 analysis_app.conf.worker_prefetch_multiplier = 1
@@ -115,6 +127,10 @@ analysis_app.conf.task_routes = {
     # Growth Agent: someone is waiting on these, so they never queue behind analyses.
     "growth_agent.run_chat_turn": {"queue": GROWTH_INTERACTIVE},
     "growth_agent.preview_task": {"queue": GROWTH_INTERACTIVE},
+    # Approved sends take seconds and the owner is waiting, so they never wait behind
+    # drafts on the background queue. (Not a queue of their own: production's compose
+    # lives in Coolify, and a queue no worker consumes would strand every send.)
+    "growth_agent.dispatch_action": {"queue": GROWTH_INTERACTIVE},
     # Everything else the agent does (ticks, drafts, sends, weekly checks).
     "growth_agent.*": {"queue": GROWTH_BACKGROUND},
 }

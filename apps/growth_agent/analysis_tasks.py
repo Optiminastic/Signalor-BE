@@ -164,6 +164,24 @@ def dispatch_action_task(action_id: int) -> None:
     _dispatch_action(action_id)
 
 
+def queue_send(action_id: int) -> None:
+    """Send one approved action on the send queue. Called from a brand tick (scheduler
+    or worker, never a request), so without a broker it runs inline, like the tick."""
+    if analysis_app.conf.task_always_eager:
+        _dispatch_action(action_id)
+    else:
+        dispatch_action_task.delay(action_id)
+
+
+def queue_prepare(task_id: int) -> None:
+    """Draft one due task on the background queue. Called from a brand tick, so without
+    a broker it runs inline, like the tick."""
+    if analysis_app.conf.task_always_eager:
+        _run(task_id)
+    else:
+        run_growth_task.delay(task_id)
+
+
 def _check_indexing(integration_id: int) -> None:
     # The integrations task opens and closes its own DB connections.
     from apps.integrations.tasks import run_gsc_index_sync

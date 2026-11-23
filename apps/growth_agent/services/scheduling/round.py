@@ -36,7 +36,7 @@ class RoundResult:
     released: int = 0
     recovered: int = 0
     expired: int = 0
-    ticks: int = 0
+    ticks: int = 0  # ticks queued (a brand whose last tick is still waiting is skipped)
 
 
 def active_programs():
@@ -55,11 +55,24 @@ def _advance_onboarding() -> None:
             logger.exception("growth round: onboarding step failed for program %s", program.pk)
 
 
-def _queue_ticks(program_ids: list[int]) -> None:
-    from ...analysis_tasks import dispatch_brand_tick  # noqa: PLC0415  (avoids an import cycle)
+# How long a queued tick blocks queuing another for the same brand. The tick clears
+# it when it starts; the TTL only matters if a queued tick is lost.
+TICK_QUEUED_SECONDS = 25 * 60
 
+
+def _queue_ticks(program_ids: list[int]) -> int:
+    """Queue one tick per brand, skipping brands whose last tick hasn't started yet,
+    so a busy queue can't pile up a tick per brand per round. Returns how many were queued."""
+    from ...analysis_tasks import dispatch_brand_tick  # noqa: PLC0415  (avoids an import cycle)
+    from .tick import queued_key  # noqa: PLC0415
+
+    queued = 0
     for program_id in program_ids:
+        if not cache.add(queued_key(program_id), 1, TICK_QUEUED_SECONDS):
+            continue
         dispatch_brand_tick(program_id)
+        queued += 1
+    return queued
 
 
 def run_round() -> RoundResult:
@@ -73,8 +86,7 @@ def run_round() -> RoundResult:
         result.recovered = recover_stuck()
         result.expired = expire_due()
         ids = list(active_programs().values_list("id", flat=True))
-        _queue_ticks(ids)
-        result.ticks = len(ids)
+        result.ticks = _queue_ticks(ids)
         cache.set(HEARTBEAT_KEY, timezone.now().isoformat(), HEARTBEAT_TTL_SECONDS)
         return result
     finally:
