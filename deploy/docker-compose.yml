@@ -164,9 +164,10 @@ services:
 
   growth-interactive-worker:
     <<: *app
-    # Growth Agent jobs someone is waiting on (chat replies, previews). Its own
-    # queue and worker, so they never wait behind a 40-minute site analysis.
-    command: ["celery", "-A", "config.celery_rabbit", "worker", "-Q", "growth.interactive", "--loglevel=info",
+    # Growth Agent jobs someone is waiting on: chat replies, previews and approved
+    # sends (growth.send, seconds each). Its own queues and worker, so they never
+    # wait behind a 40-minute site analysis or behind drafts.
+    command: ["celery", "-A", "config.celery_rabbit", "worker", "-Q", "growth.interactive,growth.send", "--loglevel=info",
               "--concurrency=2", "-O", "fair", "--max-tasks-per-child=200", "-n", "growth-interactive@%h"]
     environment:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
@@ -178,13 +179,13 @@ services:
 
   growth-worker:
     <<: *app
-    # Everything else the agent does: one tick per brand per round (drafts, approved
-    # sends, reply checks, weekly checks). 2 slots = 48 slot-hours a day against
-    # roughly 1-5 hours of work for 50 brands. Kept at 2 because the server has
-    # 7.6 GiB RAM and each Celery worker uses ~0.6-0.7 GiB (measured 2026-11-18);
-    # raise it only with more memory and after re-running the load test.
+    # Everything else the agent does: brand ticks, the drafts they queue (1-2 minutes
+    # of model calls each), weekly checks and guest-site searches. 4 slots so a burst
+    # of drafts (50 brands x 5 when plans start) drains in about 1.5 hours instead of
+    # 3, while weekly checks keep moving. Memory: this worker measured ~0.3 GiB at 2
+    # slots with 4.2 GiB free on the 7.6 GiB server (2026-11-23); 4 slots add ~0.2 GiB.
     command: ["celery", "-A", "config.celery_rabbit", "worker", "-Q", "growth.background", "--loglevel=info",
-              "--concurrency=2", "-O", "fair", "--max-tasks-per-child=100", "-n", "growth-background@%h"]
+              "--concurrency=4", "-O", "fair", "--max-tasks-per-child=100", "-n", "growth-background@%h"]
     environment:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
     depends_on:

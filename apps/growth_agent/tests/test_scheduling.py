@@ -15,7 +15,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from apps.organizations.models import Organization
-from config.celery_rabbit import GROWTH_BACKGROUND, GROWTH_INTERACTIVE, analysis_app
+from config.celery_rabbit import GROWTH_BACKGROUND, GROWTH_INTERACTIVE, GROWTH_SEND, analysis_app
 
 from ..models import GrowthAction, GrowthCycle, GrowthProgram, GrowthTask, PositioningReport
 from ..services import autopilot
@@ -60,6 +60,7 @@ class SchedulingTestCase(TestCase):
             mock.patch.dict(REGISTRY, {"owned_content": self.channel}),
             # The weekly and daily checks call external services; they have their own tests.
             mock.patch.object(tick, "_periodic_steps", return_value=[]),
+            # Without a broker, drafts and sends queued by a tick run inline, like the tick.
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -82,6 +83,20 @@ class RoundTests(SchedulingTestCase):
     def test_a_round_already_running_makes_the_next_one_skip(self):
         cache.add(rounds.ROUND_LOCK_KEY, "x", 60)
         self.assertTrue(rounds.run_round().skipped)
+
+    def test_a_brand_whose_tick_is_still_waiting_is_not_queued_again(self):
+        waiting, ready = brand(1), brand(2)
+        cache.add(tick.queued_key(waiting.pk), 1, 60)  # its last tick hasn't started
+        with mock.patch("apps.growth_agent.analysis_tasks.dispatch_brand_tick") as queue:
+            result = rounds.run_round()
+        queue.assert_called_once_with(ready.pk)
+        self.assertEqual(result.ticks, 1)
+
+    def test_a_starting_tick_lets_the_round_queue_the_brand_again(self):
+        program = brand(1)
+        cache.add(tick.queued_key(program.pk), 1, 60)
+        tick.run(program.pk)
+        self.assertIsNone(cache.get(tick.queued_key(program.pk)))
 
     def test_the_round_writes_the_scheduler_heartbeat(self):
         rounds.run_round()
@@ -136,6 +151,32 @@ class TickTests(SchedulingTestCase):
         cache.delete(tick._lock_key(program.pk))
         self.assertIsNotNone(tick.run(program.pk))
 
+    def test_a_queued_draft_is_not_queued_again_by_the_next_round(self):
+        program = brand(1)
+        task = due_task(program)
+        with mock.patch("apps.growth_agent.analysis_tasks.queue_prepare") as queue:
+            first = tick.run(program.pk)
+            second = tick.run(program.pk)  # the draft is still waiting in the queue
+        queue.assert_called_once_with(task.id)
+        self.assertEqual((first.prepared, second.prepared), (1, 0))
+
+    def test_a_lost_draft_job_is_queued_again_once_its_marker_expires(self):
+        program = brand(1)
+        task = due_task(program)
+        with mock.patch("apps.growth_agent.analysis_tasks.queue_prepare") as queue:
+            tick.run(program.pk)
+            cache.delete(f"growth:prepare-queued:{task.id}")  # what the TTL does
+            tick.run(program.pk)
+        self.assertEqual(queue.call_count, 2)
+
+    def test_the_tick_queues_drafts_instead_of_writing_them(self):
+        program = brand(1)
+        due_task(program)
+        with mock.patch("apps.growth_agent.analysis_tasks.queue_prepare") as queue:
+            tick.run(program.pk)
+        queue.assert_called_once()
+        self.assertFalse(GrowthAction.objects.exists())  # nothing was drafted inside the tick
+
     def test_the_lock_is_released_after_a_tick(self):
         program = brand(1)
         tick.run(program.pk)
@@ -149,9 +190,38 @@ class QueueTests(TestCase):
     def test_chat_and_previews_never_share_a_queue_with_analyses(self):
         self.assertEqual(self.route("growth_agent.run_chat_turn"), GROWTH_INTERACTIVE)
         self.assertEqual(self.route("growth_agent.preview_task"), GROWTH_INTERACTIVE)
-        for name in ("growth_agent.brand_tick", "growth_agent.dispatch_action", "growth_agent.run_task"):
+        for name in ("growth_agent.brand_tick", "growth_agent.run_task", "growth_agent.find_guest_sites"):
             self.assertEqual(self.route(name), GROWTH_BACKGROUND)
         self.assertEqual(self.route("analyzer.run_analysis"), "analysis")
+
+    def test_approved_sends_have_their_own_queue(self):
+        self.assertEqual(self.route("growth_agent.dispatch_action"), GROWTH_SEND)
+
+    def test_the_growth_app_stays_on_rabbitmq_when_celery_broker_url_points_at_redis(self):
+        """Production sets CELERY_BROKER_URL to Redis for the other Celery app. Celery reads
+        that variable before the constructor's broker, which once moved every growth queue
+        onto Redis. A fresh interpreter, because the broker is fixed at import time."""
+        import os
+        import subprocess
+        import sys
+
+        code = (
+            "import django; django.setup();"
+            "from config.celery_rabbit import analysis_app as a;"
+            "print(a.connection_for_write().as_uri(), a.connection_for_read().as_uri(), a.conf.task_always_eager)"
+        )
+        env = {
+            **os.environ,
+            "DJANGO_SETTINGS_MODULE": "config.settings.test",
+            "CELERY_BROKER_URL": "redis://redis:6379/0",
+            "RABBITMQ_URL": "amqp://guest:guest@rabbitmq:5672//",
+        }
+        out = subprocess.run(
+            [sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True
+        )
+        write, read, eager = out.stdout.strip().splitlines()[-1].split()
+        self.assertTrue(write.startswith("amqp://") and read.startswith("amqp://"), out.stdout)
+        self.assertEqual(eager, "False")
 
     def test_growth_tasks_have_short_time_limits(self):
         import apps.growth_agent.analysis_tasks  # noqa: F401  (registers the tasks)

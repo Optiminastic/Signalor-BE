@@ -6,6 +6,12 @@ queue once per scheduler round for every active brand.
 - A fair share per round: at most ``PREPARES_PER_TICK`` drafts and
   ``SENDS_PER_TICK`` sends, oldest first; the rest waits for the next round, so
   no brand can take a whole round.
+- Drafts and sends are queued as their own jobs, not run inside the tick: a
+  draft is a minute or two of model calls, and five of them in a row made one
+  tick hold a background slot for ~10 minutes. Sends go to their own queue
+  (``growth.send``) so an approved send never waits behind drafts. A short
+  "queued" marker per draft and per send stops the next round queuing the same
+  item again while it is still waiting.
 - One tick per brand at a time: a Redis lock (``cache.add``, atomic) with a TTL
   longer than the tick's time limit; an overlapping tick for the same brand skips.
 - Each step is isolated: a failing check is logged and the next one still runs,
@@ -28,8 +34,8 @@ from django.core.cache import cache
 from django.utils import timezone
 
 from ...models import GrowthProgram
-from ..control.dispatch import dispatch, dispatchable
-from ..execution.executor import due_tasks, run_task
+from ..control.dispatch import dispatchable
+from ..execution.executor import due_tasks
 
 logger = logging.getLogger("apps")
 
@@ -42,17 +48,45 @@ PREPARE_AHEAD = timedelta(days=10)
 SENDS_PER_TICK = 5
 # Longer than the brand_tick time limit (20 min), so a crashed worker frees it eventually.
 LOCK_SECONDS = 25 * 60
+# How long a queued draft or send blocks queuing it again. Long enough to cover a
+# busy queue; short enough that a job lost with a crashed worker is queued again.
+# The jobs themselves are safe to run twice (the executor and dispatch claim first).
+PREPARE_QUEUED_SECONDS = 30 * 60
+SEND_QUEUED_SECONDS = 10 * 60
 
 
 @dataclass
 class TickResult:
-    prepared: int = 0
-    sent: int = 0
+    prepared: int = 0  # drafts queued this round
+    sent: int = 0  # sends queued this round
     failed_steps: list[str] = field(default_factory=list)
 
 
 def _lock_key(program_id: int) -> str:
     return f"growth:tick:{program_id}"
+
+
+def queued_key(program_id: int) -> str:
+    """Set by the round when it queues this brand's tick; cleared when the tick starts."""
+    return f"growth:tick-queued:{program_id}"
+
+
+def _queue_prepare(task_id: int) -> bool:
+    from ...analysis_tasks import queue_prepare  # noqa: PLC0415  (avoids an import cycle)
+
+    if not cache.add(f"growth:prepare-queued:{task_id}", 1, PREPARE_QUEUED_SECONDS):
+        return False
+    queue_prepare(task_id)
+    return True
+
+
+def _queue_send(action_id: int) -> bool:
+    from ...analysis_tasks import queue_send  # noqa: PLC0415  (avoids an import cycle)
+
+    if not cache.add(f"growth:send-queued:{action_id}", 1, SEND_QUEUED_SECONDS):
+        return False
+    queue_send(action_id)
+    return True
 
 
 def _periodic_steps(program: GrowthProgram) -> list[tuple[str, object]]:
@@ -97,17 +131,18 @@ def _step(result: TickResult, program: GrowthProgram, name: str, call) -> None:
 def _work(program: GrowthProgram, result: TickResult) -> None:
     today = timezone.now().date()
     for task in list(due_tasks(today + PREPARE_AHEAD).filter(cycle__program=program)[:PREPARES_PER_TICK]):
-        _step(result, program, f"prepare:{task.id}", lambda t=task: run_task(t.id))
-        result.prepared += 1
+        if _queue_prepare(task.id):
+            result.prepared += 1
     for action in list(dispatchable(today).filter(task__cycle__program=program)[:SENDS_PER_TICK]):
-        _step(result, program, f"send:{action.public_id}", lambda a=action: dispatch(a.id))
-        result.sent += 1
+        if _queue_send(action.id):
+            result.sent += 1
     for name, call in _periodic_steps(program):
         _step(result, program, name, call)
 
 
 def run(program_id: int) -> TickResult | None:
     """Do one brand's round. None when skipped (another tick holds the brand, or it isn't running)."""
+    cache.delete(queued_key(program_id))  # the round may queue this brand again
     key, token = _lock_key(program_id), uuid.uuid4().hex
     if not cache.add(key, token, LOCK_SECONDS):
         logger.info("growth tick: program %s is already being worked on; skipping", program_id)
