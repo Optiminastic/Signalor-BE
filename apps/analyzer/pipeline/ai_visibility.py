@@ -315,6 +315,22 @@ def _build_brand_aliases(brand_name: str, url: str) -> list[str]:
     return [a for a in aliases if 3 <= len(a) <= 40]
 
 
+# A one-word alias may be written as two words; each part must be this long, so
+# short names ("stripe" as "str ipe") and stray fragments never match.
+_SPLIT_MIN_PART = 3
+_SPLIT_MIN_ALIAS_LEN = 8
+_NEVER = re.compile(r"(?!x)x")
+
+
+def _split_pattern(alias: str) -> re.Pattern:
+    """Matches ``alias`` split once by a space, hyphen, dot or underscore, as whole words."""
+    if " " in alias or len(alias) < _SPLIT_MIN_ALIAS_LEN or not alias.isalnum():
+        return _NEVER
+    cuts = range(_SPLIT_MIN_PART, len(alias) - _SPLIT_MIN_PART + 1)
+    options = "|".join(re.escape(alias[:i]) + r"[\s\-_.]+" + re.escape(alias[i:]) for i in cuts)
+    return re.compile(rf"(?<![a-z0-9])(?:{options})(?![a-z0-9])")
+
+
 def _match_brand(aliases: list[str], text: str) -> tuple[bool, float, str]:
     """Check if any brand alias appears in text."""
     text_lower = text.lower()
@@ -324,6 +340,11 @@ def _match_brand(aliases: list[str], text: str) -> tuple[bool, float, str]:
         pattern = r"(?<![a-z])" + re.escape(alias) + r"(?![a-z])"
         if re.search(pattern, text_lower):
             return True, 1.0, "exact"
+
+    # 1b. A one-word brand written as two words ("scrnstudio" as "SCRN STUDIO")
+    for alias in aliases:
+        if _split_pattern(alias).search(text_lower):
+            return True, 1.0, "split"
 
     # 2. Substring match (lower confidence)
     for alias in aliases:

@@ -59,3 +59,40 @@ class BuildBrandAliasesTests(SimpleTestCase):
     def test_generic_tld_parts_are_skipped(self):
         aliases = _build_brand_aliases("Signalor", "https://signalor.ai")
         self.assertNotIn("ai", aliases)
+
+
+class SpacedBrandNameTests(SimpleTestCase):
+    """A one-word brand written as two words by the AI ("Scrnstudio" vs "SCRN STUDIO").
+
+    Regression: Perplexity named "SCRN STUDIO" in three answers for scrnstudio.in, but
+    the aliases were only "scrnstudio", so every answer was stored as not mentioned and
+    the brand showed no AI presence while the agent (which matches differently) saw it.
+    """
+
+    def setUp(self):
+        self.aliases = _build_brand_aliases("Scrnstudio", "https://scrnstudio.in/")
+
+    def test_two_word_spelling_is_a_mention(self):
+        text = "A strong direct match is **SCRN STUDIO**, which says its T-shirts are hand screen-printed."
+        found, _, _ = _match_brand(self.aliases, text)
+        self.assertTrue(found)
+
+    def test_hyphenated_spelling_is_a_mention(self):
+        found, _, _ = _match_brand(self.aliases, "Try Scrn-Studio for small batches.")
+        self.assertTrue(found)
+
+    def test_one_part_alone_is_not_a_mention(self):
+        found, _, _ = _match_brand(self.aliases, "Visit any studio in Mumbai for screen printing.")
+        self.assertFalse(found)
+
+    def test_a_different_brand_is_not_a_mention(self):
+        found, _, _ = _match_brand(self.aliases, "Screen Studio is a screen recorder for macOS.")
+        self.assertFalse(found)
+
+    def test_letters_spread_over_a_longer_word_are_not_a_mention(self):
+        found, _, _ = _match_brand(["carboncut"], "the carbon cutter and carbon cuts are different")
+        self.assertFalse(found)
+
+    def test_short_aliases_are_not_split(self):
+        found, _, _ = _match_brand(["stripe"], "the str ipe pattern")
+        self.assertFalse(found)
