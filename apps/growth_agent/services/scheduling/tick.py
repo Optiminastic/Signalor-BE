@@ -31,9 +31,10 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 
 from django.core.cache import cache
+from django.db.models import Case, IntegerField, Q, QuerySet, Value, When
 from django.utils import timezone
 
-from ...models import GrowthProgram
+from ...models import GrowthProgram, GrowthTask
 from ..control.dispatch import dispatchable
 from ..execution.executor import due_tasks
 
@@ -46,6 +47,11 @@ PREPARES_PER_TICK = 5
 # (14 days), so an early approval can't expire before its send day.
 PREPARE_AHEAD = timedelta(days=10)
 SENDS_PER_TICK = 5
+# A task the executor sent back to wait (its channel isn't connected, or the daily
+# cap is reached) is checked again at most this often. Before, waiting tasks were
+# the oldest due tasks, so they took every one of the brand's draft slots each round
+# and nothing that could run was ever drafted (all 6 production brands, 2026-11-24).
+WAITING_RECHECK = timedelta(hours=1)
 # Longer than the brand_tick time limit (20 min), so a crashed worker frees it eventually.
 LOCK_SECONDS = 25 * 60
 # How long a queued draft or send blocks queuing it again. Long enough to cover a
@@ -128,9 +134,23 @@ def _step(result: TickResult, program: GrowthProgram, name: str, call) -> None:
         result.failed_steps.append(name)
 
 
+def drafting_order(program: GrowthProgram) -> QuerySet[GrowthTask]:
+    """The brand's due tasks in the order they get draft slots: tasks that can run
+    first, then waiting tasks not checked in the last hour; oldest first in each."""
+    now = timezone.now()
+    waiting = Q(result_payload__has_key="waiting_for")
+    return (
+        due_tasks(now.date() + PREPARE_AHEAD)
+        .filter(cycle__program=program)
+        .exclude(waiting & Q(updated_at__gt=now - WAITING_RECHECK))
+        .annotate(waiting=Case(When(waiting, then=Value(1)), default=Value(0), output_field=IntegerField()))
+        .order_by("waiting", "scheduled_for", "-impact_score")
+    )
+
+
 def _work(program: GrowthProgram, result: TickResult) -> None:
     today = timezone.now().date()
-    for task in list(due_tasks(today + PREPARE_AHEAD).filter(cycle__program=program)[:PREPARES_PER_TICK]):
+    for task in list(drafting_order(program)[:PREPARES_PER_TICK]):
         if _queue_prepare(task.id):
             result.prepared += 1
     for action in list(dispatchable(today).filter(task__cycle__program=program)[:SENDS_PER_TICK]):
