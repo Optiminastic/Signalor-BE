@@ -60,6 +60,9 @@ class GrowthProgram(models.Model):
     kill_switch = models.BooleanField(default=False)
     # When the scheduler last finished a round of work for this brand (the heartbeat).
     last_tick_at = models.DateTimeField(null=True, blank=True)
+    # Competitors found on Google (sites in the top 10 for the tracked keywords), used when the
+    # site analysis found none: [{"name": ..., "domain": ...}]. Refreshed by each rank check.
+    search_competitors = models.JSONField(default=list, blank=True)
     created_by_email = models.EmailField()
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
