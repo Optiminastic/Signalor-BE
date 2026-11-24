@@ -81,6 +81,20 @@ def _bing_line(program: GrowthProgram) -> list[str]:
     return ["- No new or changed pages to send to Bing"]
 
 
+def _site_check_lines(program: GrowthProgram) -> list[str]:
+    """robots.txt AI crawlers and sitemap health from the latest analysis: failures named, passes counted."""
+    from apps.analyzer.services.technical_checks import latest_for_org  # noqa: PLC0415
+
+    _, checks = latest_for_org(program.organization_id)
+    if not checks:
+        return []
+    failed = [c for c in checks if c.status == "failed"]
+    passed = sum(1 for c in checks if c.status == "passed")
+    lines = [f"- **{passed}** of {len(checks)} technical checks passed"]
+    lines += [f"- Needs fixing: {c.label.lower()} ({c.detail}); it's in Actions, On-site" for c in failed]
+    return lines
+
+
 def _satellite_lines(program: GrowthProgram) -> list[str]:
     rows = satellite_rank.articles(program)["articles"]
     if not rows:
@@ -124,6 +138,7 @@ def build(program: GrowthProgram) -> str:
     sections = [
         ("This week", _work_lines(program, since)),
         ("Google and Bing", _indexing_lines(program) + _bing_line(program)),
+        ("Site checks", _site_check_lines(program)),
         ("Articles on signalor.ai sites", _satellite_lines(program)),
         ("Social", _social_lines(program)),
         ("Coming up", _next_lines(program)),

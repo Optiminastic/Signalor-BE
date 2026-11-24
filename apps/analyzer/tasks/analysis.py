@@ -312,6 +312,13 @@ def _kickoff_prompt_volume(run_id: int) -> None:
         logger.warning("Prompt volume kickoff failed for run %d: %s", run_id, exc)
 
 
+def _run_technical_checks(run: AnalysisRun) -> None:
+    """robots.txt AI crawlers + sitemap health; failed checks become On-site tickets."""
+    from ..services import technical_checks as technical_checks_service
+
+    technical_checks_service.run_for(run)
+
+
 def _run_partial_analysis(run: AnalysisRun, crawl):
     """
     Run partial analysis when crawler fails to get HTML.
@@ -322,7 +329,9 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
     start_log_collection()
     progress._start_trace(run)
 
-    progress._update_status(run, AnalysisRun.Status.ANALYZING, 20, "Page content unavailable — checking what we can")
+    progress._update_status(
+        run, AnalysisRun.Status.ANALYZING, 20, "Page content unavailable — checking what we can"
+    )
 
     # Content, schema, eeat all need HTML — score 0 with explanation
     content_score, content_details = (
@@ -350,7 +359,9 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
         },
     )
 
-    progress._update_status(run, AnalysisRun.Status.ANALYZING, 40, "Checking robots.txt, sitemap and llms.txt")
+    progress._update_status(
+        run, AnalysisRun.Status.ANALYZING, 40, "Checking robots.txt, sitemap and llms.txt"
+    )
 
     # Technical — works without HTML (robots.txt, sitemap, llms.txt, HTTPS)
     technical_score_val, technical_details = score_technical(crawl)
@@ -455,6 +466,7 @@ def _run_partial_analysis(run: AnalysisRun, crawl):
     recs = generate_recommendations(pillar_details)
     # one INSERT instead of one per recommendation (finding_code set upstream; no signals).
     Recommendation.objects.bulk_create([Recommendation(analysis_run=run, **rec) for rec in recs])
+    _run_technical_checks(run)
 
     # Save brand visibility
     if brand_vis_result:
@@ -706,7 +718,9 @@ def run_single_page_analysis(run_id: int):
                 logger.warning("E-E-A-T scoring failed for run %d: %s", run_id, exc)
                 eeat_details = {"error": str(exc)}
 
-            progress._update_status(run, AnalysisRun.Status.ANALYZING, 18, "Checking how AI engines describe your brand")
+            progress._update_status(
+                run, AnalysisRun.Status.ANALYZING, 18, "Checking how AI engines describe your brand"
+            )
 
             try:
                 entity_score_val, entity_details = entity_future.result()
@@ -866,11 +880,7 @@ def run_single_page_analysis(run_id: int):
             "ai_visibility": ai_vis_score,
         }
         # Fold in SiteOne technical-crawl findings as tasks (otherwise display-only).
-        extra_recs = (
-            siteone_crawl.to_recommendations(siteone_report)
-            if siteone_report is not None
-            else []
-        )
+        extra_recs = siteone_crawl.to_recommendations(siteone_report) if siteone_report is not None else []
         # Shared orchestrator: runs the engine over the homepage + every additional
         # page, grounds each task in real evidence, dedupes across pages, and caps.
         recs = build_run_recommendations(
@@ -939,9 +949,7 @@ def run_single_page_analysis(run_id: int):
                 existing_recs=recs,
                 pillar_details=pillar_details,
                 siteone=(
-                    siteone_crawl.to_check_payload(siteone_report)
-                    if siteone_report is not None
-                    else None
+                    siteone_crawl.to_check_payload(siteone_report) if siteone_report is not None else None
                 ),
                 signals=_signals,
                 ai_visibility=ai_vis_details,
@@ -949,9 +957,7 @@ def run_single_page_analysis(run_id: int):
             )
             if _discovered:
                 recs.extend(_discovered)
-                logger.info(
-                    "Run %d: added %d site-specific findings", run_id, len(_discovered)
-                )
+                logger.info("Run %d: added %d site-specific findings", run_id, len(_discovered))
         except Exception:
             logger.exception("Run %d: site finding discovery failed", run_id)
 
@@ -984,6 +990,7 @@ def run_single_page_analysis(run_id: int):
             logger.exception("Run %d: task enrichment failed", run_id)
         # one INSERT instead of one per recommendation (see note above).
         Recommendation.objects.bulk_create([Recommendation(analysis_run=run, **rec) for rec in recs])
+        _run_technical_checks(run)
 
         # GEO-signal tasks from measured prompt/citation/competitor gaps. Prompts
         # already fired in _save_probes_and_tracks above, so results are available.
@@ -1184,4 +1191,3 @@ def start_analysis_task(run_id: int):
     # response for the full sitemap crawl and trip the frontend's request
     # timeout. A thread keeps /analyze/ fast in both eager and brokered modes.
     threading.Thread(target=_kickoff_sitemap_audit, args=(run_id,), daemon=True).start()
-

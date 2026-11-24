@@ -121,6 +121,7 @@ class CrawlEssentialsStatusView(APIView):
             }
         )
 
+
 class SitemapAuditStartView(APIView):
     """POST /runs/s/<slug>/sitemap/  — kick off an async sitemap audit."""
 
@@ -148,6 +149,7 @@ class SitemapAuditStartView(APIView):
             SitemapAuditSerializer(audit).data,
             status=status.HTTP_202_ACCEPTED,
         )
+
 
 class SitemapAuditDetailView(APIView):
     """GET /runs/s/<slug>/sitemap/  — latest audit summary + paginated pages."""
@@ -215,6 +217,7 @@ class SitemapAuditDetailView(APIView):
             }
         )
 
+
 class SchemaWatchStartView(APIView):
     """POST /runs/s/<slug>/schema-watch/  — kick off a schema validation run."""
 
@@ -249,6 +252,7 @@ class SchemaWatchStartView(APIView):
             SchemaWatchSerializer(watch).data,
             status=status.HTTP_202_ACCEPTED,
         )
+
 
 class SchemaWatchDetailView(APIView):
     """GET /runs/s/<slug>/schema-watch/  — latest watch summary + pages."""
@@ -301,6 +305,7 @@ class SchemaWatchDetailView(APIView):
             }
         )
 
+
 class RankAuditStartView(APIView):
     """POST /runs/s/<slug>/rank/start/ — kick off an async rank audit."""
 
@@ -348,6 +353,7 @@ class RankAuditStartView(APIView):
             RankAuditSerializer(audit).data,
             status=status.HTTP_202_ACCEPTED,
         )
+
 
 class RankAuditDetailView(APIView):
     """GET /runs/s/<slug>/rank/ — latest audit summary + queries + their results."""
@@ -431,6 +437,7 @@ class RankAuditDetailView(APIView):
             }
         )
 
+
 class RankAuditRefreshQueryView(APIView):
     """POST /runs/s/<slug>/rank/query/<query_id>/refresh/ — re-fetch one query across all surfaces."""
 
@@ -492,6 +499,7 @@ class RankAuditRefreshQueryView(APIView):
 
         return Response(RankQuerySerializer(query).data, status=status.HTTP_202_ACCEPTED)
 
+
 class CrawlerIngestView(APIView):
     """POST /api/analyzer/crawler/ingest/ — receive AI-crawler hits from a site.
 
@@ -548,13 +556,12 @@ class CrawlerIngestView(APIView):
 
         hits = request.data.get("hits")
         if not isinstance(hits, list) or not hits:
-            return Response(
-                {"detail": "hits must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"detail": "hits must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
 
         rows, ignored = self._rows(org_id, hits[: self._MAX_BATCH])
         CrawlerHit.objects.bulk_create(rows)
         return Response({"stored": len(rows), "ignored": ignored})
+
 
 class IndexNowView(APIView):
     """GET/POST /runs/s/<slug>/indexnow/ — push pages into Bing's index.
@@ -592,6 +599,7 @@ class IndexNowView(APIView):
         body.is_valid(raise_exception=True)
         return Response(submit_run_pages(run, body.validated_data.get("urls") or None))
 
+
 class CrawlerAccessView(APIView):
     """GET /runs/s/<slug>/crawler-access/ — can AI engines crawl this site?
 
@@ -615,10 +623,9 @@ class CrawlerAccessView(APIView):
         if err is not None:
             return err
         if run.organization is None:
-            return Response(
-                {"detail": "Run has no organization."}, status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"detail": "Run has no organization."}, status=status.HTTP_400_BAD_REQUEST)
         return Response(report_for_run(run))
+
 
 class CrawlerLogsView(APIView):
     """GET /runs/s/<slug>/crawler-logs/ — AI crawler activity for the brand:
@@ -641,9 +648,7 @@ class CrawlerLogsView(APIView):
         run = get_object_or_404(AnalysisRun, slug=slug)
         org = run.organization
         if org is None:
-            return Response(
-                {"detail": "Run has no organization."}, status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"detail": "Run has no organization."}, status=status.HTTP_400_BAD_REQUEST)
 
         since = timezone.now() - timedelta(days=30)
         qs = CrawlerHit.objects.filter(organization=org, hit_at__gte=since)
@@ -668,5 +673,47 @@ class CrawlerLogsView(APIView):
                 "days": [{"date": d, "bots": b} for d, b in sorted(by_day.items())],
                 "bots": bots,
                 "pages": pages,
+            }
+        )
+
+
+class TechnicalChecksView(APIView):
+    """GET runs/s/<slug>/technical-checks/ -> the brand's latest technical checks,
+    passed ones included (the Actions page's Passed view; failed ones are tickets)."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PollingThrottle]
+
+    def get(self, request, slug):
+        from ..services.technical_checks import latest_for_org
+
+        run, err = _scoped_run(request, slug)
+        if err is not None:
+            return err
+        source, checks = (
+            latest_for_org(run.organization_id)
+            if run.organization_id
+            else (run, list(run.technical_checks.all()))
+        )
+        rows = [
+            {
+                "code": c.code,
+                "label": c.label,
+                "status": c.status,
+                "detail": c.detail,
+                "evidence": c.evidence,
+                "checked_at": c.checked_at.isoformat(),
+            }
+            for c in checks
+        ]
+        count = lambda status: sum(1 for r in rows if r["status"] == status)  # noqa: E731
+        return Response(
+            {
+                "run": source.slug if source else None,
+                "checked_at": rows[0]["checked_at"] if rows else None,
+                "checks": rows,
+                "passed": count("passed"),
+                "failed": count("failed"),
+                "unknown": count("unknown"),
             }
         )

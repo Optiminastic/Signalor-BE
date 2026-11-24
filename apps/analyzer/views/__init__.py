@@ -208,6 +208,7 @@ from .technical import (  # noqa: F401
     SchemaWatchStartView,
     SitemapAuditDetailView,
     SitemapAuditStartView,
+    TechnicalChecksView,
 )
 
 __all__ = [
@@ -312,6 +313,7 @@ __all__ = [
     "RunBacklinkFreeView",
     "ScheduledAnalysisView",
     "SchemaWatchDetailView",
+    "TechnicalChecksView",
     "SchemaWatchStartView",
     "ScoreHistoryView",
     "ShareOfVoiceCompetitorsView",

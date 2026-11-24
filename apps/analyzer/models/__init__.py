@@ -41,6 +41,7 @@ from .crawl import (  # noqa: F401
     SchemaWatchPage,
     SitemapAudit,
     SitemapAuditPage,
+    TechnicalCheck,
 )
 from .infra import (  # noqa: F401
     ChatMessage,

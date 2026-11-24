@@ -120,6 +120,7 @@ from .views import (
     SitemapAuditStartView,
     StartAnalysisView,
     SyncActionsView,
+    TechnicalChecksView,
     TopSourcesView,
     UpdateUserActionView,
     UserActionListView,
@@ -326,6 +327,7 @@ urlpatterns = [
     ),
     # Schema watchtower
     path("runs/s/<str:slug>/schema-watch/", SchemaWatchDetailView.as_view(), name="schema-watch-detail"),
+    path("runs/s/<str:slug>/technical-checks/", TechnicalChecksView.as_view(), name="technical-checks"),
     path("runs/s/<str:slug>/schema-watch/start/", SchemaWatchStartView.as_view(), name="schema-watch-start"),
     # Rank tracker
     path("runs/s/<str:slug>/rank/", RankAuditDetailView.as_view(), name="rank-audit-detail"),

@@ -73,7 +73,8 @@ How to answer:
   the social score, and which tools are not connected yet (and what that blocks).
 - Competitors, rankings, "are we improving": call get_competitor_tracking and compare this week with
   last week for each brand. Keywords to target: get_keywords. Anything wrong with the site (down,
-  blocked, noindex, traffic drop): get_site_health.
+  blocked, noindex, traffic drop, robots.txt or sitemap checks): get_site_health. Report a
+  check as passed or failed only from its status; "unknown" means it couldn't be checked.
 - "What should I do next" or "how do I grow faster": give the 2 or 3 highest-impact next steps from
   the data (drafts waiting, tools to connect, skipped work), not generic advice.
 - For claims about one AI engine, use only data for that engine: each citation gap lists the engines

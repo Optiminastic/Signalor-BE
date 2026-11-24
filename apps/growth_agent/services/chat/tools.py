@@ -68,7 +68,9 @@ _TOOLS: dict[str, tuple[str, dict, Handler]] = {
     ),
     "get_site_health": (
         "The daily site check (up or down, noindex, robots.txt blocking Google or AI bots, sitemap, homepage "
-        "title) and anything that changed on the site in the last 30 days, including Google clicks drops.",
+        "title), anything that changed on the site in the last 30 days including Google clicks drops, and the "
+        "latest technical checks (GPTBot, PerplexityBot and ClaudeBot allowed in robots.txt; sitemap found, "
+        "broken URLs, redirects, freshness), each passed, failed or unknown.",
         _NO_ARGS,
         insight_tools.get_site_health,
     ),
