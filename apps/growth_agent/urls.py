@@ -51,6 +51,7 @@ from .views_indexing import (
 )
 from .views_keyword_tools import KeywordToolConnectView, KeywordToolDisconnectView, KeywordToolListView
 from .views_keywords import KeywordsRefreshView, KeywordsView
+from .views_prompt_presence import PromptPresenceCheckView, PromptPresenceView
 from .views_safety import SafetyChallengeView, SafetyChangeListView, SafetyConfirmView
 from .views_social import BufferDisconnectView, BufferSignInView, SocialCheckView, SocialView
 from .views_tracking import (
@@ -203,6 +204,12 @@ urlpatterns = [
         "programs/<str:org_slug>/keyword-tools/<str:provider>/disconnect/",
         KeywordToolDisconnectView.as_view(),
         name="keyword-tool-disconnect",
+    ),
+    path("programs/<str:org_slug>/prompt-presence/", PromptPresenceView.as_view(), name="prompt-presence"),
+    path(
+        "programs/<str:org_slug>/prompt-presence/check/",
+        PromptPresenceCheckView.as_view(),
+        name="prompt-presence-check",
     ),
     path("programs/<str:org_slug>/social/", SocialView.as_view(), name="social"),
     path("programs/<str:org_slug>/social/check/", SocialCheckView.as_view(), name="social-check"),

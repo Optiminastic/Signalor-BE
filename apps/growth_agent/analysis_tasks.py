@@ -433,3 +433,31 @@ def dispatch_brand_tick(program_id: int) -> None:
         _run_tick(program_id)
     else:
         brand_tick_task.delay(program_id)
+
+
+def _check_prompt_presence(program_id: int) -> None:
+    from django.db import close_old_connections
+
+    from .models import GrowthProgram
+    from .services.prompt_presence import check
+
+    close_old_connections()
+    try:
+        program = GrowthProgram.objects.select_related("organization").filter(pk=program_id).first()
+        if program is not None:
+            check.run_check(program)
+    finally:
+        close_old_connections()
+
+
+@analysis_app.task(name="growth_agent.check_prompt_presence")
+def check_prompt_presence_task(program_id: int) -> None:
+    _check_prompt_presence(program_id)
+
+
+def dispatch_prompt_presence(program_id: int) -> None:
+    """Where the brand's prompts are discussed (Google, Reddit, LinkedIn, X), off the request path."""
+    if analysis_app.conf.task_always_eager:
+        threading.Thread(target=_check_prompt_presence, args=(program_id,), daemon=True).start()
+    else:
+        check_prompt_presence_task.delay(program_id)

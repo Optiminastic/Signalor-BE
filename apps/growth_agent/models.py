@@ -493,6 +493,47 @@ class BrandMention(models.Model):
         return f"BrandMention<{self.program_id}:{self.domain}:{self.source}>"
 
 
+class PromptPresence(models.Model):
+    """One place a tracked prompt is being discussed: a Google result, a Reddit thread,
+    a LinkedIn post or an X post, found weekly by searching Google for the prompt.
+
+    ``mentions_brand`` marks results that already name the brand (or link to its site),
+    so the owner sees where they're present and which conversations to join.
+    """
+
+    class Platform(models.TextChoices):
+        GOOGLE = "google", "Google"
+        REDDIT = "reddit", "Reddit"
+        LINKEDIN = "linkedin", "LinkedIn"
+        X = "x", "X"
+
+    program = models.ForeignKey(GrowthProgram, on_delete=models.CASCADE, related_name="prompt_presence")
+    week = models.DateField(help_text="Monday of the week it was found.")
+    prompt = models.CharField(max_length=500)
+    platform = models.CharField(max_length=10, choices=Platform.choices)
+    url = models.URLField(max_length=1000)
+    title = models.CharField(max_length=300)
+    snippet = models.TextField(blank=True, default="")
+    community = models.CharField(
+        max_length=100, blank=True, default="", help_text="Subreddit, e.g. r/3Dprinting."
+    )
+    position = models.PositiveSmallIntegerField(default=0)
+    mentions_brand = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["prompt", "platform", "position"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["program", "week", "prompt", "url"], name="growth_prompt_presence_unique"
+            )
+        ]
+        indexes = [models.Index(fields=["program", "-week"], name="growth_presence_week_idx")]
+
+    def __str__(self) -> str:
+        return f"PromptPresence<{self.program_id}:{self.platform}:{self.url[:40]}>"
+
+
 # ── External actions and their approval (Phase 1 control foundation) ───────
 # A task that needs something done outside Signalor (send an email, publish a
 # page) first becomes a GrowthAction holding an exact, immutable draft. The

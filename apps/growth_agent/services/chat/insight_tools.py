@@ -166,3 +166,26 @@ def refresh_keywords_now(program: GrowthProgram, _args: dict) -> dict:
     if keyword_refresh.start(program, guard=keyword_refresh.START_GUARD):
         return {"started": True, "note": "Reading keywords now; about a minute."}
     return {"started": False, "reason": "Keywords were read in the last day; they refresh once a day."}
+
+
+def get_prompt_presence(program: GrowthProgram, _args: dict) -> dict:
+    """Where the brand's prompts are discussed and whether the brand shows up there."""
+    from ..prompt_presence import check as prompt_presence  # noqa: PLC0415
+
+    data = prompt_presence.report(program)
+    return {
+        "checked_at": data["checked_at"],
+        "prompts": [
+            {
+                "prompt": p["prompt"],
+                "brand_present_on": p["brand_present_on"],
+                "top_subreddits": [s["name"] for s in p["subreddits"][:3]],
+                "reddit_threads": [r["title"] for r in p["reddit"][:3]],
+                "linkedin_posts": [r["title"] for r in p["linkedin"][:3]],
+                "x_posts": [r["title"] for r in p["x"][:3]],
+                "google_top": [r["url"] for r in p["google"][:3]],
+            }
+            for p in data["prompts"][:TOP_ROWS]
+        ],
+        "where": "the Prompts tab",
+    }

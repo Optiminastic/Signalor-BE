@@ -105,6 +105,7 @@ def _periodic_steps(program: GrowthProgram) -> list[tuple[str, object]]:
     from ..outreach.follow_up_actions import prepare_due_follow_ups  # noqa: PLC0415
     from ..outreach.followups import process_open_threads  # noqa: PLC0415
     from ..planning.plan import add_satellite_topics  # noqa: PLC0415
+    from ..prompt_presence import check as prompt_presence  # noqa: PLC0415
     from ..rank_tracking import check as rank_check  # noqa: PLC0415
     from ..site_watch import watch as site_watch  # noqa: PLC0415
     from ..social import check as social_check  # noqa: PLC0415
@@ -122,6 +123,7 @@ def _periodic_steps(program: GrowthProgram) -> list[tuple[str, object]]:
         ("site_watch", lambda: site_watch.daily(program)),
         ("ranks", lambda: rank_check.weekly(program)),
         ("social_posts", lambda: social_posts.queue_weekly(program)),
+        ("prompt_presence", lambda: prompt_presence.weekly(program)),
         ("weekly_summary", lambda: weekly_summary.post(program)),
     ]
 
