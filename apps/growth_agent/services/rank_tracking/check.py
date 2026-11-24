@@ -30,7 +30,7 @@ from ..keywords import google_source
 from ..keywords.accounts import own_source, search_console_queries
 from ..keywords.refresh import latest_run
 from ..positioning.inputs import bare_domain
-from . import rules, suggest
+from . import rules, serp_rivals, suggest
 
 logger = logging.getLogger("apps")
 
@@ -55,7 +55,13 @@ def competitors(program: GrowthProgram) -> list[gap_rules.Rival]:
     if run is None:
         return [brand] if domain else []
     candidates = [gap_rules.Rival(c.name, bare_domain(c.url)) for c in run.competitors.all().order_by("id")]
-    return [brand, *gap_rules.top_rivals(candidates, report.lost_prompts, own_domain=domain)]
+    rivals = gap_rules.top_rivals(candidates, report.lost_prompts, own_domain=domain)
+    return [brand, *(rivals or _search_competitors(program))]
+
+
+def _search_competitors(program: GrowthProgram) -> list[gap_rules.Rival]:
+    """Competitors found on Google by the last rank check (when the analysis found none)."""
+    return [gap_rules.Rival(r.get("name", ""), r.get("domain", "")) for r in program.search_competitors or []]
 
 
 def fill_keywords(program: GrowthProgram) -> int:
@@ -85,15 +91,29 @@ def fill_keywords(program: GrowthProgram) -> int:
     return min(len(picked), room)
 
 
-def _seo_rows(keywords: list[str], domains: list[str]) -> list[dict]:
-    rows = []
+def _search(keywords: list[str]) -> dict[str, list[dict]]:
+    """Google's organic results per keyword. A failed search is left out: unknown, not "not ranked"."""
+    serps = {}
     for keyword in keywords:
         data = serper.search(keyword, num=SERP_DEPTH)
-        if data is None:
-            continue  # unknown, not "not ranked": no rows rather than wrong ones
-        for domain, position in rules.positions(data.get("organic") or [], domains).items():
+        if data is not None:
+            serps[keyword] = data.get("organic") or []
+    return serps
+
+
+def _seo_rows(serps: dict[str, list[dict]], domains: list[str]) -> list[dict]:
+    rows = []
+    for keyword, organic in serps.items():
+        for domain, position in rules.positions(organic, domains).items():
             rows.append({"keyword": keyword, "domain": domain, "position": position})
     return rows
+
+
+def _refresh_search_competitors(program: GrowthProgram, serps: dict[str, list[dict]]) -> None:
+    """Keep the Google-found competitors current (used only when the analysis has none)."""
+    found = serp_rivals.pick(serps, own_domain=bare_domain(program.organization.url))
+    program.search_competitors = [{"name": r.name, "domain": r.domain} for r in found]
+    program.save(update_fields=["search_competitors"])
 
 
 def _store(program: GrowthProgram, week, kind: str, rows: list[dict]) -> None:
@@ -106,11 +126,14 @@ def _store(program: GrowthProgram, week, kind: str, rows: list[dict]) -> None:
 def run_check(program: GrowthProgram) -> dict:
     """Check this week's Google positions and brand mentions. Worker only."""
     fill_keywords(program)
+    keywords = list(program.tracked_keywords.filter(active=True).values_list("keyword", flat=True))
+    serps = _search(keywords) if bare_domain(program.organization.url) else {}
+    if serps:
+        _refresh_search_competitors(program, serps)
     players = [p for p in competitors(program) if p.domain]
     domains = [p.domain for p in players]
-    keywords = list(program.tracked_keywords.filter(active=True).values_list("keyword", flat=True))
     week = rules.week_of(timezone.localdate())
-    seo = _seo_rows(keywords, domains) if domains else []
+    seo = _seo_rows(serps, domains) if domains else []
     found = mentions.run(program, players, week)
     with transaction.atomic():
         if seo:

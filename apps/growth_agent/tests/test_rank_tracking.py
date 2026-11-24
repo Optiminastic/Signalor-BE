@@ -12,9 +12,10 @@ from django.test import SimpleTestCase
 from django.utils import timezone
 
 from apps.analyzer.models import AnalysisRun, Competitor
+from apps.organizations.models import Organization
 
 from ..models import KeywordSnapshot, PositioningReport, RankObservation, TrackedKeyword, WeeklySnapshot
-from ..services.rank_tracking import check, rules
+from ..services.rank_tracking import check, rules, serp_rivals
 from ..services.rank_tracking.report import report
 from .test_api import OTHER_EMAIL, PRO_EMAIL
 from .test_execution_flow import ExecutionTestCase
@@ -178,3 +179,95 @@ class FallbackTests(RankBase):
         PositioningReport.objects.update(share_of_voice={"overall": {"brand": 0.0, "rivals": {"Acme": 6.9}}})
         geo = report(self.program)["geo"]
         self.assertEqual(geo[0]["rivals"], {"Acme": 6.9})
+
+
+class SerpRivalPickTests(SimpleTestCase):
+    """Competitors found on Google when the site analysis found none (pure)."""
+
+    def organic(self, *hosts):
+        return [{"link": f"https://{h}/page", "position": i} for i, h in enumerate(hosts, start=1)]
+
+    def test_sites_in_the_top_ten_for_the_most_keywords_win(self):
+        serps = {
+            "3d printers": self.organic("rival-a.com", "rival-b.in", "own.example", "rival-c.com"),
+            "3d filament": self.organic("rival-b.in", "rival-a.com", "rival-d.com"),
+            "3d printing services": self.organic("rival-a.com", "rival-c.com"),
+        }
+        picked = serp_rivals.pick(serps, own_domain="own.example")
+        self.assertEqual([r.domain for r in picked], ["rival-a.com", "rival-b.in", "rival-c.com"])
+        self.assertEqual(picked[0].name, "Rival A")
+
+    def test_platforms_and_the_brand_itself_never_count(self):
+        hosts = ("www.amazon.in", "en.wikipedia.org", "www.youtube.com", "shop.own.example", "flipkart.com")
+        serps = {"k1": self.organic(*hosts), "k2": self.organic(*hosts)}
+        self.assertEqual(serp_rivals.pick(serps, own_domain="own.example"), [])
+
+    def test_one_keyword_is_a_coincidence_not_a_rival(self):
+        serps = {"k1": self.organic("once.com", "twice.com"), "k2": self.organic("twice.com")}
+        self.assertEqual([r.domain for r in serp_rivals.pick(serps, own_domain="own.example")], ["twice.com"])
+
+    def test_only_the_top_ten_count(self):
+        deep = [f"filler{i}.com" for i in range(10)] + ["deep.com"]
+        serps = {"k1": self.organic(*deep), "k2": self.organic(*deep)}
+        self.assertNotIn(
+            "deep.com", [r.domain for r in serp_rivals.pick(serps, own_domain="own.example", limit=20)]
+        )
+
+    def test_look_alike_domains_are_not_mistaken_for_platforms(self):
+        hosts = ("max.com", "x.company.com", "amazonia.com")
+        serps = {"k1": self.organic(*hosts), "k2": self.organic(*hosts)}
+        picked = {r.domain for r in serp_rivals.pick(serps, own_domain="own.example")}
+        self.assertEqual(picked, set(hosts))
+
+
+class SearchCompetitorFallbackTests(RankBase):
+    """A brand whose analysis found no competitors gets them from Google instead."""
+
+    def setUp(self):
+        super().setUp()
+        Competitor.objects.all().delete()  # the analysis found none
+
+    def serp(self, keyword, num):
+        return {
+            "organic": [
+                {"link": "https://rival-one.com/x", "position": 1},
+                {"link": "https://pro.example/b", "position": 3},
+                {"link": "https://rival-two.com/y", "position": 5},
+            ]
+        }
+
+    def test_the_check_finds_competitors_on_google_and_tracks_them(self):
+        self.run_check()
+        self.program.refresh_from_db()
+        self.assertEqual(
+            [r["domain"] for r in self.program.search_competitors], ["rival-one.com", "rival-two.com"]
+        )
+        players = self.mentions_call.call_args.args[1]
+        self.assertEqual([p.domain for p in players], ["pro.example", "rival-one.com", "rival-two.com"])
+        seo = RankObservation.objects.filter(kind="seo", keyword="ai visibility")
+        self.assertEqual(
+            {o.domain: o.position for o in seo}, {"pro.example": 3, "rival-one.com": 1, "rival-two.com": 5}
+        )
+
+    def test_competitors_from_the_analysis_still_win(self):
+        Competitor.objects.create(analysis_run=AnalysisRun.objects.get(), name="Acme", url="https://acme.io")
+        self.run_check()
+        self.assertEqual([p.domain for p in check.competitors(self.program)], ["pro.example", "acme.io"])
+
+    def test_social_and_keyword_gaps_use_the_google_competitors(self):
+        self.run_check()
+        self.program.refresh_from_db()
+        self.assertEqual(
+            [r.domain for r in check.competitors(self.program)[1:]], ["rival-one.com", "rival-two.com"]
+        )
+
+    def test_no_search_is_spent_for_a_brand_without_a_site(self):
+        Organization.objects.filter(pk=self.pro_org.pk).update(url="")
+        self.program.organization.refresh_from_db()
+        with (
+            mock.patch.object(check.serper, "search") as search,
+            mock.patch.object(check.mentions, "run", return_value=0),
+            mock.patch.object(check.suggest, "suggest", return_value=[]),
+        ):
+            check.run_check(self.program)
+        search.assert_not_called()
