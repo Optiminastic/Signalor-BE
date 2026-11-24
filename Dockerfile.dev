@@ -1,0 +1,34 @@
+# Lightweight DEV image for the Django backend + Celery workers.
+#
+# Unlike the production Dockerfile, this does NOT install the Playwright
+# Chromium browser (~1.5 GB) — that download crashes Docker Desktop's WSL2
+# backend on some machines and isn't needed for local dev (server-side
+# screenshots are gated by ENABLE_SERVER_SCREENSHOTS, which is off in dev).
+#
+# Source code + .env are bind-mounted over /app at runtime (see
+# docker-compose.dev.yml) for hot-reload; only Python deps are baked here.
+FROM python:3.11-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# Build tools for any C extensions + runtime libs for cairo/pango/gdk-pixbuf
+# (weasyprint PDF/HTML rendering) and libffi (cffi). psycopg is a binary wheel.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential pkg-config \
+        libffi-dev \
+        libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python deps in a cached layer — only requirements.txt busts it.
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+EXPOSE 8000
+
+# Default; compose overrides per service (runserver / celery workers).
+CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]

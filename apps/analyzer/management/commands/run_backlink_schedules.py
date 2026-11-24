@@ -6,10 +6,13 @@ For each due BacklinkSchedule it resolves the brand's latest completed
 AnalysisRun and calls services.backlink_engine.run_auto_backlinks(run), which
 generates + publishes one fresh blog to each of the 5 satellite sites.
 
+Scheduling in production is now driven by **Celery Beat**
+(``apps.analyzer.celery_tasks.dispatch_due_backlinks`` → per-brand
+``generate_backlinks_for_brand`` tasks; see CELERY_BEAT_SCHEDULE). This command
+is kept as a **manual/one-off fallback** — same due-selection + reschedule logic,
+run synchronously — e.g. to force a catch-up run without a worker.
+
 Usage:   python manage.py run_backlink_schedules [--limit N] [--dry-run]
-Cron:    0 * * * * cd /path/to/project && python manage.py run_backlink_schedules
-         (hourly; each brand's next_run_at is spread across the day, so every
-          brand gets its batch ~24h after its last one.)
 """
 import logging
 from datetime import timedelta

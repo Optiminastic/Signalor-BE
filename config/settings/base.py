@@ -401,3 +401,17 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
+
+# Celery Beat — periodic scheduler. The one fixed entry is the auto-backlinks
+# dispatcher: every 15 min it reads the dynamic per-brand BacklinkSchedule rows
+# and fans out one generation task per due brand (parallel + retried), replacing
+# the old hourly `run_backlink_schedules` cron. Run exactly ONE beat process:
+#   celery -A config beat --loglevel=info
+from celery.schedules import crontab  # noqa: E402
+
+CELERY_BEAT_SCHEDULE = {
+    "dispatch-due-backlinks": {
+        "task": "analyzer.dispatch_due_backlinks",
+        "schedule": crontab(minute="*/15"),
+    },
+}

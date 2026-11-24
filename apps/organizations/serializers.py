@@ -6,7 +6,7 @@ from .models import Organization
 class OrganizationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Organization
-        fields = ["id", "name", "slug", "url", "owner_email", "created_at"]
+        fields = ["id", "name", "slug", "url", "owner_email", "created_at", "platform"]
         read_only_fields = ["id", "slug", "created_at"]
 
 
@@ -14,6 +14,7 @@ class OnboardSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=255)
     url = serializers.URLField(required=False, allow_blank=True, default="")
     email = serializers.EmailField()
+    platform = serializers.CharField(required=False, allow_blank=True, default="")
 
     def validate_email(self, value):
         return value.lower().strip()
@@ -32,4 +33,5 @@ class OnboardSerializer(serializers.Serializer):
             name=validated_data["name"],
             url=validated_data["url"],
             owner_email=validated_data["email"],
+            platform=validated_data.get("platform", ""),
         )

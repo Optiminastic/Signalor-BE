@@ -3493,7 +3493,8 @@ class AutoFixView(APIView):
                 {"error": "recommendation_ids and email are required."}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Match Shopify vs WordPress to the analyzed URL (org may have both connected)
+        # Resolve the org's connected site (Webflow / WordPress / Shopify),
+        # matched to the analyzed URL when several are connected.
         org = run.organization
         if not org:
             return Response(
@@ -3506,14 +3507,37 @@ class AutoFixView(APIView):
 
         if not integration:
             return Response(
-                {"error": "No WordPress or Shopify integration connected. Connect one first."},
+                {"error": "No connected site (Webflow, WordPress, or Shopify) to auto-fix. Connect one first."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         recommendations = Recommendation.objects.filter(id__in=recommendation_ids, analysis_run=run)
 
         results = apply_fixes(run, integration, list(recommendations))
+        _complete_actions_for_results(run, results)
         return Response(results)
+
+
+def _complete_actions_for_results(run, results):
+    """Flip the run's Tasks to "Done" for every recommendation whose auto-fix was
+    actually written to the connected site (Webflow/WordPress/Shopify). The board
+    reads a task's status, so marking the linked UserAction completed is what shows
+    the "Done" tag after a successful fix. "manual"/"failed" results are left as-is."""
+    applied_rec_ids = [
+        r.get("recommendation_id")
+        for r in results
+        if r.get("status") in ("success", "verified") and r.get("recommendation_id")
+    ]
+    if not applied_rec_ids:
+        return
+
+    from .models import UserAction
+
+    pending = UserAction.objects.filter(
+        analysis_run=run, recommendation_id__in=applied_rec_ids
+    ).exclude(status__in=[UserAction.ActionStatus.COMPLETED, UserAction.ActionStatus.VERIFIED])
+    for action in pending:
+        action.complete()
 
 
 class AutoFixPreviewView(APIView):

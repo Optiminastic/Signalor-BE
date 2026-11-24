@@ -390,8 +390,16 @@ class IntegrationStatusView(APIView):
             return err
 
         integrations = Integration.objects.filter(organization=org)
-        serializer = IntegrationSerializer(integrations, many=True)
-        return Response(serializer.data)
+        data = list(IntegrationSerializer(integrations, many=True).data)
+
+        # Surface the platform chosen during onboarding as an active "Platform"
+        # integration so the dashboard Integrations page shows it (e.g. Next.js).
+        platform = getattr(org, "platform", "") or ""
+        if platform and not any(row.get("provider") == platform for row in data):
+            data.append(
+                {"provider": platform, "provider_display": platform.title(), "is_active": True}
+            )
+        return Response(data)
 
 
 class GADisconnectView(APIView):
