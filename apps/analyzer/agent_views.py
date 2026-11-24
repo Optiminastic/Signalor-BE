@@ -15,21 +15,25 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.accounts.agency_utils import get_agency_context
 from core.permissions.throttling import ExpensiveThrottle, PollingThrottle
 
+from .access import accessible_org_ids, writable_org_ids
 from .agent_plan import build_agent_plan, mark_refreshed, refresh_available_at
 from .models import AnalysisRun
 
 
-def _resolve_owned_run(slug: str, email: str):
-    """Return (run, owner_email) if ``email`` owns the run's org, else (None, None)."""
-    run = get_object_or_404(AnalysisRun, slug=slug)
-    ctx = get_agency_context(email)
-    owner_email = ctx.agency_email if ctx else email
-    if not (run.organization and run.organization.owner_email == owner_email):
+def _resolve_owned_run(slug: str, email: str, *, write: bool = False):
+    """(run, brand owner's email) when ``email`` may see the run's brand, else (None, None).
+
+    Uses the shared access rules: the caller's own brands plus every agency they
+    belong to (``write`` = owners and agency admins only). Comparing against a
+    single agency's email locked out an owner who also belongs to an agency.
+    """
+    run = get_object_or_404(AnalysisRun.objects.select_related("organization"), slug=slug)
+    allowed = writable_org_ids(email) if write else accessible_org_ids(email)
+    if not (run.organization_id and run.organization_id in allowed):
         return None, None
-    return run, owner_email
+    return run, run.organization.owner_email
 
 
 class AgentPlanView(APIView):
@@ -70,7 +74,7 @@ class AgentPlanRefreshView(APIView):
         if not email:
             return Response({"error": "email is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        run, owner_email = _resolve_owned_run(slug, email)
+        run, owner_email = _resolve_owned_run(slug, email, write=True)
         if run is None:
             return Response(
                 {"detail": "Brand not found for this account.", "code": "not_found"},
