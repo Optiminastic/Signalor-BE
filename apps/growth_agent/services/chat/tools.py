@@ -66,6 +66,12 @@ _TOOLS: dict[str, tuple[str, dict, Handler]] = {
         _NO_ARGS,
         insight_tools.get_keywords,
     ),
+    "get_prompt_presence": (
+        "For each prompt the brand tracks, where it is being discussed: top Google links, Reddit threads "
+        "and their subreddits, LinkedIn posts and X posts, and on which of these the brand already appears.",
+        _NO_ARGS,
+        insight_tools.get_prompt_presence,
+    ),
     "get_site_health": (
         "The daily site check (up or down, noindex, robots.txt blocking Google or AI bots, sitemap, homepage "
         "title), anything that changed on the site in the last 30 days including Google clicks drops, and the "
