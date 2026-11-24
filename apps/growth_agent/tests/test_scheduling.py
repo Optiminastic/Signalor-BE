@@ -285,6 +285,49 @@ class HealthTests(SchedulingTestCase):
         self.assertEqual(mail.outbox[0].to, ["ops@signalor.example"])
 
 
+def waiting_task(program: GrowthProgram, title: str, days_ago: int, checked_minutes_ago: int) -> GrowthTask:
+    """A due task the executor sent back because its channel isn't connected yet."""
+    task = due_task(program, title)
+    GrowthTask.objects.filter(pk=task.pk).update(
+        scheduled_for=timezone.now().date() - timedelta(days=days_ago),
+        result_payload={"waiting_for": "Connect WordPress"},
+        updated_at=timezone.now() - timedelta(minutes=checked_minutes_ago),
+    )
+    return task
+
+
+class WaitingTaskTests(SchedulingTestCase):
+    """Tasks waiting on a missing connection used to fill a brand's 5 draft slots every
+    round (they are the oldest due tasks), so nothing else was ever drafted."""
+
+    def test_tasks_that_can_run_go_before_waiting_ones(self):
+        program = brand(1)
+        for n in range(tick.PREPARES_PER_TICK):
+            waiting_task(program, f"Waiting {n}", days_ago=5, checked_minutes_ago=90)
+        runnable = due_task(program, "Can run")
+        with mock.patch("apps.growth_agent.analysis_tasks.queue_prepare") as queue:
+            tick.run(program.pk)
+        self.assertEqual(queue.call_args_list[0].args, (runnable.id,))
+
+    def test_a_waiting_task_is_not_rechecked_within_the_hour(self):
+        program = brand(1)
+        recent = waiting_task(program, "Checked 10 min ago", days_ago=2, checked_minutes_ago=10)
+        stale = waiting_task(program, "Checked 2 h ago", days_ago=2, checked_minutes_ago=120)
+        with mock.patch("apps.growth_agent.analysis_tasks.queue_prepare") as queue:
+            tick.run(program.pk)
+        queued = {c.args[0] for c in queue.call_args_list}
+        self.assertNotIn(recent.id, queued)
+        self.assertIn(stale.id, queued)
+
+    def test_waiting_tasks_still_fill_free_slots(self):
+        program = brand(1)
+        waiting = waiting_task(program, "Waiting", days_ago=3, checked_minutes_ago=90)
+        runnable = due_task(program, "Can run")
+        with mock.patch("apps.growth_agent.analysis_tasks.queue_prepare") as queue:
+            tick.run(program.pk)
+        self.assertEqual([c.args[0] for c in queue.call_args_list], [runnable.id, waiting.id])
+
+
 class DraftAheadTests(SchedulingTestCase):
     def test_tasks_due_within_ten_days_are_drafted_now_but_later_ones_wait(self):
         program = brand(1)
