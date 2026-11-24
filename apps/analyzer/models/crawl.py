@@ -255,3 +255,34 @@ class SchemaWatchPage(models.Model):
     def __str__(self):
         return f"SchemaWatchPage<{self.url} {self.severity}>"
 
+
+class TechnicalCheck(models.Model):
+    """One technical check's result for one analysis run (robots.txt AI crawlers,
+    sitemap found / broken URLs / redirects / freshness).
+
+    Every check is stored, passed ones included, so the owner can see healthy
+    checks ran. Only failed checks become On-site tickets (Recommendation ->
+    UserAction); passed and unknown ones never enter Today or Done.
+    """
+
+    class Status(models.TextChoices):
+        PASSED = "passed", "Passed"
+        FAILED = "failed", "Failed"
+        UNKNOWN = "unknown", "Couldn't check"
+
+    analysis_run = models.ForeignKey(AnalysisRun, on_delete=models.CASCADE, related_name="technical_checks")
+    code = models.CharField(max_length=40)
+    label = models.CharField(max_length=120)
+    status = models.CharField(max_length=10, choices=Status.choices)
+    detail = models.CharField(max_length=300, blank=True, default="")
+    evidence = models.JSONField(default=dict, blank=True)
+    checked_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(fields=["analysis_run", "code"], name="uniq_technical_check_per_run")
+        ]
+
+    def __str__(self) -> str:
+        return f"TechnicalCheck<{self.analysis_run_id}:{self.code}={self.status}>"

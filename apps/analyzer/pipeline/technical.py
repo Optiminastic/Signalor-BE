@@ -5,43 +5,38 @@ Score = (Infrastructure × 0.25) + (Performance × 0.25) +
         (Crawlability × 0.20) + (AI Readability × 0.20) +
         (Structure Quality × 0.10)
 """
+
 import json
 import logging
 import re
 from urllib.parse import urlparse
 
-from . import siteone_crawl
+from . import robots_rules, siteone_crawl
 from .crawler import CrawlResult, check_file_exists, fetch_file_content
 from .utils import safe_score
 
 logger = logging.getLogger("apps")
 
 AI_BOT_AGENTS = [
-    "GPTBot", "Google-Extended", "anthropic-ai", "ClaudeBot",
-    "PerplexityBot", "ChatGPT-User", "CCBot",
+    "GPTBot",
+    "Google-Extended",
+    "anthropic-ai",
+    "ClaudeBot",
+    "PerplexityBot",
+    "ChatGPT-User",
+    "CCBot",
 ]
 
 
 def _check_robots_allows_ai(robots_txt: str) -> tuple[bool, list[str]]:
-    blocked = []
-    if not robots_txt:
-        return True, []
-    lines = robots_txt.lower().splitlines()
-    current_agent = None
-    for line in lines:
-        line = line.strip()
-        if line.startswith("user-agent:"):
-            current_agent = line.split(":", 1)[1].strip()
-        elif line.startswith("disallow:") and current_agent:
-            path = line.split(":", 1)[1].strip()
-            if path == "/" or path == "/*":
-                for bot in AI_BOT_AGENTS:
-                    if current_agent == "*" or bot.lower() in current_agent:
-                        blocked.append(bot)
-    return len(blocked) == 0, blocked
+    """Whether AI crawlers may crawl the site, by their most specific robots.txt group
+    (an explicit "Allow" for GPTBot beats "User-agent: * / Disallow: /")."""
+    blocked = robots_rules.blocked(robots_txt, AI_BOT_AGENTS)
+    return not blocked, blocked
 
 
 # ── 1. Infrastructure (25 pts) ────────────────────────────────────────────
+
 
 def _score_infrastructure(crawl: CrawlResult) -> tuple[float, dict]:
     """HTTPS, robots.txt, sitemap, llms.txt — the foundation."""
@@ -85,25 +80,19 @@ def _score_infrastructure(crawl: CrawlResult) -> tuple[float, dict]:
     # use App Proxy /apps/signalor/llms.txt or .well-known — see geo_improvement.py)
     llms_content = fetch_file_content(crawl.url, "llms.txt", session=crawl.session)
     if not llms_content.strip():
-        llms_content = fetch_file_content(
-            crawl.url, ".well-known/llms.txt", session=crawl.session
-        )
+        llms_content = fetch_file_content(crawl.url, ".well-known/llms.txt", session=crawl.session)
     if not llms_content.strip():
-        llms_content = fetch_file_content(
-            crawl.url, "apps/signalor/llms.txt", session=crawl.session
-        )
+        llms_content = fetch_file_content(crawl.url, "apps/signalor/llms.txt", session=crawl.session)
     if not llms_content.strip():
-        llms_content = fetch_file_content(
-            crawl.url, "pages/llms-txt", session=crawl.session
-        )
+        llms_content = fetch_file_content(crawl.url, "pages/llms-txt", session=crawl.session)
     has_llms = bool(llms_content.strip())
     details["has_llms_txt"] = has_llms
 
     if has_llms:
         llms_len = len(llms_content.strip())
         details["llms_txt_length"] = llms_len
-        sections = sum(1 for line in llms_content.splitlines() if line.strip().startswith('#'))
-        urls = llms_content.lower().count('http')
+        sections = sum(1 for line in llms_content.splitlines() if line.strip().startswith("#"))
+        urls = llms_content.lower().count("http")
 
         if llms_len > 200 and sections >= 3 and urls >= 3:
             score += 8
@@ -137,6 +126,7 @@ def _score_infrastructure(crawl: CrawlResult) -> tuple[float, dict]:
 
 # ── 2. Performance (25 pts) ───────────────────────────────────────────────
 
+
 def _score_performance(crawl: CrawlResult) -> tuple[float, dict]:
     """Real load time + page weight metrics."""
     details = {}
@@ -167,11 +157,11 @@ def _score_performance(crawl: CrawlResult) -> tuple[float, dict]:
     html_size = len(crawl.html) if crawl.html else 0
     details["html_size_kb"] = round(html_size / 1024, 1)
 
-    if html_size < 50_000:       # <50KB
+    if html_size < 50_000:  # <50KB
         score += 5
-    elif html_size < 150_000:    # <150KB
+    elif html_size < 150_000:  # <150KB
         score += 3
-    elif html_size < 500_000:    # <500KB
+    elif html_size < 500_000:  # <500KB
         score += 1
     # >500KB = bloated, no points
 
@@ -193,6 +183,7 @@ def _score_performance(crawl: CrawlResult) -> tuple[float, dict]:
 
 
 # ── 3. Crawlability (20 pts) ─────────────────────────────────────────────
+
 
 def _score_crawlability(crawl: CrawlResult) -> tuple[float, dict]:
     """Can AI crawlers access and follow this site's content?"""
@@ -271,6 +262,7 @@ def _score_crawlability(crawl: CrawlResult) -> tuple[float, dict]:
 
 # ── 4. AI Readability (20 pts) ────────────────────────────────────────────
 
+
 def _score_ai_readability(crawl: CrawlResult) -> tuple[float, dict]:
     """
     Can AI cleanly extract meaningful content from this page?
@@ -292,13 +284,13 @@ def _score_ai_readability(crawl: CrawlResult) -> tuple[float, dict]:
     ratio = text_len / html_len if html_len > 0 else 0
     details["text_to_html_ratio"] = round(ratio, 3)
 
-    if ratio >= 0.25:       # 25%+ text = very clean
+    if ratio >= 0.25:  # 25%+ text = very clean
         score += 6
-    elif ratio >= 0.15:     # 15-25% = good
+    elif ratio >= 0.15:  # 15-25% = good
         score += 4
-    elif ratio >= 0.08:     # 8-15% = average
+    elif ratio >= 0.08:  # 8-15% = average
         score += 2
-    else:                   # <8% = mostly markup/scripts
+    else:  # <8% = mostly markup/scripts
         details["_finding_ratio"] = "low_text_html_ratio"
 
     # 4b. DOM complexity (4 pts) — simpler DOM = easier for AI to parse
@@ -324,8 +316,15 @@ def _score_ai_readability(crawl: CrawlResult) -> tuple[float, dict]:
         js_dependent = True
     # Check for common SPA frameworks
     html_lower = html.lower()
-    spa_signals = ["__next_data__", "__nuxt", "window.__initial_state__",
-                   "react-root", "ng-app", "data-v-", "#app"]
+    spa_signals = [
+        "__next_data__",
+        "__nuxt",
+        "window.__initial_state__",
+        "react-root",
+        "ng-app",
+        "data-v-",
+        "#app",
+    ]
     spa_count = sum(1 for s in spa_signals if s in html_lower)
 
     details["js_dependent"] = js_dependent
@@ -375,6 +374,7 @@ def _score_ai_readability(crawl: CrawlResult) -> tuple[float, dict]:
 
 # ── 5. Structure Quality (10 pts) ────────────────────────────────────────
 
+
 def _score_structure_quality(crawl: CrawlResult) -> tuple[float, dict]:
     """OG metadata, heading structure — helps AI understand page purpose."""
     details = {}
@@ -390,11 +390,13 @@ def _score_structure_quality(crawl: CrawlResult) -> tuple[float, dict]:
     og_desc = soup.find("meta", property="og:description")
     og_image = soup.find("meta", property="og:image")
 
-    og_count = sum([
-        bool(og_title and og_title.get("content")),
-        bool(og_desc and og_desc.get("content")),
-        bool(og_image and og_image.get("content")),
-    ])
+    og_count = sum(
+        [
+            bool(og_title and og_title.get("content")),
+            bool(og_desc and og_desc.get("content")),
+            bool(og_image and og_image.get("content")),
+        ]
+    )
     details["og_tags_present"] = og_count
     details["has_og_title"] = bool(og_title and og_title.get("content"))
     details["has_og_description"] = bool(og_desc and og_desc.get("content"))
@@ -431,6 +433,7 @@ def _score_structure_quality(crawl: CrawlResult) -> tuple[float, dict]:
 
 # ── Main Scorer ───────────────────────────────────────────────────────────
 
+
 def score_technical(
     crawl: CrawlResult,
     siteone: "siteone_crawl.SiteOneReport | None" = None,
@@ -447,11 +450,11 @@ def score_technical(
     details = {"checks": {}, "findings": []}
 
     # Score each dimension
-    infra_raw, infra_details = _score_infrastructure(crawl)         # max 25
-    perf_raw, perf_details = _score_performance(crawl)              # max 25
-    crawl_raw, crawl_details = _score_crawlability(crawl)           # max 20
-    ai_read_raw, ai_read_details = _score_ai_readability(crawl)     # max 20
-    struct_raw, struct_details = _score_structure_quality(crawl)     # max 10
+    infra_raw, infra_details = _score_infrastructure(crawl)  # max 25
+    perf_raw, perf_details = _score_performance(crawl)  # max 25
+    crawl_raw, crawl_details = _score_crawlability(crawl)  # max 20
+    ai_read_raw, ai_read_details = _score_ai_readability(crawl)  # max 20
+    struct_raw, struct_details = _score_structure_quality(crawl)  # max 10
 
     # Normalize to 0-100
     infra_score = (infra_raw / 25) * 100
@@ -462,11 +465,11 @@ def score_technical(
 
     # Weighted total
     total = (
-        infra_score * 0.25 +
-        perf_score * 0.25 +
-        crawl_score * 0.20 +
-        ai_read_score * 0.20 +
-        struct_score * 0.10
+        infra_score * 0.25
+        + perf_score * 0.25
+        + crawl_score * 0.20
+        + ai_read_score * 0.20
+        + struct_score * 0.10
     )
 
     # Store details

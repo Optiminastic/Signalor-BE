@@ -134,6 +134,19 @@ def get_site_health(program: GrowthProgram, _args: dict) -> dict:
             {**(c.detail or {}), "at": c.created_at.isoformat()} for c in changes[:TOP_ROWS]
         ],
         "where": "Activity, filter 'Your site'",
+        "technical_checks": _technical_checks(program),
+    }
+
+
+def _technical_checks(program: GrowthProgram) -> dict:
+    """robots.txt AI crawlers and sitemap checks from the latest analysis (the Actions page's source)."""
+    from apps.analyzer.services.technical_checks import latest_for_org  # noqa: PLC0415
+
+    _, checks = latest_for_org(program.organization_id)
+    return {
+        "checked_at": checks[0].checked_at.isoformat() if checks else None,
+        "checks": [{"check": c.label, "status": c.status, "detail": c.detail} for c in checks],
+        "where": "Failed checks are On-site actions on the Actions page; '✓ Passed' lists the healthy ones.",
     }
 
 

@@ -8,9 +8,10 @@ once when it appears (or on the first check), and again only after it was fixed.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
+
+from apps.analyzer.pipeline import robots_rules
 
 SEARCH_BOTS = ("Googlebot", "Bingbot")
 AI_BOTS = ("GPTBot", "ClaudeBot", "PerplexityBot", "Google-Extended")
@@ -52,45 +53,13 @@ def read_homepage(html: str, robots_header: str = "") -> dict:
     return {"title": head.title, "noindex": noindex, "canonical": head.canonical}
 
 
-def _groups(robots_txt: str) -> list[tuple[set[str], list[str]]]:
-    """(user agents, disallow rules) per group, lowercased."""
-    groups: list[tuple[set[str], list[str]]] = []
-    agents: set[str] = set()
-    rules: list[str] = []
-    for raw in (robots_txt or "").splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if ":" not in line:
-            continue
-        field, value = (part.strip() for part in line.split(":", 1))
-        field = field.lower()
-        if field == "user-agent":
-            if rules:
-                groups.append((agents, rules))
-                agents, rules = set(), []
-            agents.add(value.lower())
-        elif field == "disallow" and agents:
-            rules.append(value)
-        elif field == "allow" and agents:
-            rules.append(f"!{value}")
-    if agents:
-        groups.append((agents, rules))
-    return groups
-
-
 def blocked_bots(robots_txt: str) -> list[str]:
     """Bots told not to crawl the whole site ("Disallow: /"), by their most specific group."""
-    groups = _groups(robots_txt)
-    blocked = []
-    for bot in (*SEARCH_BOTS, *AI_BOTS):
-        own = [rules for agents, rules in groups if bot.lower() in agents]
-        rules = own[0] if own else next((r for agents, r in groups if "*" in agents), [])
-        if "/" in rules and "!/" not in rules:
-            blocked.append(bot)
-    return blocked
+    return robots_rules.blocked(robots_txt, (*SEARCH_BOTS, *AI_BOTS))
 
 
 def sitemap_urls(robots_txt: str) -> list[str]:
-    return re.findall(r"(?im)^\s*sitemap:\s*(\S+)", robots_txt or "")
+    return robots_rules.sitemaps(robots_txt)
 
 
 @dataclass(frozen=True)
